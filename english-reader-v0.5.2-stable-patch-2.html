@@ -1,0 +1,5712 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>英语点读阅读器 V0.5.2 Stable Patch 2</title>
+
+<style>
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+                 "Microsoft YaHei", sans-serif;
+    background: #f5f5f7;
+    color: #1d1d1f;
+  }
+
+  .page {
+    max-width: 1220px;
+    margin: 0 auto;
+    padding: 28px 24px 60px;
+  }
+
+  h1 {
+    margin: 0 0 6px;
+    font-size: 38px;
+    line-height: 1.2;
+  }
+
+  .description {
+    color: #6e6e73;
+    font-size: 17px;
+    line-height: 1.6;
+    margin-bottom: 22px;
+  }
+
+  #inputPanel {
+    transition: .2s ease;
+  }
+
+  textarea {
+    width: 100%;
+    height: 210px;
+    resize: vertical;
+    padding: 18px;
+    border: 1px solid #d2d2d7;
+    border-radius: 14px;
+    background: #fff;
+    font-size: 17px;
+    line-height: 1.7;
+    outline: none;
+  }
+
+  textarea:focus {
+    border-color: #86868b;
+  }
+
+  .controls {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+    align-items: center;
+    margin-top: 14px;
+  }
+
+  button {
+    border: none;
+    border-radius: 10px;
+    padding: 11px 18px;
+    font-size: 15px;
+    cursor: pointer;
+    background: #1d1d1f;
+    color: white;
+  }
+
+  button:hover { opacity: .88; }
+
+  .secondary {
+    background: white;
+    color: #1d1d1f;
+    border: 1px solid #d2d2d7;
+  }
+
+  select {
+    padding: 9px 10px;
+    border: 1px solid #d2d2d7;
+    border-radius: 8px;
+    background: white;
+  }
+
+  .readingToolbar {
+    display: none;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin: 18px 0;
+  }
+
+  .readingToolbar.show {
+    display: flex;
+  }
+
+  .toolbarGroup {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+
+  /* 阅读区：桌面双栏 */
+  #readerLayout {
+    display: none;
+    grid-template-columns: minmax(0, 1fr) 360px;
+    gap: 22px;
+    align-items: start;
+  }
+
+  #readerLayout.show {
+    display: grid;
+  }
+
+  #article {
+    background: white;
+    border-radius: 16px;
+    padding: 28px;
+    min-height: 360px;
+    font-size: 21px;
+    line-height: 2;
+    white-space: pre-wrap;
+    box-shadow: 0 2px 18px rgba(0,0,0,.05);
+  }
+
+  .word {
+    cursor: pointer;
+    padding: 1px 2px;
+    border-radius: 5px;
+    transition: .12s;
+  }
+
+  .word:hover {
+    background: #ececf0;
+  }
+
+  .word.active {
+    background: #fff0a8;
+  }
+
+  /* 桌面右侧释义卡：让右侧栏跟随当前屏幕，而不是被长文章甩在上方 */
+  #readerLayout > aside {
+    position: sticky;
+    top: 18px;
+    align-self: start;
+    max-height: calc(100vh - 36px);
+  }
+
+  #wordCard {
+    position: static;
+    background: #1d1d1f;
+    color: white;
+    border-radius: 16px;
+    padding: 20px;
+    display: none;
+    max-height: calc(100vh - 36px);
+    overflow-y: auto;
+    box-shadow: 0 12px 35px rgba(0,0,0,.18);
+  }
+
+  #wordCard.show {
+    display: block;
+  }
+
+  .cardHeader {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  .wordLine {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+
+  #currentWord {
+    font-size: 29px;
+    font-weight: 750;
+  }
+
+  #phonetic {
+    color: #b8b8bd;
+    font-size: 16px;
+  }
+
+  #closeCard {
+    width: 34px;
+    height: 34px;
+    padding: 0;
+    border-radius: 50%;
+    background: #353537;
+    font-size: 20px;
+    line-height: 34px;
+  }
+
+  #partOfSpeech {
+    display: inline-block;
+    margin-top: 10px;
+    padding: 4px 9px;
+    background: #454547;
+    color: #e6e6ea;
+    border-radius: 7px;
+    font-size: 13px;
+  }
+
+  #meaning {
+    margin-top: 15px;
+    font-size: 20px;
+    line-height: 1.55;
+  }
+
+  #ieltsBox {
+    margin-top: 16px;
+    padding: 14px;
+    background: #333335;
+    border-radius: 10px;
+    display: none;
+  }
+
+  #ieltsTitle {
+    color: #aaaab0;
+    font-size: 13px;
+    margin-bottom: 7px;
+  }
+
+  #ieltsText {
+    font-size: 15px;
+    line-height: 1.65;
+  }
+
+  .cardButtons {
+    margin-top: 15px;
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .cardButton {
+    background: white;
+    color: #1d1d1f;
+    padding: 8px 12px;
+  }
+
+  #dictionaryStatus {
+    margin-top: 14px;
+    color: #96969c;
+    font-size: 12px;
+  }
+
+  #emptySide {
+    color: #8e8e93;
+    font-size: 14px;
+    line-height: 1.6;
+    padding: 8px 4px;
+  }
+
+  /* 手机：底部弹窗，不占满屏 */
+  @media (max-width: 820px) {
+    .page {
+      padding: 20px 14px 100px;
+    }
+
+    h1 {
+      font-size: 30px;
+    }
+
+    #readerLayout,
+    #readerLayout.show {
+      display: block;
+    }
+
+    #article {
+      padding: 20px;
+      font-size: 19px;
+      line-height: 1.9;
+      min-height: 320px;
+    }
+
+    #emptySide {
+      display: none;
+    }
+
+    #readerLayout > aside {
+      position: static;
+      max-height: none;
+    }
+
+    #wordCard {
+      position: fixed;
+      left: 10px;
+      right: 10px;
+      bottom: 10px;
+      top: auto;
+      z-index: 9999;
+      max-height: 45vh;
+      border-radius: 16px;
+      padding: 18px;
+      box-shadow: 0 -8px 35px rgba(0,0,0,.28);
+    }
+
+    #currentWord {
+      font-size: 25px;
+    }
+
+    #meaning {
+      font-size: 18px;
+    }
+  }
+
+  .dictionaryPanel {
+    margin-bottom: 16px;
+    padding: 15px 16px;
+    border: 1px solid #d2d2d7;
+    border-radius: 13px;
+    background: #fff;
+  }
+
+  .dictionaryRow {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+
+  #dictImportStatus {
+    color: #6e6e73;
+    font-size: 14px;
+  }
+
+  .dictHint {
+    margin-top: 9px;
+    color: #8e8e93;
+    font-size: 13px;
+    line-height: 1.55;
+  }
+
+  .dictProgressWrap {
+    height: 7px;
+    margin-top: 12px;
+    border-radius: 999px;
+    background: #ececf0;
+    overflow: hidden;
+    display: none;
+  }
+
+  .dictProgressBar {
+    width: 0%;
+    height: 100%;
+    background: #1d1d1f;
+    transition: width .12s linear;
+  }
+
+  .dictStatusGrid {
+    margin-top: 10px;
+    display: grid;
+    gap: 5px;
+    color: #6e6e73;
+    font-size: 14px;
+  }
+
+  .searchPanel {
+    margin: 16px 0;
+    padding: 16px;
+    background: white;
+    border: 1px solid #d2d2d7;
+    border-radius: 13px;
+  }
+
+  .searchTitle {
+    font-size: 16px;
+    font-weight: 700;
+    margin-bottom: 10px;
+  }
+
+  .searchRow {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 10px;
+  }
+
+  #directSearchInput, .smallInput {
+    width: 100%;
+    padding: 11px 12px;
+    border: 1px solid #d2d2d7;
+    border-radius: 9px;
+    background: #fff;
+    font-size: 15px;
+    outline: none;
+  }
+
+  #directSearchInput:focus, .smallInput:focus {
+    border-color: #86868b;
+  }
+
+  .directSearchResult {
+    margin-top: 12px;
+    min-height: 30px;
+  }
+
+  .searchEmpty {
+    color: #8e8e93;
+    font-size: 14px;
+  }
+
+  .searchResultCard {
+    padding: 15px;
+    border-radius: 11px;
+    background: #f5f5f7;
+  }
+
+  .searchResultTop {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 9px;
+  }
+
+  .searchResultWord {
+    font-size: 25px;
+    font-weight: 750;
+  }
+
+  .searchResultPhonetic {
+    color: #77777c;
+  }
+
+  .searchResultPos {
+    margin-top: 8px;
+    display: inline-block;
+    padding: 3px 8px;
+    border-radius: 6px;
+    background: #e4e4e8;
+    font-size: 12px;
+  }
+
+  .searchResultMeaning {
+    margin-top: 10px;
+    line-height: 1.65;
+    font-size: 17px;
+    white-space: pre-line;
+  }
+
+  .searchResultMeta {
+    margin-top: 9px;
+    color: #8e8e93;
+    font-size: 12px;
+  }
+
+  .modalOverlay {
+    position: fixed;
+    inset: 0;
+    z-index: 20000;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    background: rgba(0,0,0,.38);
+    backdrop-filter: blur(3px);
+  }
+
+  .modalOverlay.show {
+    display: flex;
+  }
+
+  .modalCard {
+    width: min(820px, 100%);
+    max-height: 82vh;
+    overflow: auto;
+    padding: 20px;
+    border-radius: 16px;
+    background: #fff;
+    box-shadow: 0 20px 60px rgba(0,0,0,.25);
+  }
+
+  .modalHeader {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 14px;
+    margin-bottom: 16px;
+  }
+
+  .modalTitle {
+    font-size: 23px;
+    font-weight: 750;
+  }
+
+  .modalSub {
+    margin-top: 4px;
+    color: #77777c;
+    font-size: 13px;
+    line-height: 1.55;
+  }
+
+  .iconClose {
+    width: 36px;
+    height: 36px;
+    padding: 0;
+    border-radius: 50%;
+    background: #ececf0;
+    color: #1d1d1f;
+    font-size: 21px;
+  }
+
+  .modalActions {
+    display: grid;
+    grid-template-columns: 1fr auto auto;
+    gap: 9px;
+    margin-bottom: 14px;
+  }
+
+  .dangerButton {
+    background: #b42318;
+    color: white;
+  }
+
+  .vocabList {
+    display: grid;
+    gap: 8px;
+  }
+
+  .vocabItem {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 12px;
+    padding: 13px 14px;
+    border: 1px solid #e3e3e7;
+    border-radius: 10px;
+  }
+
+  .vocabWord {
+    font-weight: 750;
+    font-size: 17px;
+  }
+
+  .vocabMeaning {
+    margin-top: 4px;
+    color: #4f4f54;
+    font-size: 14px;
+    line-height: 1.5;
+  }
+
+  .vocabMeta {
+    margin-top: 5px;
+    color: #929297;
+    font-size: 12px;
+  }
+
+  .vocabRight {
+    text-align: right;
+    color: #6e6e73;
+    font-size: 13px;
+  }
+
+  .removeTiny {
+    margin-top: 6px;
+    padding: 5px 8px;
+    background: #ececf0;
+    color: #1d1d1f;
+    font-size: 12px;
+  }
+
+  .settingsGrid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+
+  .settingItem {
+    padding: 14px;
+    background: #f5f5f7;
+    border-radius: 10px;
+  }
+
+  .settingLabel {
+    color: #77777c;
+    font-size: 12px;
+  }
+
+  .settingValue {
+    margin-top: 6px;
+    font-size: 16px;
+    font-weight: 650;
+    line-height: 1.4;
+  }
+
+  .settingsButtons {
+    margin-top: 16px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 9px;
+  }
+
+  .settingsNote {
+    margin-top: 13px;
+    color: #8e8e93;
+    font-size: 12px;
+    line-height: 1.55;
+  }
+
+  @media (max-width: 680px) {
+    .searchRow {
+      grid-template-columns: 1fr;
+    }
+
+    .modalActions {
+      grid-template-columns: 1fr;
+    }
+
+    .settingsGrid {
+      grid-template-columns: 1fr;
+    }
+
+    .modalOverlay {
+      padding: 10px;
+      align-items: flex-end;
+    }
+
+    .modalCard {
+      max-height: 88vh;
+      border-radius: 16px 16px 10px 10px;
+    }
+  }
+
+
+  .topActions {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 9px;
+    margin: -8px 0 18px;
+  }
+
+  .versionBadge {
+    display: inline-flex;
+    align-items: center;
+    padding: 5px 9px;
+    border-radius: 999px;
+    background: #1d1d1f;
+    color: #fff;
+    font-size: 12px;
+    font-weight: 700;
+  }
+
+  .shortcutHint {
+    color: #8e8e93;
+    font-size: 12px;
+  }
+
+  .compactButton {
+    padding: 7px 10px;
+    font-size: 13px;
+  }
+
+  .searchInputWrap {
+    position: relative;
+    min-width: 0;
+  }
+
+  .searchSuggestions {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: calc(100% + 5px);
+    z-index: 15000;
+    display: none;
+    max-height: 300px;
+    overflow-y: auto;
+    border: 1px solid #d2d2d7;
+    border-radius: 10px;
+    background: #fff;
+    box-shadow: 0 12px 30px rgba(0,0,0,.14);
+  }
+
+  .searchSuggestions.show { display: block; }
+
+  .suggestionItem {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 12px;
+    cursor: pointer;
+    border-bottom: 1px solid #eeeeF2;
+  }
+
+  .suggestionItem:last-child { border-bottom: none; }
+  .suggestionItem:hover, .suggestionItem.active { background: #f3f3f6; }
+  .suggestionWord { font-weight: 700; }
+  .suggestionMeaning { color: #8e8e93; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 65%; }
+
+  .articleFindWrap {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+
+  .articleFindInput {
+    width: 180px;
+    padding: 8px 9px;
+    border: 1px solid #d2d2d7;
+    border-radius: 8px;
+    background: #fff;
+    outline: none;
+  }
+
+  .articleFindCount { min-width: 44px; color: #77777c; font-size: 12px; }
+  .word.findMatch { box-shadow: inset 0 -3px 0 #c8c8ce; }
+  .word.findCurrent { background: #ffd36a; box-shadow: 0 0 0 2px rgba(255,190,60,.25); }
+
+  .morphologyBox {
+    display: none;
+    margin-top: 14px;
+    padding: 12px;
+    border-radius: 10px;
+    background: #2d2d2f;
+  }
+
+  .morphologyBox.show { display: block; }
+  .morphologyTitle { color: #aaaab0; font-size: 12px; margin-bottom: 6px; }
+  .morphologyRelation { font-size: 15px; font-weight: 700; line-height: 1.5; }
+  .surfaceMeaning { margin-top: 7px; color: #dedee3; font-size: 13px; line-height: 1.55; white-space: pre-line; }
+  .exchangeList { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 5px; }
+  .exchangeChip { padding: 4px 7px; background: #454548; border-radius: 6px; font-size: 11px; color: #dedee3; }
+
+  .settingSubValue {
+    margin-top: 6px;
+    color: #8e8e93;
+    font-size: 12px;
+    line-height: 1.45;
+  }
+
+  .settingsSectionTitle {
+    margin-top: 18px;
+    margin-bottom: 8px;
+    font-size: 14px;
+    font-weight: 750;
+  }
+
+  .backupPanel {
+    padding: 13px;
+    border-radius: 10px;
+    background: #f5f5f7;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+  }
+
+  .backupStatus {
+    flex-basis: 100%;
+    color: #7d7d82;
+    font-size: 12px;
+    line-height: 1.55;
+  }
+
+  .changeVersion {
+    padding: 14px 0;
+    border-top: 1px solid #ececf0;
+  }
+
+  .changeVersion:first-of-type { border-top: none; }
+  .changeVersionTitle { font-size: 19px; font-weight: 800; }
+  .changeDate { margin-top: 3px; color: #8e8e93; font-size: 12px; }
+  .changeVersion ul { margin: 10px 0 0; padding-left: 20px; line-height: 1.7; }
+
+  @media (max-width: 820px) {
+    .articleFindWrap { width: 100%; }
+    .articleFindInput { flex: 1; width: auto; min-width: 150px; }
+  }
+
+
+  .backupPanelFinal {
+    display: grid;
+    gap: 12px;
+  }
+
+  .backupGroup {
+    padding: 14px;
+    border: 1px solid #e3e3e7;
+    border-radius: 11px;
+    background: #fff;
+  }
+
+  .backupGroupTitle {
+    font-size: 15px;
+    font-weight: 750;
+  }
+
+  .backupGroupHint {
+    margin-top: 4px;
+    color: #8e8e93;
+    font-size: 12px;
+    line-height: 1.55;
+  }
+
+  .backupButtonRow {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 9px;
+    margin-top: 10px;
+  }
+
+  .appFooter {
+    margin: 34px 0 0;
+    padding: 20px 10px 0;
+    border-top: 1px solid #dedee3;
+    text-align: center;
+  }
+
+  .footerMain {
+    color: #55555a;
+    font-size: 13px;
+    font-weight: 650;
+  }
+
+  .footerSub {
+    max-width: 760px;
+    margin: 7px auto 0;
+    color: #98989d;
+    font-size: 11px;
+    line-height: 1.55;
+  }
+
+  @media (max-width: 680px) {
+    .backupButtonRow {
+      display: grid;
+      grid-template-columns: 1fr;
+    }
+  }
+
+
+  .historyActions {
+    grid-template-columns: minmax(180px, 1fr) auto auto auto;
+  }
+
+  .historySortSelect {
+    padding: 10px 12px;
+    border: 1px solid #d2d2d7;
+    border-radius: 9px;
+    background: white;
+    font-size: 14px;
+  }
+
+  .querySourceMeta {
+    margin-top: 5px;
+    color: #8e8e93;
+    font-size: 12px;
+  }
+
+  .favoritesList {
+    display: grid;
+    gap: 12px;
+  }
+
+  .favoriteItem {
+    padding: 16px;
+    border: 1px solid #e1e1e6;
+    border-radius: 12px;
+    background: #fff;
+  }
+
+  .favoriteTop {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  .favoriteWord {
+    font-size: 19px;
+    font-weight: 750;
+  }
+
+  .favoritePhonetic {
+    margin-left: 7px;
+    color: #8e8e93;
+    font-size: 13px;
+    font-weight: 400;
+  }
+
+  .favoriteMeaning {
+    margin-top: 5px;
+    line-height: 1.55;
+    color: #414146;
+    font-size: 14px;
+  }
+
+  .favoriteSectionLabel {
+    margin-top: 13px;
+    margin-bottom: 5px;
+    font-size: 12px;
+    font-weight: 700;
+    color: #77777d;
+  }
+
+  .favoriteEditor {
+    width: 100%;
+    min-height: 64px;
+    resize: vertical;
+    padding: 10px 11px;
+    border: 1px solid #d7d7dc;
+    border-radius: 9px;
+    background: #fafafa;
+    font: inherit;
+    font-size: 14px;
+    line-height: 1.55;
+  }
+
+  .favoriteEditor.note {
+    min-height: 76px;
+  }
+
+  .favoriteBottom {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 10px;
+  }
+
+  .favoriteDate {
+    color: #9a9aa0;
+    font-size: 12px;
+  }
+
+  .favoriteSavedHint {
+    margin-left: 7px;
+    color: #3b7a57;
+    font-size: 12px;
+  }
+
+  .favoriteCardActive {
+    background: #fff3b0 !important;
+    color: #1d1d1f !important;
+  }
+
+  @media (max-width: 760px) {
+    .historyActions {
+      grid-template-columns: 1fr;
+    }
+
+    .favoriteActions {
+      grid-template-columns: 1fr;
+    }
+  }
+
+
+  .favoriteTopActions {
+    display: flex;
+    gap: 7px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .favoritePreviewBlock {
+    margin-top: 10px;
+    padding: 9px 11px;
+    border-radius: 9px;
+    background: #f7f7f9;
+  }
+
+  .favoritePreviewLabel {
+    margin-bottom: 4px;
+    color: #85858b;
+    font-size: 11px;
+    font-weight: 700;
+  }
+
+  .favoritePreviewText {
+    color: #444449;
+    font-size: 13px;
+    line-height: 1.55;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  .favoriteNotePreview {
+    background: #fffaf0;
+  }
+
+  .favoriteEditPanel {
+    display: none;
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid #e5e5e9;
+  }
+
+  .favoriteItem.editing .favoriteEditPanel {
+    display: block;
+  }
+
+  .favoriteItem.editing .favoritePreviewArea {
+    display: none;
+  }
+
+  .favoriteItem.editing .editFavoriteButton {
+    display: none;
+  }
+
+  .favoriteCancelEditButton {
+    display: none;
+  }
+
+  .favoriteItem.editing .favoriteCancelEditButton {
+    display: inline-block;
+  }
+
+  .favoriteItem {
+    padding: 13px 14px;
+  }
+
+  .favoriteMeaning {
+    margin-top: 3px;
+  }
+
+  .favoriteCompactBottom {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-top: 9px;
+  }
+
+  @media (max-width: 680px) {
+    .favoriteTop {
+      align-items: flex-start;
+    }
+
+    .favoriteTopActions {
+      max-width: 150px;
+    }
+  }
+
+  .favoriteFieldGrid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+
+  .favoriteInlineEditor {
+    width: 100%;
+    padding: 9px 10px;
+    border: 1px solid #d7d7dc;
+    border-radius: 8px;
+    background: #fafafa;
+    font: inherit;
+    font-size: 14px;
+    outline: none;
+  }
+
+  .favoriteInlineEditor:focus,
+  .favoriteEditor:focus {
+    border-color: #8e8e93;
+    background: #fff;
+  }
+
+  .meaningEditor {
+    min-height: 74px;
+  }
+
+  @media (max-width: 680px) {
+    .favoriteFieldGrid {
+      grid-template-columns: 1fr;
+    }
+  }
+
+
+  :root {
+    --app-bg: #f5f5f7;
+    --app-card: #ffffff;
+    --app-text: #1d1d1f;
+    --app-muted: #6e6e73;
+    --app-border: #d2d2d7;
+    --reader-font-size: 21px;
+    --reader-line-height: 2;
+  }
+
+  body {
+    background: var(--app-bg);
+    color: var(--app-text);
+  }
+
+  #article {
+    font-size: var(--reader-font-size);
+    line-height: var(--reader-line-height);
+  }
+
+  body.darkMode {
+    --app-bg: #121214;
+    --app-card: #1d1d20;
+    --app-text: #f4f4f5;
+    --app-muted: #b1b1b6;
+    --app-border: #3a3a3e;
+    background: var(--app-bg);
+    color: var(--app-text);
+  }
+
+  body.darkMode textarea,
+  body.darkMode .dictionaryPanel,
+  body.darkMode .searchPanel,
+  body.darkMode #article,
+  body.darkMode .modalCard,
+  body.darkMode .settingItem,
+  body.darkMode .backupGroup,
+  body.darkMode .favoriteItem,
+  body.darkMode .searchResultCard,
+  body.darkMode .favoriteInlineEditor,
+  body.darkMode .favoriteEditor,
+  body.darkMode .smallInput,
+  body.darkMode #directSearchInput,
+  body.darkMode select {
+    background: var(--app-card);
+    color: var(--app-text);
+    border-color: var(--app-border);
+  }
+
+  body.darkMode .description,
+  body.darkMode .dictHint,
+  body.darkMode .modalSub,
+  body.darkMode .settingSubValue,
+  body.darkMode .vocabMeta,
+  body.darkMode .querySourceMeta,
+  body.darkMode .favoriteDate {
+    color: var(--app-muted);
+  }
+
+  body.darkMode .word:hover { background: #343439; }
+  body.darkMode .word.active { background: #7a6825; }
+  body.darkMode .secondary { background: #2a2a2e; color: #f3f3f4; border-color: #46464b; }
+  body.darkMode .favoritePreviewBlock { background: #28282c; }
+  body.darkMode .favoritePreviewText { color: #e0e0e3; }
+  body.darkMode .favoriteNotePreview { background: #312d22; }
+
+  .textDropZone {
+    margin-top: 14px;
+    padding: 13px 16px;
+    border: 1.5px dashed #b8b8bd;
+    border-radius: 11px;
+    color: #77777c;
+    text-align: center;
+    transition: .15s ease;
+  }
+
+  .textDropZone.dragging {
+    border-color: #0071e3;
+    background: rgba(0,113,227,.07);
+    color: #0071e3;
+  }
+
+  .backupReminder {
+    display: none;
+    margin-top: 14px;
+    padding: 11px 13px;
+    border-radius: 10px;
+    background: #fff8df;
+    color: #66520d;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .backupReminder.show { display: flex; }
+
+  .settingsSelect {
+    width: 100%;
+    margin-top: 7px;
+    padding: 9px 10px;
+    border: 1px solid #d2d2d7;
+    border-radius: 8px;
+    background: white;
+  }
+
+  .compactSelect {
+    width: auto;
+    min-width: 225px;
+    margin-top: 0;
+  }
+
+  .smallModalCard { width: min(620px, 100%); }
+
+  .favoriteBadgeRow {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    margin-top: 7px;
+  }
+
+  .masterBadge, .tagBadge {
+    display: inline-flex;
+    align-items: center;
+    padding: 3px 7px;
+    border-radius: 999px;
+    background: #eeeeF1;
+    color: #66666b;
+    font-size: 11px;
+  }
+
+  .masterBadge.mastered {
+    background: #e4f6e9;
+    color: #22733b;
+  }
+
+  .favoriteMetaGrid { align-items: end; }
+
+  .masterToggle {
+    min-height: 58px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px;
+    border: 1px solid #d7d7dc;
+    border-radius: 9px;
+    background: #fafafa;
+    font-size: 14px;
+  }
+
+  .helpSteps {
+    display: grid;
+    gap: 9px;
+  }
+
+  .helpStep {
+    display: grid;
+    grid-template-columns: 145px 1fr;
+    gap: 10px;
+    padding: 12px 13px;
+    border-radius: 10px;
+    background: #f5f5f7;
+    line-height: 1.55;
+    font-size: 14px;
+  }
+
+  .shortcutBox {
+    margin-top: 16px;
+    display: grid;
+    gap: 7px;
+    padding: 14px;
+    border-radius: 10px;
+    background: #1d1d1f;
+    color: white;
+    font-size: 13px;
+  }
+
+  #readingProgress {
+    position: fixed;
+    left: 0;
+    top: 0;
+    z-index: 30000;
+    height: 3px;
+    width: 0%;
+    background: #0071e3;
+    pointer-events: none;
+  }
+
+  #backToTop {
+    position: fixed;
+    right: 18px;
+    bottom: 18px;
+    z-index: 15000;
+    display: none;
+    width: 42px;
+    height: 42px;
+    padding: 0;
+    border-radius: 50%;
+    box-shadow: 0 6px 20px rgba(0,0,0,.15);
+  }
+
+  #backToTop.show { display: block; }
+
+  @media (max-width: 680px) {
+    .helpStep { grid-template-columns: 1fr; }
+    .compactSelect { width: 100%; }
+  }
+
+
+  /* =========================
+     V0.5.2 Stable Patch 2
+     Dark-mode consistency polish
+     ========================= */
+
+  body.darkMode .helpStep {
+    background: #28282c;
+    color: #f1f1f3;
+    border: 1px solid #37373c;
+  }
+
+  body.darkMode .helpStep b {
+    color: #ffffff;
+  }
+
+  body.darkMode .shortcutBox {
+    background: #111113;
+    color: #f4f4f5;
+    border: 1px solid #343438;
+  }
+
+  body.darkMode .searchSuggestions {
+    background: #232326;
+    border-color: #3a3a3f;
+    box-shadow: 0 14px 36px rgba(0,0,0,.42);
+  }
+
+  body.darkMode .suggestionItem {
+    color: #f1f1f3;
+    border-bottom-color: #36363a;
+  }
+
+  body.darkMode .suggestionItem:hover,
+  body.darkMode .suggestionItem.active {
+    background: #323237;
+  }
+
+  body.darkMode .suggestionMeaning,
+  body.darkMode .searchResultPhonetic,
+  body.darkMode .searchResultMeta,
+  body.darkMode .articleFindCount,
+  body.darkMode .settingLabel,
+  body.darkMode .backupStatus,
+  body.darkMode .backupGroupHint,
+  body.darkMode .favoritePhonetic,
+  body.darkMode .favoriteSectionLabel,
+  body.darkMode .shortcutHint,
+  body.darkMode .changeDate {
+    color: #aaaab0;
+  }
+
+  body.darkMode .favoriteMeaning {
+    color: #e6e6e9;
+  }
+
+  body.darkMode .articleFindInput,
+  body.darkMode .historySortSelect {
+    background: #242428;
+    color: #f4f4f5;
+    border-color: #414147;
+  }
+
+  body.darkMode .articleFindInput::placeholder,
+  body.darkMode input::placeholder,
+  body.darkMode textarea::placeholder {
+    color: #77777e;
+  }
+
+  body.darkMode .searchResultPos {
+    background: #36363b;
+    color: #e7e7ea;
+  }
+
+  body.darkMode .iconClose {
+    background: #343438;
+    color: #f4f4f5;
+  }
+
+  body.darkMode .iconClose:hover {
+    background: #424247;
+  }
+
+  body.darkMode .removeTiny {
+    background: #303034;
+    color: #eeeeF1;
+  }
+
+  body.darkMode .backupPanel {
+    background: #242428;
+  }
+
+  body.darkMode .backupGroup {
+    background: #232326;
+    border-color: #39393e;
+  }
+
+  body.darkMode .changeVersion {
+    border-top-color: #38383d;
+  }
+
+  body.darkMode .appFooter {
+    border-top-color: #343438;
+  }
+
+  body.darkMode .footerMain {
+    color: #c9c9ce;
+  }
+
+  body.darkMode .footerSub {
+    color: #8f8f96;
+  }
+
+  body.darkMode .favoriteCardActive {
+    background: #665619 !important;
+    color: #ffffff !important;
+  }
+
+  body.darkMode .masterBadge,
+  body.darkMode .tagBadge {
+    background: #343438;
+    color: #d8d8dc;
+  }
+
+  body.darkMode .masterBadge.mastered {
+    background: #21472c;
+    color: #bcebc8;
+  }
+
+  body.darkMode .masterToggle {
+    background: #26262a;
+    color: #eeeeF1;
+    border-color: #404046;
+  }
+
+  body.darkMode .backupReminder {
+    background: #3b3218;
+    color: #f0df9a;
+    border: 1px solid #5a4b22;
+  }
+
+  body.darkMode .textDropZone {
+    color: #aaaab0;
+    border-color: #4a4a50;
+  }
+
+  body.darkMode .textDropZone.dragging {
+    color: #7fbcff;
+    border-color: #398fe8;
+    background: rgba(50,143,232,.12);
+  }
+
+  body.darkMode .dictProgressWrap {
+    background: #35353a;
+  }
+
+  body.darkMode .dictProgressBar {
+    background: #4aa3ff;
+  }
+
+  body.darkMode .word.findMatch {
+    box-shadow: inset 0 -3px 0 #66666d;
+  }
+
+  body.darkMode .word.findCurrent {
+    background: #695719;
+    color: #ffffff;
+    box-shadow: 0 0 0 2px rgba(236,190,73,.22);
+  }
+
+  body.darkMode .favoritePreviewBlock {
+    border-color: #38383d;
+  }
+
+  body.darkMode .favoriteNotePreview {
+    color: #ded5b9;
+  }
+
+  body.darkMode .settingsSelect,
+  body.darkMode .favoriteInlineEditor,
+  body.darkMode .favoriteEditor {
+    box-shadow: none;
+  }
+
+
+  /* =========================
+     V0.5.2 Stable Patch 2
+     Interaction polish
+     ========================= */
+
+  .textDropZone {
+    min-height: 180px;
+    padding: 32px 22px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    cursor: pointer;
+    user-select: none;
+    outline: none;
+  }
+
+  .textDropZone:hover,
+  .textDropZone:focus-visible {
+    border-color: #0071e3;
+    background: rgba(0, 113, 227, .045);
+  }
+
+  .textDropZone.dragging {
+    transform: scale(1.006);
+    border-color: #0071e3;
+    background: rgba(0,113,227,.075);
+    box-shadow: 0 0 0 4px rgba(0,113,227,.08);
+  }
+
+  .dropZoneIcon {
+    font-size: 32px;
+    line-height: 1;
+    margin-bottom: 3px;
+  }
+
+  .dropZoneTitle {
+    font-size: 17px;
+    font-weight: 750;
+    color: #333336;
+  }
+
+  .dropZoneHint {
+    font-size: 14px;
+    color: #66666b;
+  }
+
+  .dropZoneSub {
+    margin-top: 2px;
+    font-size: 12px;
+    color: #99999f;
+  }
+
+  body.darkMode .dropZoneTitle { color: #f1f1f3; }
+  body.darkMode .dropZoneHint { color: #b7b7bd; }
+  body.darkMode .dropZoneSub { color: #85858c; }
+
+  .favoriteSpeakButton,
+  .historySpeakButton {
+    white-space: nowrap;
+  }
+
+  .historyItemActions {
+    margin-top: 7px;
+    display: flex;
+    justify-content: flex-end;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+
+  .favoriteWord,
+  .vocabWord,
+  .searchResultWord,
+  #selectedWord {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  .favoritePreviewText,
+  .favoriteMeaning,
+  .vocabMeaning,
+  .querySourceMeta,
+  .favoriteNotePreview {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  .modalCard {
+    max-height: min(88vh, 900px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  .modalHeader {
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    background: var(--app-card, #fff);
+    padding-top: 2px;
+    padding-bottom: 10px;
+  }
+
+  body.darkMode .modalHeader {
+    background: var(--app-card);
+  }
+
+  .favoriteActions,
+  .historyActions,
+  .modalActions {
+    align-items: center;
+  }
+
+  .favoriteActions select,
+  .historyActions select {
+    min-height: 38px;
+  }
+
+  .backupGroupHint {
+    line-height: 1.65;
+  }
+
+  @media (max-width: 680px) {
+    .textDropZone {
+      min-height: 150px;
+      padding: 25px 16px;
+    }
+
+    .modalCard {
+      max-height: 92vh;
+    }
+
+    .favoriteTopActions {
+      max-width: none;
+    }
+  }
+
+</style>
+</head>
+
+<body>
+<div class="page">
+
+  <h1>英语点读阅读器</h1>
+  <div class="description">
+    V0.5.2 Stable Patch 2：稳定版：智能合并备份、阅读显示设置、快捷键、收藏标签/掌握状态、拖拽导入与帮助中心。
+  </div>
+
+  <div class="topActions">
+    <span class="versionBadge">V0.5.2 Stable Patch 2</span>
+    <button class="secondary compactButton" onclick="openChangelog()">📝 更新日志</button>
+    <span class="shortcutHint">⌘/Ctrl + K 快速查词</span>
+  </div>
+
+  <section id="inputPanel">
+
+    <div class="dictionaryPanel">
+      <div class="dictionaryRow">
+        <button class="secondary" type="button"
+                onclick="document.getElementById('dictFileInput').click()">
+          📚 导入 / 更新 ECDICT
+        </button>
+
+        <button class="secondary" type="button"
+                onclick="document.getElementById('lemmaFileInput').click()">
+          🔤 导入词形库 lemma
+        </button>
+
+        <button class="secondary" type="button" onclick="openSettings()">
+          ⚙️ 词库设置
+        </button>
+
+        <button class="secondary" type="button" onclick="openVocabBook()">
+          🕘 查询记录 <span id="vocabCountBadge"></span>
+        </button>
+
+        <button class="secondary" type="button" onclick="openFavorites()">
+          ⭐ 我的收藏 <span id="favoriteCountBadge"></span>
+        </button>
+
+        <button class="secondary" type="button" onclick="openHelp()">
+          ❓ 一分钟上手
+        </button>
+
+        <input type="file" id="dictFileInput" accept=".csv,text/csv" hidden>
+        <input type="file" id="lemmaFileInput" accept=".txt,text/plain" hidden>
+      </div>
+
+      <div class="dictStatusGrid">
+        <div id="dictImportStatus">正在检查 ECDICT…</div>
+        <div id="lemmaImportStatus">正在检查词形库…</div>
+      </div>
+
+      <div id="dictProgressWrap" class="dictProgressWrap">
+        <div id="dictProgressBar" class="dictProgressBar"></div>
+      </div>
+
+      <div class="dictHint">
+        第一次使用：先导入 <b>ecdict.csv</b>，再导入 <b>lemma.en.txt</b>。
+        两者导入后都保存在浏览器本地，日常查词无需联网。
+      </div>
+    </div>
+
+    <div class="searchPanel">
+      <div class="searchTitle">直接查词</div>
+      <div class="searchRow searchRowWithSuggest">
+        <div class="searchInputWrap">
+          <input id="directSearchInput" type="text"
+                 placeholder="输入单词，例如：gave / better / environment"
+                 autocomplete="off">
+          <div id="searchSuggestions" class="searchSuggestions"></div>
+        </div>
+        <button onclick="directSearch()">查询</button>
+      </div>
+
+      <div id="directSearchResult" class="directSearchResult">
+        <div class="searchEmpty">不用粘贴文章，也可以直接查词。</div>
+      </div>
+    </div>
+
+    <textarea id="inputText" placeholder="把英文文章粘贴到这里……
+
+Example:
+
+I felt nervous when I asked my friends for advice, but their suggestions helped me solve the problem."></textarea>
+
+    <div id="textDropZone" class="textDropZone" role="button" tabindex="0"
+         aria-label="拖拽或点击选择 TXT 文件">
+      <div class="dropZoneIcon">📄</div>
+      <div class="dropZoneTitle">拖拽 TXT 文件到这里</div>
+      <div class="dropZoneHint">或点击此区域选择文件</div>
+      <div class="dropZoneSub">载入完成后，再点击“生成可点击文章”</div>
+    </div>
+
+    <div class="controls">
+      <button onclick="generateArticle()">生成可点击文章</button>
+      <input type="file" id="fileInput" accept=".txt,text/plain">
+    </div>
+
+    <div id="backupReminder" class="backupReminder">
+      <span>💾 你的学习数据已经有一段时间没有备份。</span>
+      <button class="secondary compactButton" onclick="openSettings()">现在备份</button>
+      <button class="secondary compactButton" onclick="dismissBackupReminder()">今天不提醒</button>
+    </div>
+  </section>
+
+  <div id="readingToolbar" class="readingToolbar">
+    <div class="toolbarGroup">
+      <button class="secondary" onclick="editArticle()">← 重新编辑文章</button>
+      <button class="secondary" onclick="openVocabBook()">🕘 查询记录 <span id="vocabCountBadgeToolbar"></span></button>
+      <button class="secondary" onclick="openFavorites()">⭐ 我的收藏 <span id="favoriteCountBadgeToolbar"></span></button>
+      <button class="secondary" onclick="openSettings()">⚙️ 设置</button>
+      <button class="secondary" onclick="openChangelog()">📝 更新日志</button>
+    </div>
+
+    <div class="articleFindWrap">
+      <input id="articleFindInput" class="articleFindInput" type="text"
+             placeholder="在原文中找词…" autocomplete="off">
+      <span id="articleFindCount" class="articleFindCount"></span>
+      <button class="secondary compactButton" onclick="jumpArticleMatch(-1)">↑</button>
+      <button class="secondary compactButton" onclick="jumpArticleMatch(1)">↓</button>
+    </div>
+
+    <div class="toolbarGroup">
+      <label>
+        语速：
+        <select id="speed">
+          <option value="0.7">慢</option>
+          <option value="0.85">稍慢</option>
+          <option value="1" selected>正常</option>
+          <option value="1.15">稍快</option>
+        </select>
+      </label>
+
+      <label>
+        英语声音：
+        <select id="voiceSelect">
+          <option value="">自动选择</option>
+        </select>
+      </label>
+
+      <button class="secondary compactButton" onclick="openReadingSettings()">Aa 阅读显示</button>
+      <button class="secondary compactButton" onclick="openHelp()">❓ 帮助</button>
+    </div>
+  </div>
+
+  <main id="readerLayout">
+    <article id="article"></article>
+
+    <aside>
+      <div id="emptySide">
+        点击原文中的任意英文单词，释义会显示在这里。
+      </div>
+
+      <div id="wordCard">
+        <div class="cardHeader">
+          <div>
+            <div class="wordLine">
+              <span id="currentWord">word</span>
+              <span id="phonetic"></span>
+            </div>
+            <div id="partOfSpeech"></div>
+          </div>
+
+          <button id="closeCard" onclick="closeWordCard()" title="关闭">×</button>
+        </div>
+
+        <div id="meaning"></div>
+
+        <div id="morphologyBox" class="morphologyBox">
+          <div class="morphologyTitle">词形关系</div>
+          <div id="morphologyRelation" class="morphologyRelation"></div>
+          <div id="surfaceMeaning" class="surfaceMeaning"></div>
+          <div id="exchangeList" class="exchangeList"></div>
+        </div>
+
+        <div id="ieltsBox">
+          <div id="ieltsTitle">IELTS 雅思提示</div>
+          <div id="ieltsText"></div>
+        </div>
+
+        <div class="cardButtons">
+          <button class="cardButton" onclick="repeatCurrentWord()">🔊 再听一次</button>
+          <button id="favoriteCurrentButton" class="cardButton" onclick="toggleCurrentFavorite()">☆ 收藏</button>
+        </div>
+
+        <div id="dictionaryStatus"></div>
+      </div>
+    </aside>
+  </main>
+
+
+  <div id="readingProgress"></div>
+  <button id="backToTop" onclick="window.scrollTo({top:0, behavior:'smooth'})" title="回到顶部">↑</button>
+
+  <footer class="appFooter">
+    <div class="footerMain">English Reader © 2026 Timbo. All Rights Reserved.</div>
+    <div class="footerSub">
+      Designed & Developed by Timbo.<br>
+      Special Thanks to Jane. Z — Testing, Bug Reports &amp; Product Feedback.<br>
+      Dictionary data uses the third-party ECDICT dataset; dictionary-data rights remain with
+      the original project and respective data sources.
+    </div>
+  </footer>
+
+  <!-- 查询记录 -->
+  <div id="vocabModal" class="modalOverlay" onclick="modalBackdropClose(event, 'vocabModal')">
+    <div class="modalCard">
+      <div class="modalHeader">
+        <div>
+          <div class="modalTitle">🕘 查询记录</div>
+          <div class="modalSub">文章点击和搜索框查询都会自动留痕；这里不代表你已经决定收藏或学习这个词。</div>
+        </div>
+        <button class="iconClose" onclick="closeModal('vocabModal')">×</button>
+      </div>
+
+      <div class="modalActions historyActions">
+        <input id="vocabFilterInput" class="smallInput" type="text"
+               placeholder="筛选查询记录…" oninput="renderVocabBook()">
+
+        <select id="vocabSortSelect" class="historySortSelect" onchange="renderVocabBook()">
+          <option value="recent" selected>最近查询</option>
+          <option value="high">高频查询</option>
+          <option value="earliest">最早遇到</option>
+          <option value="az">A–Z</option>
+        </select>
+
+        <button class="secondary" onclick="exportVocabCSV()">导出 CSV</button>
+        <button class="dangerButton" onclick="clearVocabBook()">清空查询记录</button>
+      </div>
+
+      <div id="vocabList" class="vocabList"></div>
+    </div>
+  </div>
+
+  <!-- 我的收藏 -->
+  <div id="favoritesModal" class="modalOverlay" onclick="modalBackdropClose(event, 'favoritesModal')">
+    <div class="modalCard favoritesModalCard">
+      <div class="modalHeader">
+        <div>
+          <div class="modalTitle">⭐ 我的收藏</div>
+          <div class="modalSub">只有你主动点“收藏”的单词才会进入这里。上下文句子和个人备注都可以自己修改。</div>
+        </div>
+        <button class="iconClose" onclick="closeModal('favoritesModal')">×</button>
+      </div>
+
+      <div class="modalActions favoriteActions">
+        <input id="favoriteFilterInput" class="smallInput" type="text"
+               placeholder="筛选收藏…" oninput="renderFavorites()">
+        <select id="favoriteSortSelect" class="historySortSelect" onchange="renderFavorites()">
+          <option value="recent" selected>最近收藏</option>
+          <option value="az">A–Z</option>
+          <option value="mastered">已掌握优先</option>
+          <option value="learning">未掌握优先</option>
+        </select>
+
+        <select id="favoriteMasterFilter" class="historySortSelect" onchange="renderFavorites()">
+          <option value="all" selected>全部状态</option>
+          <option value="learning">学习中</option>
+          <option value="mastered">已掌握</option>
+        </select>
+
+        <button class="secondary" onclick="exportFavoritesCSV()">导出 CSV</button>
+      </div>
+
+      <div id="favoritesList" class="favoritesList"></div>
+    </div>
+  </div>
+
+  <!-- 设置 -->
+  <div id="settingsModal" class="modalOverlay" onclick="modalBackdropClose(event, 'settingsModal')">
+    <div class="modalCard">
+      <div class="modalHeader">
+        <div>
+          <div class="modalTitle">⚙️ 词库与存储设置</div>
+          <div class="modalSub">查看本地词库状态、占用空间，或删除重新导入。</div>
+        </div>
+        <button class="iconClose" onclick="closeModal('settingsModal')">×</button>
+      </div>
+
+      <div class="settingsGrid">
+        <div class="settingItem">
+          <div class="settingLabel">当前版本</div>
+          <div class="settingValue">V0.5.2 Stable Patch 2</div>
+        </div>
+
+        <div class="settingItem">
+          <div class="settingLabel">作者</div>
+          <div class="settingValue">Timbo</div>
+          <div class="settingSubValue">English Reader 项目作者</div>
+        </div>
+
+        <div class="settingItem">
+          <div class="settingLabel">ECDICT 状态</div>
+          <div id="settingsDictStatus" class="settingValue">检查中…</div>
+          <div id="settingsDictSize" class="settingSubValue">大小：待统计</div>
+        </div>
+
+        <div class="settingItem">
+          <div class="settingLabel">Lemma 词形库</div>
+          <div id="settingsLemmaStatus" class="settingValue">检查中…</div>
+          <div id="settingsLemmaSize" class="settingSubValue">大小：待统计</div>
+        </div>
+
+        <div class="settingItem">
+          <div class="settingLabel">查询记录</div>
+          <div id="settingsVocabCount" class="settingValue">0</div>
+          <div id="settingsVocabSize" class="settingSubValue">大小：计算中…</div>
+        </div>
+
+        <div class="settingItem">
+          <div class="settingLabel">我的收藏</div>
+          <div id="settingsFavoriteCount" class="settingValue">0</div>
+          <div id="settingsFavoriteSize" class="settingSubValue">大小：计算中…</div>
+        </div>
+
+        <div class="settingItem">
+          <div class="settingLabel">浏览器当前站点存储</div>
+          <div id="settingsStorage" class="settingValue">检查中…</div>
+          <div class="settingSubValue">这是浏览器给当前本地页面分配/使用的总存储，不是内存。</div>
+        </div>
+
+        <div class="settingItem">
+          <div class="settingLabel">词库存储明细</div>
+          <div id="storageScanStatus" class="settingValue">尚未扫描</div>
+          <div id="settingsKnownTotal" class="settingSubValue">已知数据合计：待统计</div>
+          <div id="settingsStorageOverhead" class="settingSubValue">数据库开销 / 其他：待统计</div>
+          <button class="secondary compactButton" onclick="scanStorageBreakdown()">计算明细</button>
+        </div>
+      </div>
+
+      <div class="settingsSectionTitle">阅读显示</div>
+      <div class="settingsGrid">
+        <div class="settingItem">
+          <div class="settingLabel">字体大小</div>
+          <select id="readerFontSize" class="settingsSelect" onchange="saveReadingPreferences()">
+            <option value="18">18px</option>
+            <option value="20">20px</option>
+            <option value="21" selected>21px（默认）</option>
+            <option value="23">23px</option>
+            <option value="25">25px</option>
+          </select>
+        </div>
+
+        <div class="settingItem">
+          <div class="settingLabel">行距</div>
+          <select id="readerLineHeight" class="settingsSelect" onchange="saveReadingPreferences()">
+            <option value="1.65">紧凑</option>
+            <option value="1.85">适中</option>
+            <option value="2" selected>默认</option>
+            <option value="2.2">宽松</option>
+            <option value="2.4">很宽松</option>
+          </select>
+        </div>
+
+        <div class="settingItem">
+          <div class="settingLabel">外观</div>
+          <select id="appearanceMode" class="settingsSelect" onchange="saveReadingPreferences()">
+            <option value="system">跟随系统</option>
+            <option value="light">浅色</option>
+            <option value="dark">深色</option>
+          </select>
+        </div>
+
+        <div class="settingItem">
+          <div class="settingLabel">快捷键</div>
+          <div class="settingSubValue">Ctrl/⌘ + K：查词 · Ctrl/⌘ + F：原文找词 · Esc：关闭弹窗</div>
+          <button class="secondary compactButton" onclick="openHelp()">查看帮助</button>
+        </div>
+      </div>
+
+      <div class="settingsSectionTitle">数据迁移与备份</div>
+      <div class="backupPanel backupPanelFinal">
+        <div class="backupGroup">
+          <div class="backupGroupTitle">学习数据</div>
+          <div class="backupGroupHint">包含查询记录、我的收藏（含自定义释义与备注）和少量偏好设置，文件很小。</div>
+          <div class="backupButtonRow">
+            <button class="secondary" onclick="exportLearningBackup()">导出学习数据</button>
+            <button class="secondary" onclick="document.getElementById('learningBackupFileInput').click()">导入学习数据</button>
+
+            <select id="learningImportMode" class="settingsSelect compactSelect">
+              <option value="merge" selected>导入方式：智能合并（推荐）</option>
+              <option value="preview">导入方式：预览后合并</option>
+              <option value="overwrite">导入方式：完全覆盖</option>
+            </select>
+          </div>
+
+          <div class="backupGroupHint">
+            V0.5.2 起的新查询会按唯一事件 ID 精确去重；A→B→A 来回同步时，同一批查询不会重复累加。V0.5.1 及更早的既有历史首次升级时会作为一个历史基线保留。
+          </div>
+        </div>
+
+        <div class="backupGroup">
+          <div class="backupGroupTitle">完整备份</div>
+          <div class="backupGroupHint">包含 ECDICT、Lemma、查询记录和我的收藏，适合整套迁移或灾难恢复。注意：导入完整备份属于“整套恢复”，会覆盖当前数据，不做智能合并。</div>
+          <div class="backupButtonRow">
+            <button class="secondary" onclick="exportFullBackup()">导出完整备份</button>
+            <button class="secondary" onclick="document.getElementById('fullBackupFileInput').click()">导入完整备份</button>
+          </div>
+        </div>
+
+        <input id="learningBackupFileInput" type="file" accept=".json,application/json" hidden>
+        <input id="fullBackupFileInput" type="file" accept=".erbackup,.txt" hidden>
+
+        <div id="backupStatus" class="backupStatus">
+          日常跨电脑同步优先用“学习数据 → 智能合并”；只有要连离线词库一起恢复时，才使用会整体覆盖的“完整备份”。
+        </div>
+      </div>
+
+      <div class="settingsSectionTitle">词库管理</div>
+      <div class="settingsButtons">
+        <button class="secondary"
+                onclick="closeModal('settingsModal'); document.getElementById('dictFileInput').click();">
+          重新导入 ECDICT
+        </button>
+
+        <button class="secondary"
+                onclick="closeModal('settingsModal'); document.getElementById('lemmaFileInput').click();">
+          重新导入 Lemma
+        </button>
+
+        <button class="dangerButton" onclick="deleteECDICTOnly()">删除 ECDICT</button>
+        <button class="dangerButton" onclick="deleteLemmaOnly()">删除 Lemma</button>
+        <button class="dangerButton" onclick="deleteAllLocalDictionary()">删除全部本地词库</button>
+      </div>
+
+      <div class="settingsNote">
+        删除词库不会删除 HTML 文件。跨电脑迁移时，“学习数据”和“完整备份”请使用各自对应的导出/导入按钮。
+      </div>
+    </div>
+  </div>
+
+  <!-- 阅读显示 -->
+  <div id="readingSettingsModal" class="modalOverlay" onclick="modalBackdropClose(event, 'readingSettingsModal')">
+    <div class="modalCard smallModalCard">
+      <div class="modalHeader">
+        <div>
+          <div class="modalTitle">Aa 阅读显示</div>
+          <div class="modalSub">这里只改变阅读体验，不影响你的词库和学习数据。</div>
+        </div>
+        <button class="iconClose" onclick="closeModal('readingSettingsModal')">×</button>
+      </div>
+
+      <div class="settingsGrid">
+        <div class="settingItem">
+          <div class="settingLabel">字体大小</div>
+          <select id="readerFontSizeQuick" class="settingsSelect" onchange="syncQuickReadingSetting('font', this.value)">
+            <option value="18">18px</option><option value="20">20px</option>
+            <option value="21">21px</option><option value="23">23px</option><option value="25">25px</option>
+          </select>
+        </div>
+
+        <div class="settingItem">
+          <div class="settingLabel">行距</div>
+          <select id="readerLineHeightQuick" class="settingsSelect" onchange="syncQuickReadingSetting('line', this.value)">
+            <option value="1.65">紧凑</option><option value="1.85">适中</option>
+            <option value="2">默认</option><option value="2.2">宽松</option><option value="2.4">很宽松</option>
+          </select>
+        </div>
+
+        <div class="settingItem">
+          <div class="settingLabel">外观</div>
+          <select id="appearanceModeQuick" class="settingsSelect" onchange="syncQuickReadingSetting('appearance', this.value)">
+            <option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option>
+          </select>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 帮助中心 -->
+  <div id="helpModal" class="modalOverlay" onclick="modalBackdropClose(event, 'helpModal')">
+    <div class="modalCard">
+      <div class="modalHeader">
+        <div>
+          <div class="modalTitle">❓ 一分钟上手</div>
+          <div class="modalSub">English Reader V0.5.2 Stable Patch 2</div>
+        </div>
+        <button class="iconClose" onclick="closeModal('helpModal')">×</button>
+      </div>
+
+      <div class="helpSteps">
+        <div class="helpStep"><b>1. 首次准备</b><span>导入 ECDICT，再导入 lemma.en.txt；以后通常不用重复导入。</span></div>
+        <div class="helpStep"><b>2. 开始阅读</b><span>粘贴英文或拖入 TXT → 生成文章 → 点击不会的词。</span></div>
+        <div class="helpStep"><b>3. 查询 ≠ 收藏</b><span>点词只进入“查询记录”；真正想学的词再手动点“☆ 收藏”。</span></div>
+        <div class="helpStep"><b>4. 收藏可自定义</b><span>词库没有也能收藏；释义、词性、标签、上下文和备注都能自己改。</span></div>
+        <div class="helpStep"><b>5. 换电脑</b><span>导出“学习数据”，另一台电脑选择“智能合并”。V0.5.2 起产生的同一查询事件不会重复累计。</span></div>
+        <div class="helpStep"><b>6. 听发音</b><span>阅读释义卡、我的收藏和查询记录都可以直接点击“🔊”朗读单词。</span></div>
+        <div class="helpStep"><b>7. 导入 TXT</b><span>把 TXT 拖进大区域，或者直接点击该区域选择文件；载入后再生成文章。</span></div>
+      </div>
+
+      <div class="shortcutBox">
+        <b>快捷键</b>
+        <span>Ctrl/⌘ + K：直接查词</span>
+        <span>Ctrl/⌘ + F：阅读时定位原文搜索</span>
+        <span>Esc：关闭弹窗 / 释义卡</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- 更新日志 -->
+  <div id="changelogModal" class="modalOverlay" onclick="modalBackdropClose(event, 'changelogModal')">
+    <div class="modalCard changelogCard">
+      <div class="modalHeader">
+        <div>
+          <div class="modalTitle">📝 更新日志</div>
+          <div class="modalSub">记录每个版本真正改了什么，方便以后继续迭代。</div>
+        </div>
+        <button class="iconClose" onclick="closeModal('changelogModal')">×</button>
+      </div>
+
+      <div class="changeVersion">
+          <div class="changeVersionTitle">V0.5.2 Stable Patch 2</div>
+          <div class="changeDate">2026-08-11</div>
+          <ul>
+            <li>深色模式完整打磨：修复“一分钟上手”白色卡片及文字对比问题。</li>
+            <li>统一修复搜索候选、原文搜索框、收藏标签/掌握状态、备份区域、弹窗关闭按钮等深色显示。</li>
+            <li>修复深色模式下词典导入进度条对比度不足的问题。</li>
+            <li>智能合并说明更严谨：V0.5.2 起的新查询按唯一事件 ID 精确去重，旧历史作为基线保留。</li>
+            <li>TXT 拖拽提示明确为“先载入，再生成文章”，避免操作误解。</li>
+            <li>旧版学习备份增加稳定内容签名：同一个旧备份即使复制或改名，也不会被重复当成两份历史基线。</li>
+            <li>完整备份文案明确为“整套恢复/覆盖”，避免和日常智能合并同步混淆。</li>
+          </ul>
+        </div>
+
+        <div class="changeVersion">
+        <div class="changeVersionTitle">V0.5.1</div>
+        <div class="changeDate">体验与数据安全升级</div>
+        <ul>
+          <li>词形还原展示：明确显示原形、当前词形释义和词形变化。</li>
+          <li>搜索增强：输入即提示、方向键选择、回车查询、⌘/Ctrl + K 快速聚焦。</li>
+          <li>原文全文定位：查找文章中的单词，并在命中位置之间跳转。</li>
+          <li>查询记录：文章点击和搜索自动留痕，并支持最近/高频/最早/A–Z 排序。</li>
+          <li>数据迁移：支持学习数据备份，以及包含词库的完整备份与恢复。</li>
+          <li>存储明细：可分别估算 ECDICT、Lemma、查询记录和收藏的本地数据大小。</li>
+          <li>稳定性收尾：优化连续点词朗读，减少 Chrome / Windows 偶发“点了不读”的情况。</li>
+          <li>搜索排序：优先展示 IELTS、四六级、常用正常词，降低缩写、人名、医学冷门词的排序。</li>
+          <li>存储说明：增加“已知数据合计”和“数据库开销 / 其他”的估算。</li>
+          <li>备份界面收尾：学习数据与完整备份的导入/导出按钮明确分组，减少误操作。</li>
+          <li>项目署名：正式加入作者 Timbo 与版权信息。</li>
+          <li>学习逻辑重构：自动“生词本”改为查询记录；收藏改为用户主动操作。</li>
+          <li>上下文收藏：收藏单词时自动带出所在句子，收藏本内可修改句子并填写个人备注。</li>
+          <li>长文阅读：右侧释义栏改为随当前屏幕固定，阅读长文章时不用回到顶部找释义。</li>
+          <li>查询记录排序：新增最近查询、高频查询、最早遇到和 A–Z。</li>
+          <li>收藏本紧凑化：默认只展示释义、上下文和已有备注预览；点“编辑”才展开完整文本框。</li>
+          <li>收藏编辑体验：一次只展开一个收藏，保存后自动恢复折叠浏览状态；没有备注时不再占大块空白。</li>
+          <li>个人词卡：词库未收录的英文词也可以收藏，并同时进入查询记录。</li>
+          <li>自定义收藏：可自行修改音标/发音说明、词性、中文释义、上下文和个人备注。</li>
+          <li>贡献署名：加入 Jane. Z — Testing, Bug Reports &amp; Product Feedback。</li>
+          <li>V0.5.2 智能合并：每次新查询生成唯一事件 ID，跨电脑反复导入时自动去重，不再重复累加旧查询。</li>
+          <li>阅读体验：新增字体大小、行距、深色模式、阅读进度条、返回顶部和快捷键。</li>
+          <li>收藏管理：新增标签和“已掌握”状态，可筛选与排序。</li>
+          <li>文件体验：TXT 支持拖拽导入。</li>
+          <li>数据安全：新增 7 天备份提醒和学习数据“智能合并 / 预览合并 / 完全覆盖”三种导入方式。</li>
+          <li>帮助中心：新增一分钟上手和快捷键说明。</li>
+        </ul>
+      </div>
+
+      <div class="changeVersion">
+        <div class="changeVersionTitle">V0.5</div>
+        <ul>
+          <li>加入 Lemma 智能词形还原。</li>
+          <li>加入直接查词、自动生词本和词库设置。</li>
+        </ul>
+      </div>
+
+      <div class="changeVersion">
+        <div class="changeVersionTitle">V0.4</div>
+        <ul><li>接入 ECDICT 大规模离线英汉词库。</li></ul>
+      </div>
+
+      <div class="changeVersion">
+        <div class="changeVersionTitle">V0.3</div>
+        <ul><li>阅读模式、右侧释义卡、移动端底部弹窗。</li></ul>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+/* =========================
+   V0.5.1 内置增强词库
+   ========================= */
+
+const basicDictionary = {
+  apple: {
+    phonetic: "/ˈæpəl/",
+    pos: "noun",
+    meaning: "苹果"
+  },
+  friend: {
+    phonetic: "/frend/",
+    pos: "noun",
+    meaning: "朋友"
+  },
+  friends: {
+    phonetic: "/frendz/",
+    pos: "noun",
+    meaning: "朋友；friend 的复数"
+  },
+  like: {
+    phonetic: "/laɪk/",
+    pos: "verb / prep.",
+    meaning: "喜欢；像；类似于"
+  },
+  talk: {
+    phonetic: "/tɔːk/",
+    pos: "verb",
+    meaning: "说话；交谈"
+  },
+  talking: {
+    phonetic: "/ˈtɔːkɪŋ/",
+    pos: "verb",
+    meaning: "交谈；talk 的现在分词"
+  },
+  ask: {
+    phonetic: "/æsk/",
+    pos: "verb",
+    meaning: "询问；请求"
+  },
+  asked: {
+    phonetic: "/æskt/",
+    pos: "verb",
+    meaning: "询问；请求；ask 的过去式"
+  },
+  help: {
+    phonetic: "/help/",
+    pos: "verb / noun",
+    meaning: "帮助；协助"
+  },
+  helped: {
+    phonetic: "/helpt/",
+    pos: "verb",
+    meaning: "帮助；help 的过去式"
+  },
+  idea: {
+    phonetic: "/aɪˈdɪə/",
+    pos: "noun",
+    meaning: "想法；主意"
+  },
+  ideas: {
+    phonetic: "/aɪˈdɪəz/",
+    pos: "noun",
+    meaning: "想法；主意；idea 的复数"
+  },
+  little: {
+    phonetic: "/ˈlɪtəl/",
+    pos: "adj. / adv.",
+    meaning: "小的；少量的；一点"
+  },
+  problem: {
+    phonetic: "/ˈprɒbləm/",
+    pos: "noun",
+    meaning: "问题；困难"
+  },
+  solve: {
+    phonetic: "/sɒlv/",
+    pos: "verb",
+    meaning: "解决；解答"
+  },
+  someone: {
+    phonetic: "/ˈsʌmwʌn/",
+    pos: "pronoun",
+    meaning: "某人；有人"
+  },
+  some: {
+    phonetic: "/sʌm/",
+    pos: "determiner / pronoun",
+    meaning: "一些；某些"
+  },
+  give: {
+    phonetic: "/ɡɪv/",
+    pos: "verb",
+    meaning: "给；给予"
+  },
+  gave: {
+    phonetic: "/ɡeɪv/",
+    pos: "verb",
+    meaning: "给；give 的过去式"
+  },
+  still: {
+    phonetic: "/stɪl/",
+    pos: "adv.",
+    meaning: "仍然；依然"
+  },
+  feel: {
+    phonetic: "/fiːl/",
+    pos: "verb",
+    meaning: "感觉；觉得"
+  },
+  felt: {
+    phonetic: "/felt/",
+    pos: "verb",
+    meaning: "感觉；feel 的过去式"
+  },
+  might: {
+    phonetic: "/maɪt/",
+    pos: "modal verb",
+    meaning: "可能；也许"
+  },
+  but: {
+    phonetic: "/bʌt/",
+    pos: "conjunction",
+    meaning: "但是；可是"
+  },
+  their: {
+    phonetic: "/ðeə/",
+    pos: "determiner",
+    meaning: "他们的；她们的；它们的"
+  },
+  me: {
+    phonetic: "/miː/",
+    pos: "pronoun",
+    meaning: "我；宾格"
+  },
+  my: {
+    phonetic: "/maɪ/",
+    pos: "determiner",
+    meaning: "我的"
+  },
+  the: {
+    phonetic: "/ðə/ /ðiː/",
+    pos: "article",
+    meaning: "这；那；这些；那些（定冠词）"
+  },
+  a: {
+    phonetic: "/ə/ /eɪ/",
+    pos: "article",
+    meaning: "一个；一（不定冠词）"
+  },
+  an: {
+    phonetic: "/ən/ /æn/",
+    pos: "article",
+    meaning: "一个；一（用于元音音素前）"
+  },
+  and: {
+    phonetic: "/ænd/",
+    pos: "conjunction",
+    meaning: "和；而且"
+  },
+  to: {
+    phonetic: "/tuː/ /tə/",
+    pos: "prep. / infinitive marker",
+    meaning: "到；向；用于不定式"
+  },
+  for: {
+    phonetic: "/fɔːr/",
+    pos: "preposition",
+    meaning: "为了；对于；给"
+  },
+  of: {
+    phonetic: "/əv/",
+    pos: "preposition",
+    meaning: "……的；属于"
+  },
+  in: {
+    phonetic: "/ɪn/",
+    pos: "preposition",
+    meaning: "在……里面；在……中"
+  },
+  on: {
+    phonetic: "/ɒn/",
+    pos: "preposition",
+    meaning: "在……上；关于"
+  },
+  is: {
+    phonetic: "/ɪz/",
+    pos: "verb",
+    meaning: "是；be 的第三人称单数"
+  },
+  was: {
+    phonetic: "/wɒz/",
+    pos: "verb",
+    meaning: "是；be 的过去式"
+  },
+  i: {
+    phonetic: "/aɪ/",
+    pos: "pronoun",
+    meaning: "我"
+  },
+  when: {
+    phonetic: "/wen/",
+    pos: "adv. / conjunction",
+    meaning: "什么时候；当……的时候"
+  },
+  very: {
+    phonetic: "/ˈveri/",
+    pos: "adverb",
+    meaning: "非常；很"
+  },
+  can: {
+    phonetic: "/kæn/",
+    pos: "modal verb",
+    meaning: "能够；可以"
+  },
+  bring: {
+    phonetic: "/brɪŋ/",
+    pos: "verb",
+    meaning: "带来；拿来"
+  },
+  protecting: {
+    phonetic: "/prəˈtektɪŋ/",
+    pos: "verb",
+    meaning: "保护；protect 的现在分词"
+  }
+};
+
+const ieltsDictionary = {
+  nervous: {
+    phonetic: "/ˈnɜːvəs/",
+    pos: "adjective",
+    meaning: "紧张的；焦虑的；不安的",
+    ielts: "口语中非常常用。常见搭配：feel nervous、get nervous、be nervous about。近义表达有 anxious、uneasy。"
+  },
+  advice: {
+    phonetic: "/ədˈvaɪs/",
+    pos: "noun",
+    meaning: "建议；忠告",
+    ielts: "注意 advice 是不可数名词。不能说 an advice。可以说 a piece of advice。常见搭配：give advice、ask for advice、seek advice。"
+  },
+  trouble: {
+    phonetic: "/ˈtrʌbəl/",
+    pos: "noun / verb",
+    meaning: "麻烦；困难；问题；使烦恼",
+    ielts: "常见表达：have trouble doing something，意思是“做某事有困难”。"
+  },
+  suggestion: {
+    phonetic: "/səˈdʒestʃən/",
+    pos: "noun",
+    meaning: "建议；提议",
+    ielts: "常见搭配：make a suggestion、offer a suggestion。写作中可以用于提出解决方案。"
+  },
+  suggestions: {
+    phonetic: "/səˈdʒestʃənz/",
+    pos: "noun",
+    meaning: "建议；suggestion 的复数",
+    ielts: "常见搭配：make suggestions、provide suggestions。"
+  },
+  important: {
+    phonetic: "/ɪmˈpɔːtənt/",
+    pos: "adjective",
+    meaning: "重要的",
+    ielts: "雅思写作中不要反复使用 important。可根据语境替换为 significant、crucial、essential、vital。"
+  },
+  significant: {
+    phonetic: "/sɪɡˈnɪfɪkənt/",
+    pos: "adjective",
+    meaning: "重要的；显著的；意义重大的",
+    ielts: "雅思写作常用。常见搭配：significant impact、significant increase、significant difference。"
+  },
+  environment: {
+    phonetic: "/ɪnˈvaɪrənmənt/",
+    pos: "noun",
+    meaning: "环境；周围状况",
+    ielts: "环境类是雅思写作高频话题。常见搭配：protect the environment、environmental problems、natural environment。"
+  },
+  benefit: {
+    phonetic: "/ˈbenɪfɪt/",
+    pos: "noun / verb",
+    meaning: "好处；益处；使受益",
+    ielts: "写作高频词。常见表达：bring benefits、benefit from、be beneficial to。"
+  },
+  benefits: {
+    phonetic: "/ˈbenɪfɪts/",
+    pos: "noun",
+    meaning: "好处；益处；benefit 的复数",
+    ielts: "写作高频表达：bring significant benefits、provide benefits、long-term benefits。"
+  },
+  solution: {
+    phonetic: "/səˈluːʃən/",
+    pos: "noun",
+    meaning: "解决办法；答案",
+    ielts: "问题解决类作文常用。常见搭配：find a solution、effective solution、long-term solution、solution to a problem。"
+  }
+};
+
+/* =========================
+   语音
+   ========================= */
+
+let voices = [];
+let currentSpokenWord = "";
+let speechTimer = null;
+let speechRequestId = 0;
+
+function loadVoices() {
+  voices = speechSynthesis.getVoices();
+
+  const voiceSelect = document.getElementById("voiceSelect");
+  const previousValue = voiceSelect.value;
+
+  voiceSelect.innerHTML = '<option value="">自动选择</option>';
+
+  voices.forEach((voice, index) => {
+    if (voice.lang.toLowerCase().startsWith("en")) {
+      const option = document.createElement("option");
+      option.value = index;
+      option.textContent = `${voice.name} (${voice.lang})`;
+      voiceSelect.appendChild(option);
+    }
+  });
+
+  // 如果刷新 voices 列表，尽量保留用户当前选择
+  if (previousValue !== "" && voiceSelect.querySelector(`option[value="${previousValue}"]`)) {
+    voiceSelect.value = previousValue;
+  }
+}
+
+speechSynthesis.onvoiceschanged = loadVoices;
+loadVoices();
+
+function buildUtterance(word) {
+  const utterance = new SpeechSynthesisUtterance(word);
+  utterance.rate = parseFloat(document.getElementById("speed").value);
+  utterance.lang = "en-US";
+
+  const voiceSelect = document.getElementById("voiceSelect");
+
+  if (voiceSelect.value !== "") {
+    const selectedVoice = voices[parseInt(voiceSelect.value)];
+    if (selectedVoice) utterance.voice = selectedVoice;
+  } else {
+    const englishVoice =
+      voices.find(v => v.lang === "en-US" && v.localService) ||
+      voices.find(v => v.lang.toLowerCase().startsWith("en") && v.localService) ||
+      voices.find(v => v.lang === "en-US") ||
+      voices.find(v => v.lang.toLowerCase().startsWith("en"));
+
+    if (englishVoice) utterance.voice = englishVoice;
+  }
+
+  return utterance;
+}
+
+function flashSpeechButton(button, success = true) {
+  if (!button) return;
+
+  const original = button.dataset.originalLabel || button.textContent.trim();
+  button.dataset.originalLabel = original;
+  button.textContent = success ? "🔊 播放中" : "⚠️ 播放失败";
+  button.disabled = true;
+
+  setTimeout(() => {
+    button.textContent = button.dataset.originalLabel || original;
+    button.disabled = false;
+  }, success ? 850 : 1300);
+}
+
+function speakFavoriteWord(word, button) {
+  if (!word) return;
+  try {
+    speakWord(word);
+    flashSpeechButton(button, true);
+  } catch (error) {
+    console.error("Favorite speech error:", error);
+    flashSpeechButton(button, false);
+  }
+}
+
+function speakHistoryWord(word, button) {
+  if (!word) return;
+  try {
+    speakWord(word);
+    flashSpeechButton(button, true);
+  } catch (error) {
+    console.error("History speech error:", error);
+    flashSpeechButton(button, false);
+  }
+}
+
+function speakWord(word) {
+  currentSpokenWord = word;
+
+  // 每次点击生成新的请求号；旧的延迟朗读会自动失效
+  const requestId = ++speechRequestId;
+
+  if (speechTimer) {
+    clearTimeout(speechTimer);
+    speechTimer = null;
+  }
+
+  try {
+    if (speechSynthesis.paused) speechSynthesis.resume();
+    speechSynthesis.cancel();
+  } catch (error) {
+    console.warn("Speech cancel warning:", error);
+  }
+
+  const utterance = buildUtterance(word);
+
+  // Chrome/Windows 下 cancel 后立刻 speak 偶尔会吞掉下一条。
+  // 留一个很短的缓冲，快速连续点词时只朗读最后一次点击。
+  speechTimer = setTimeout(() => {
+    if (requestId !== speechRequestId) return;
+
+    try {
+      if (speechSynthesis.paused) speechSynthesis.resume();
+      speechSynthesis.speak(utterance);
+    } catch (error) {
+      console.error("Speech synthesis error:", error);
+    }
+  }, 55);
+}
+
+function repeatCurrentWord() {
+  if (currentSpokenWord) speakWord(currentSpokenWord);
+}
+
+/* =========================
+   ECDICT 本地数据库 + 词典查询
+   ========================= */
+
+const ECDICT_DB_NAME = "EnglishReaderECDICT";
+const ECDICT_DB_VERSION = 2;
+let ecdictDbPromise = null;
+
+function openECDICTDatabase() {
+  if (ecdictDbPromise) return ecdictDbPromise;
+
+  ecdictDbPromise = new Promise((resolve, reject) => {
+    const request = indexedDB.open(ECDICT_DB_NAME, ECDICT_DB_VERSION);
+
+    request.onupgradeneeded = () => {
+      const db = request.result;
+
+      if (!db.objectStoreNames.contains("entries")) {
+        db.createObjectStore("entries", { keyPath: "word" });
+      }
+
+      if (!db.objectStoreNames.contains("meta")) {
+        db.createObjectStore("meta", { keyPath: "key" });
+      }
+
+      if (!db.objectStoreNames.contains("lemmas")) {
+        db.createObjectStore("lemmas", { keyPath: "form" });
+      }
+    };
+
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+
+  return ecdictDbPromise;
+}
+
+function idbRequest(request) {
+  return new Promise((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function getECDICTMeta(key) {
+  const db = await openECDICTDatabase();
+  const tx = db.transaction("meta", "readonly");
+  return await idbRequest(tx.objectStore("meta").get(key));
+}
+
+async function setECDICTMeta(key, value) {
+  const db = await openECDICTDatabase();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction("meta", "readwrite");
+    tx.objectStore("meta").put({ key, value });
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+async function clearECDICTEntries() {
+  const db = await openECDICTDatabase();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction("entries", "readwrite");
+    tx.objectStore("entries").clear();
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+async function writeECDICTBatch(batch) {
+  const db = await openECDICTDatabase();
+
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction("entries", "readwrite");
+    const store = tx.objectStore("entries");
+
+    for (const item of batch) store.put(item);
+
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error || new Error("IndexedDB transaction aborted"));
+  });
+}
+
+async function getECDICTEntry(word) {
+  const db = await openECDICTDatabase();
+  const tx = db.transaction("entries", "readonly");
+  return await idbRequest(tx.objectStore("entries").get(normalizeWord(word)));
+}
+
+function scoreSearchSuggestion(item, prefix) {
+  const word = String(item.word || "").toLowerCase();
+  const tag = String(item.tag || "").toLowerCase();
+  const translation = String(item.translation || "").toLowerCase();
+
+  let score = 0;
+
+  // 考试/常用词标签优先
+  const tagWeights = {
+    "zk": 75,
+    "gk": 90,
+    "cet4": 120,
+    "cet6": 110,
+    "ky": 90,
+    "toefl": 95,
+    "ielts": 130,
+    "gre": 70
+  };
+
+  for (const [name, weight] of Object.entries(tagWeights)) {
+    if (tag.split(/\s+/).includes(name)) score += weight;
+  }
+
+  // 正常常用词优先于缩写、人名、药名、极生僻专名
+  if (/\babbr\b|缩写/.test(translation)) score -= 110;
+  if (/\[人名\]|\[地名\]|\[医\]|\[药\]|\[化\]|\[商标\]/.test(translation)) score -= 95;
+
+  // 有正常中文释义、词性、音标时稍微加分
+  if (item.translation) score += 15;
+  if (item.pos) score += 8;
+  if (item.phonetic) score += 6;
+
+  // 和输入长度接近的候选更靠前，但不会压过常用词标签
+  const extraLength = Math.max(0, word.length - prefix.length);
+  score += Math.max(0, 34 - extraLength * 4);
+
+  // 完全等于输入只小幅加分，避免 "deve" 这种缩写霸榜
+  if (word === prefix) score += 18;
+
+  // 纯英文字母的常规单词略优先
+  if (/^[a-z]+$/.test(word)) score += 8;
+
+  return score;
+}
+
+async function getECDICTPrefix(prefix, limit = 8) {
+  const p = normalizeWord(prefix);
+  if (!p) return [];
+
+  const db = await openECDICTDatabase();
+  const tx = db.transaction("entries", "readonly");
+  const store = tx.objectStore("entries");
+  const range = IDBKeyRange.bound(p, p + "\uffff");
+
+  // 先多取一些候选，再在内存里做轻量排序。
+  // 这样不需要改 77 万词的数据库结构，也不需要重新导入。
+  const candidates = await new Promise((resolve, reject) => {
+    const results = [];
+    const request = store.openCursor(range);
+
+    request.onsuccess = () => {
+      const cursor = request.result;
+
+      if (!cursor || results.length >= 80) {
+        resolve(results);
+        return;
+      }
+
+      results.push(cursor.value);
+      cursor.continue();
+    };
+
+    request.onerror = () => reject(request.error);
+  });
+
+  return candidates
+    .map(item => ({
+      ...item,
+      __searchScore: scoreSearchSuggestion(item, p)
+    }))
+    .sort((a, b) => {
+      if (b.__searchScore !== a.__searchScore) {
+        return b.__searchScore - a.__searchScore;
+      }
+
+      if ((a.word || "").length !== (b.word || "").length) {
+        return (a.word || "").length - (b.word || "").length;
+      }
+
+      return String(a.word || "").localeCompare(String(b.word || ""));
+    })
+    .slice(0, limit);
+}
+
+async function clearLemmaEntries() {
+  const db = await openECDICTDatabase();
+
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction("lemmas", "readwrite");
+    tx.objectStore("lemmas").clear();
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+async function writeLemmaBatch(batch) {
+  const db = await openECDICTDatabase();
+
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction("lemmas", "readwrite");
+    const store = tx.objectStore("lemmas");
+
+    for (const item of batch) store.put(item);
+
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error || new Error("Lemma transaction aborted"));
+  });
+}
+
+async function getLemmaEntry(form) {
+  const db = await openECDICTDatabase();
+  const tx = db.transaction("lemmas", "readonly");
+  return await idbRequest(tx.objectStore("lemmas").get(normalizeWord(form)));
+}
+
+function normalizeWord(word) {
+  return word.toLowerCase().replace(/^[^a-z]+|[^a-z]+$/g, "");
+}
+
+function findBuiltInBaseWord(word) {
+  const w = normalizeWord(word);
+
+  if (basicDictionary[w] || ieltsDictionary[w]) return w;
+
+  const candidates = [];
+
+  if (w.endsWith("ies") && w.length > 4) candidates.push(w.slice(0, -3) + "y");
+  if (w.endsWith("es") && w.length > 3) candidates.push(w.slice(0, -2));
+  if (w.endsWith("s") && w.length > 3) candidates.push(w.slice(0, -1));
+
+  if (w.endsWith("ed") && w.length > 4) {
+    candidates.push(w.slice(0, -2));
+    candidates.push(w.slice(0, -1));
+  }
+
+  if (w.endsWith("ing") && w.length > 5) {
+    candidates.push(w.slice(0, -3));
+    candidates.push(w.slice(0, -3) + "e");
+  }
+
+  for (const c of candidates) {
+    if (ieltsDictionary[c] || basicDictionary[c]) return c;
+  }
+
+  return w;
+}
+
+async function lookupWord(word) {
+  const normalized = normalizeWord(word);
+  const builtInBase = findBuiltInBaseWord(word);
+
+  if (ieltsDictionary[builtInBase]) {
+    return {
+      ...ieltsDictionary[builtInBase],
+      source: "IELTS 雅思增强词库",
+      baseWord: builtInBase,
+      queriedWord: normalized,
+      relationText: builtInBase !== normalized ? `${normalized} → ${builtInBase}` : ""
+    };
+  }
+
+  try {
+    const direct = await getECDICTEntry(normalized);
+    const lemmaHit = await getLemmaEntry(normalized);
+
+    // 0.5.1：即使变形词本身在 ECDICT 有条目，也优先补出原形信息。
+    if (lemmaHit && lemmaHit.lemma && lemmaHit.lemma !== normalized) {
+      const lemmaEntry = await getECDICTEntry(lemmaHit.lemma);
+
+      if (lemmaEntry) {
+        return {
+          phonetic: direct?.phonetic || lemmaEntry.phonetic || "",
+          pos: direct?.pos || lemmaEntry.pos || "",
+          meaning: lemmaEntry.translation || direct?.translation || "暂无中文释义",
+          surfaceMeaning: direct?.translation || "",
+          exchange: lemmaEntry.exchange || "",
+          ielts: ((lemmaEntry.tag || direct?.tag || "").split(/\s+/).includes("ielts"))
+            ? "这个词在 ECDICT 中带有 IELTS 标签。"
+            : "",
+          source: "ECDICT + Lemma 词形还原",
+          baseWord: lemmaEntry.word,
+          queriedWord: normalized,
+          relationText: `${normalized} → ${lemmaEntry.word}`
+        };
+      }
+    }
+
+    if (direct) {
+      return {
+        phonetic: direct.phonetic || "",
+        pos: direct.pos || "",
+        meaning: direct.translation || "暂无中文释义",
+        surfaceMeaning: "",
+        exchange: direct.exchange || "",
+        ielts: (direct.tag || "").split(/\s+/).includes("ielts")
+          ? "这个词在 ECDICT 中带有 IELTS 标签。"
+          : "",
+        source: "ECDICT 离线词库",
+        baseWord: direct.word,
+        queriedWord: normalized,
+        relationText: ""
+      };
+    }
+
+    const candidates = [];
+    if (normalized.endsWith("ies") && normalized.length > 4)
+      candidates.push(normalized.slice(0, -3) + "y");
+    if (normalized.endsWith("es") && normalized.length > 3)
+      candidates.push(normalized.slice(0, -2));
+    if (normalized.endsWith("s") && normalized.length > 3)
+      candidates.push(normalized.slice(0, -1));
+    if (normalized.endsWith("ed") && normalized.length > 4) {
+      candidates.push(normalized.slice(0, -2));
+      candidates.push(normalized.slice(0, -1));
+    }
+    if (normalized.endsWith("ing") && normalized.length > 5) {
+      candidates.push(normalized.slice(0, -3));
+      candidates.push(normalized.slice(0, -3) + "e");
+    }
+
+    for (const c of candidates) {
+      const entry = await getECDICTEntry(c);
+      if (entry) {
+        return {
+          phonetic: entry.phonetic || "",
+          pos: entry.pos || "",
+          meaning: entry.translation || "暂无中文释义",
+          surfaceMeaning: "",
+          exchange: entry.exchange || "",
+          ielts: (entry.tag || "").split(/\s+/).includes("ielts")
+            ? "这个词在 ECDICT 中带有 IELTS 标签。"
+            : "",
+          source: "ECDICT 离线词库（基础词尾还原）",
+          baseWord: entry.word,
+          queriedWord: normalized,
+          relationText: `${normalized} → ${entry.word}`
+        };
+      }
+    }
+  } catch (error) {
+    console.error("ECDICT lookup error:", error);
+  }
+
+  if (basicDictionary[builtInBase]) {
+    return {
+      ...basicDictionary[builtInBase],
+      source: "内置基础词库",
+      baseWord: builtInBase,
+      queriedWord: normalized,
+      relationText: builtInBase !== normalized ? `${normalized} → ${builtInBase}` : ""
+    };
+  }
+
+  return null;
+}
+
+function formatExchange(exchange) {
+  if (!exchange) return [];
+
+  const labels = {
+    p: "过去式",
+    d: "过去分词",
+    i: "现在分词",
+    3: "第三人称单数",
+    r: "比较级",
+    t: "最高级",
+    s: "复数",
+    0: "原形"
+  };
+
+  return exchange.split("/").map(part => {
+    const idx = part.indexOf(":");
+    if (idx < 0) return null;
+    const code = part.slice(0, idx);
+    const value = part.slice(idx + 1);
+    if (!value) return null;
+    return `${labels[code] || code}：${value}`;
+  }).filter(Boolean);
+}
+
+/* =========================
+   流式 CSV 解析与导入
+   ========================= */
+
+class CSVStreamParser {
+  constructor() {
+    this.row = [];
+    this.field = "";
+    this.inQuotes = false;
+    this.afterQuote = false;
+  }
+
+  feed(text, isFinal = false) {
+    const completedRows = [];
+
+    const finishField = () => {
+      this.row.push(this.field);
+      this.field = "";
+    };
+
+    const finishRow = () => {
+      finishField();
+      completedRows.push(this.row);
+      this.row = [];
+    };
+
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+
+      if (this.inQuotes) {
+        if (this.afterQuote) {
+          if (ch === '"') {
+            this.field += '"';
+            this.afterQuote = false;
+          } else {
+            this.inQuotes = false;
+            this.afterQuote = false;
+
+            if (ch === ",") {
+              finishField();
+            } else if (ch === "\n") {
+              finishRow();
+            } else if (ch !== "\r") {
+              this.field += ch;
+            }
+          }
+        } else if (ch === '"') {
+          this.afterQuote = true;
+        } else {
+          this.field += ch;
+        }
+      } else {
+        if (ch === '"' && this.field.length === 0) {
+          this.inQuotes = true;
+        } else if (ch === ",") {
+          finishField();
+        } else if (ch === "\n") {
+          finishRow();
+        } else if (ch !== "\r") {
+          this.field += ch;
+        }
+      }
+    }
+
+    if (isFinal) {
+      if (this.afterQuote) {
+        this.inQuotes = false;
+        this.afterQuote = false;
+      }
+
+      if (this.field.length || this.row.length) finishRow();
+    }
+
+    return completedRows;
+  }
+}
+
+async function importECDICTCsv(file) {
+  const status = document.getElementById("dictImportStatus");
+  const progressWrap = document.getElementById("dictProgressWrap");
+  const progressBar = document.getElementById("dictProgressBar");
+
+  status.textContent = "准备导入…";
+  progressWrap.style.display = "block";
+  progressBar.style.width = "0%";
+
+  await clearECDICTEntries();
+  await setECDICTMeta("ready", false);
+
+  const parser = new CSVStreamParser();
+  const decoder = new TextDecoder("utf-8");
+  const reader = file.stream().getReader();
+
+  let headers = null;
+  let indexes = null;
+  let batch = [];
+  let imported = 0;
+  let bytesRead = 0;
+
+  const addRow = row => {
+    if (!indexes) return;
+
+    const rawWord = row[indexes.word] || "";
+    const word = rawWord.trim().toLowerCase();
+    if (!word) return;
+
+    batch.push({
+      word,
+      phonetic: indexes.phonetic >= 0 ? (row[indexes.phonetic] || "") : "",
+      translation: indexes.translation >= 0 ? (row[indexes.translation] || "") : "",
+      pos: indexes.pos >= 0 ? (row[indexes.pos] || "") : "",
+      tag: indexes.tag >= 0 ? (row[indexes.tag] || "") : "",
+      exchange: indexes.exchange >= 0 ? (row[indexes.exchange] || "") : ""
+    });
+  };
+
+  const consumeRows = async rows => {
+    for (const row of rows) {
+      if (!headers) {
+        headers = row.map(x => x.trim().toLowerCase());
+
+        indexes = {
+          word: headers.indexOf("word"),
+          phonetic: headers.indexOf("phonetic"),
+          translation: headers.indexOf("translation"),
+          pos: headers.indexOf("pos"),
+          tag: headers.indexOf("tag"),
+          exchange: headers.indexOf("exchange")
+        };
+
+        if (indexes.word < 0 || indexes.translation < 0) {
+          throw new Error("没有识别到 ECDICT 的 CSV 表头。");
+        }
+
+        continue;
+      }
+
+      addRow(row);
+
+      if (batch.length >= 1500) {
+        await writeECDICTBatch(batch);
+        imported += batch.length;
+        batch = [];
+
+        const percent = Math.min(99, Math.round(bytesRead / file.size * 100));
+        progressBar.style.width = percent + "%";
+        status.textContent =
+          `正在导入词库… ${percent}%（约 ${imported.toLocaleString()} 条）`;
+
+        await new Promise(resolve => setTimeout(resolve, 0));
+      }
+    }
+  };
+
+  while (true) {
+    const { value, done } = await reader.read();
+
+    if (done) {
+      await consumeRows(parser.feed(decoder.decode(), true));
+      break;
+    }
+
+    bytesRead += value.byteLength;
+    const text = decoder.decode(value, { stream: true });
+    await consumeRows(parser.feed(text, false));
+  }
+
+  if (batch.length) {
+    await writeECDICTBatch(batch);
+    imported += batch.length;
+  }
+
+  await setECDICTMeta("ready", true);
+  await setECDICTMeta("count", imported);
+  await setECDICTMeta("filename", file.name);
+  await setECDICTMeta("source_file_size", file.size);
+
+  progressBar.style.width = "100%";
+  status.textContent =
+    `✅ ECDICT 已导入：${imported.toLocaleString()} 条。现在可以离线查词。`;
+
+  setTimeout(() => {
+    progressWrap.style.display = "none";
+  }, 1200);
+}
+
+async function importLemmaFile(file) {
+  const status = document.getElementById("lemmaImportStatus");
+  const progressWrap = document.getElementById("dictProgressWrap");
+  const progressBar = document.getElementById("dictProgressBar");
+
+  status.textContent = "准备导入词形库…";
+  progressWrap.style.display = "block";
+  progressBar.style.width = "0%";
+
+  await clearLemmaEntries();
+  await setECDICTMeta("lemma_ready", false);
+
+  const reader = file.stream().getReader();
+  const decoder = new TextDecoder("utf-8");
+
+  let carry = "";
+  let batch = [];
+  let imported = 0;
+  let bytesRead = 0;
+
+  const processLine = async rawLine => {
+    const line = rawLine.trim();
+
+    if (!line || line.startsWith(";")) return;
+
+    const arrowIndex = line.indexOf("->");
+    if (arrowIndex < 0) return;
+
+    const left = line.slice(0, arrowIndex).trim();
+    const right = line.slice(arrowIndex + 2).trim();
+
+    const slashIndex = left.lastIndexOf("/");
+    const lemmaRaw = (slashIndex >= 0 ? left.slice(0, slashIndex) : left).trim();
+    const lemma = normalizeWord(lemmaRaw);
+
+    if (!lemma) return;
+
+    // 原形自己也保存一份，便于统一查询
+    batch.push({ form: lemma, lemma });
+
+    const forms = right.split(",");
+
+    for (const formRaw of forms) {
+      const form = normalizeWord(formRaw.trim());
+      if (form) batch.push({ form, lemma });
+    }
+
+    if (batch.length >= 2500) {
+      await writeLemmaBatch(batch);
+      imported += batch.length;
+      batch = [];
+      await new Promise(resolve => setTimeout(resolve, 0));
+    }
+  };
+
+  while (true) {
+    const { value, done } = await reader.read();
+
+    if (done) break;
+
+    bytesRead += value.byteLength;
+    carry += decoder.decode(value, { stream: true });
+
+    const lines = carry.split(/\r?\n/);
+    carry = lines.pop() || "";
+
+    for (const line of lines) {
+      await processLine(line);
+    }
+
+    const percent = Math.min(99, Math.round(bytesRead / file.size * 100));
+    progressBar.style.width = percent + "%";
+    status.textContent =
+      `正在导入词形库… ${percent}%（约 ${imported.toLocaleString()} 条映射）`;
+  }
+
+  carry += decoder.decode();
+
+  if (carry.trim()) await processLine(carry);
+
+  if (batch.length) {
+    await writeLemmaBatch(batch);
+    imported += batch.length;
+  }
+
+  await setECDICTMeta("lemma_ready", true);
+  await setECDICTMeta("lemma_count", imported);
+  await setECDICTMeta("lemma_filename", file.name);
+  await setECDICTMeta("lemma_source_file_size", file.size);
+
+  progressBar.style.width = "100%";
+  status.textContent =
+    `✅ Lemma 已导入：${imported.toLocaleString()} 条词形映射。`;
+
+  setTimeout(() => {
+    progressWrap.style.display = "none";
+  }, 1200);
+}
+
+async function refreshDictionaryStatus() {
+  const status = document.getElementById("dictImportStatus");
+  const lemmaStatus = document.getElementById("lemmaImportStatus");
+
+  if (!("indexedDB" in window)) {
+    status.textContent = "当前浏览器不支持本地词库数据库。建议使用 Chrome。";
+    lemmaStatus.textContent = "Lemma 无法使用。";
+    return;
+  }
+
+  try {
+    const ready = await getECDICTMeta("ready");
+    const count = await getECDICTMeta("count");
+
+    if (ready && ready.value === true) {
+      status.textContent =
+        `✅ ECDICT 已就绪${count ? "：" + Number(count.value).toLocaleString() + " 条" : ""}`;
+    } else {
+      status.textContent = "⚠️ 尚未导入 ECDICT。";
+    }
+
+    const lemmaReady = await getECDICTMeta("lemma_ready");
+    const lemmaCount = await getECDICTMeta("lemma_count");
+
+    if (lemmaReady && lemmaReady.value === true) {
+      lemmaStatus.textContent =
+        `✅ Lemma 已就绪${lemmaCount ? "：" + Number(lemmaCount.value).toLocaleString() + " 条映射" : ""}`;
+    } else {
+      lemmaStatus.textContent = "⚠️ 尚未导入 lemma.en.txt。";
+    }
+  } catch (error) {
+    console.error(error);
+    status.textContent = "本地词库状态读取失败。";
+    lemmaStatus.textContent = "词形库状态读取失败。";
+  }
+
+  updateVocabBadges();
+}
+
+document.getElementById("dictFileInput").addEventListener(
+  "change",
+  async function(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+
+    try {
+      await importECDICTCsv(file);
+    } catch (error) {
+      console.error(error);
+      document.getElementById("dictImportStatus").textContent =
+        "❌ 导入失败：" + (error.message || "未知错误");
+    } finally {
+      event.target.value = "";
+    }
+  }
+);
+
+
+/* =========================
+   自动生词本
+   ========================= */
+
+const VOCAB_STORAGE_KEY = "EnglishReaderV05Vocab"; // 历史兼容：现在作为“查询记录”
+const FAVORITES_STORAGE_KEY = "EnglishReaderV051Favorites";
+const QUERY_EVENTS_KEY = "EnglishReaderV052QueryEvents";
+const HISTORY_BASELINES_KEY = "EnglishReaderV052HistoryBaselines";
+const DEVICE_ID_KEY = "EnglishReaderV052DeviceId";
+const LAST_BACKUP_KEY = "EnglishReaderV052LastBackup";
+const BACKUP_DISMISS_KEY = "EnglishReaderV052BackupDismiss";
+const READING_PREFS_KEY = "EnglishReaderV052ReadingPrefs";
+
+
+function makeId(prefix = "id") {
+  if (crypto?.randomUUID) return `${prefix}:${crypto.randomUUID()}`;
+  return `${prefix}:${Date.now()}:${Math.random().toString(36).slice(2)}:${Math.random().toString(36).slice(2)}`;
+}
+
+function getDeviceId() {
+  let id = localStorage.getItem(DEVICE_ID_KEY);
+  if (!id) {
+    id = makeId("device");
+    localStorage.setItem(DEVICE_ID_KEY, id);
+  }
+  return id;
+}
+
+function getQueryEvents() {
+  try { return JSON.parse(localStorage.getItem(QUERY_EVENTS_KEY) || "{}"); }
+  catch { return {}; }
+}
+
+function setQueryEvents(data) {
+  localStorage.setItem(QUERY_EVENTS_KEY, JSON.stringify(data || {}));
+}
+
+function getHistoryBaselines() {
+  try { return JSON.parse(localStorage.getItem(HISTORY_BASELINES_KEY) || "{}"); }
+  catch { return {}; }
+}
+
+function setHistoryBaselines(data) {
+  localStorage.setItem(HISTORY_BASELINES_KEY, JSON.stringify(data || {}));
+}
+
+function ensureHistoryMigration() {
+  const baselines = getHistoryBaselines();
+
+  if (!Object.keys(baselines).length) {
+    const current = getVocabData();
+
+    if (Object.keys(current).length) {
+      const entries = Object.entries(current)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([key, item]) => [
+          key,
+          Number(item?.count || 0),
+          Number(item?.articleCount || 0),
+          Number(item?.searchCount || 0),
+          item?.firstSeen || "",
+          item?.lastSeen || ""
+        ]);
+
+      const baselineId = `legacy-local:${simpleStableHash(JSON.stringify(entries))}`;
+      baselines[baselineId] = {
+        id: baselineId,
+        createdAt: new Date().toISOString(),
+        deviceId: "legacy-local",
+        records: current
+      };
+      setHistoryBaselines(baselines);
+    }
+  }
+}
+
+function createQueryEvent(word, result, sourceType) {
+  return {
+    id: makeId("query"),
+    deviceId: getDeviceId(),
+    word: normalizeWord(result?.baseWord || word),
+    displayWord: word,
+    phonetic: result?.phonetic || "",
+    pos: result?.pos || "",
+    meaning: result?.meaning || "",
+    dictionaryFound: Boolean(result),
+    source: sourceType,
+    timestamp: new Date().toISOString()
+  };
+}
+
+function mergeQueryAggregate(target, incoming) {
+  const key = incoming.word;
+  if (!key) return;
+
+  const old = target[key] || {
+    word: key,
+    count: 0,
+    articleCount: 0,
+    searchCount: 0,
+    firstSeen: incoming.firstSeen || incoming.timestamp || new Date().toISOString()
+  };
+
+  old.count += Number(incoming.count || 0);
+  old.articleCount += Number(incoming.articleCount || 0);
+  old.searchCount += Number(incoming.searchCount || 0);
+
+  const first = incoming.firstSeen || incoming.timestamp;
+  const last = incoming.lastSeen || incoming.timestamp;
+
+  if (first && (!old.firstSeen || new Date(first) < new Date(old.firstSeen))) old.firstSeen = first;
+  if (last && (!old.lastSeen || new Date(last) > new Date(old.lastSeen))) old.lastSeen = last;
+
+  if (incoming.displayWord) old.displayWord = incoming.displayWord;
+  if (incoming.phonetic) old.phonetic = incoming.phonetic;
+  if (incoming.pos) old.pos = incoming.pos;
+  if (incoming.meaning) old.meaning = incoming.meaning;
+  if (typeof incoming.dictionaryFound === "boolean") old.dictionaryFound = incoming.dictionaryFound;
+  if (incoming.source) old.source = incoming.source;
+
+  target[key] = old;
+}
+
+function rebuildVocabFromMergeData() {
+  const rebuilt = {};
+  const baselines = getHistoryBaselines();
+  const events = getQueryEvents();
+
+  for (const baseline of Object.values(baselines)) {
+    for (const record of Object.values(baseline.records || {})) {
+      mergeQueryAggregate(rebuilt, {
+        ...record,
+        count: Number(record.count || 0),
+        articleCount: Number(record.articleCount || 0),
+        searchCount: Number(record.searchCount || 0)
+      });
+    }
+  }
+
+  const sortedEvents = Object.values(events).sort((a,b) =>
+    new Date(a.timestamp || 0) - new Date(b.timestamp || 0)
+  );
+
+  for (const event of sortedEvents) {
+    mergeQueryAggregate(rebuilt, {
+      ...event,
+      count: 1,
+      articleCount: event.source === "article" ? 1 : 0,
+      searchCount: event.source === "search" ? 1 : 0,
+      firstSeen: event.timestamp,
+      lastSeen: event.timestamp
+    });
+  }
+
+  setVocabData(rebuilt);
+}
+
+function recordQueryEvent(word, result, sourceType) {
+  const events = getQueryEvents();
+  const event = createQueryEvent(word, result, sourceType);
+  events[event.id] = event;
+  setQueryEvents(events);
+}
+
+function mergeUniqueMaps(current, incoming) {
+  return { ...(current || {}), ...(incoming || {}) };
+}
+
+function mergeFavoriteRecords(a, b) {
+  if (!a) return b;
+  if (!b) return a;
+
+  const aTime = new Date(a.updatedAt || a.createdAt || 0);
+  const bTime = new Date(b.updatedAt || b.createdAt || 0);
+  const newer = bTime >= aTime ? b : a;
+  const older = newer === b ? a : b;
+
+  let note = newer.note || "";
+  const olderNote = older.note || "";
+  if (olderNote && note && olderNote !== note && !note.includes(olderNote)) {
+    note = `${note}\n\n—— 合并自另一设备 ——\n${olderNote}`;
+  } else if (!note) {
+    note = olderNote;
+  }
+
+  const tags = [...new Set([...(a.tags || []), ...(b.tags || [])])];
+
+  return {
+    ...older,
+    ...newer,
+    tags,
+    mastered: Boolean(a.mastered || b.mastered),
+    note,
+    sentence: newer.sentence || older.sentence || "",
+    meaning: newer.meaning || older.meaning || "",
+    phonetic: newer.phonetic || older.phonetic || "",
+    pos: newer.pos || older.pos || "",
+    createdAt: [a.createdAt, b.createdAt].filter(Boolean)
+      .sort((x,y) => new Date(x)-new Date(y))[0] || newer.createdAt,
+    updatedAt: newer.updatedAt || older.updatedAt
+  };
+}
+
+function mergeFavoritesMaps(current, incoming) {
+  const result = { ...(current || {}) };
+  for (const [key, value] of Object.entries(incoming || {})) {
+    result[key] = mergeFavoriteRecords(result[key], value);
+  }
+  return result;
+}
+
+function simpleStableHash(text) {
+  let hash = 2166136261;
+  for (let i = 0; i < text.length; i++) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+function convertLegacyBackupToBaseline(data, file) {
+  if (!data?.vocab || !Object.keys(data.vocab).length) return {};
+
+  const vocabEntries = Object.entries(data.vocab)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, item]) => [
+      key,
+      Number(item?.count || 0),
+      Number(item?.articleCount || 0),
+      Number(item?.searchCount || 0),
+      item?.firstSeen || "",
+      item?.lastSeen || ""
+    ]);
+
+  const signatureSource = JSON.stringify({
+    createdAt: data.createdAt || "",
+    vocab: vocabEntries
+  });
+
+  const stableId = `legacy-import:${simpleStableHash(signatureSource)}`;
+
+  return {
+    [stableId]: {
+      id: stableId,
+      createdAt: data.createdAt || new Date(file.lastModified || Date.now()).toISOString(),
+      deviceId: "legacy-import",
+      records: data.vocab
+    }
+  };
+}
+
+let currentLookupState = {
+  word: "",
+  result: null,
+  sentence: "",
+  source: ""
+};
+
+function getVocabData() {
+  try {
+    return JSON.parse(localStorage.getItem(VOCAB_STORAGE_KEY) || "{}");
+  } catch {
+    return {};
+  }
+}
+
+function setVocabData(data) {
+  localStorage.setItem(VOCAB_STORAGE_KEY, JSON.stringify(data));
+  updateVocabBadges();
+}
+
+function getFavoritesData() {
+  try {
+    return JSON.parse(localStorage.getItem(FAVORITES_STORAGE_KEY) || "{}");
+  } catch {
+    return {};
+  }
+}
+
+function setFavoritesData(data) {
+  localStorage.setItem(FAVORITES_STORAGE_KEY, JSON.stringify(data));
+  updateVocabBadges();
+  updateFavoriteButton();
+}
+
+function addToVocab(word, result, sourceType = "article") {
+  if (!word) return;
+
+  ensureHistoryMigration();
+  recordQueryEvent(word, result, sourceType);
+
+  const key = normalizeWord(result?.baseWord || word);
+  if (!key) return;
+
+  const data = getVocabData();
+  const old = data[key] || {
+    word: key,
+    count: 0,
+    firstSeen: new Date().toISOString(),
+    articleCount: 0,
+    searchCount: 0
+  };
+
+  old.count = (old.count || 0) + 1;
+  old.lastSeen = new Date().toISOString();
+  old.displayWord = word;
+  old.phonetic = result?.phonetic || old.phonetic || "";
+  old.pos = result?.pos || old.pos || "";
+  old.meaning = result?.meaning || old.meaning || "";
+  old.dictionaryFound = Boolean(result);
+
+  if (sourceType === "search") {
+    old.searchCount = (old.searchCount || 0) + 1;
+  } else {
+    old.articleCount = (old.articleCount || 0) + 1;
+  }
+
+  old.source = sourceType;
+
+  data[key] = old;
+  setVocabData(data);
+}
+
+function updateVocabBadges() {
+  const historyCount = Object.keys(getVocabData()).length;
+  const favoriteCount = Object.keys(getFavoritesData()).length;
+
+  const a = document.getElementById("vocabCountBadge");
+  const b = document.getElementById("vocabCountBadgeToolbar");
+  const c = document.getElementById("favoriteCountBadge");
+  const d = document.getElementById("favoriteCountBadgeToolbar");
+
+  if (a) a.textContent = historyCount ? `(${historyCount})` : "";
+  if (b) b.textContent = historyCount ? `(${historyCount})` : "";
+  if (c) c.textContent = favoriteCount ? `(${favoriteCount})` : "";
+  if (d) d.textContent = favoriteCount ? `(${favoriteCount})` : "";
+}
+
+function openVocabBook() {
+  document.getElementById("vocabModal").classList.add("show");
+  renderVocabBook();
+}
+
+function renderVocabBook() {
+  const box = document.getElementById("vocabList");
+  const filter = (document.getElementById("vocabFilterInput")?.value || "")
+    .trim().toLowerCase();
+
+  const sortMode = document.getElementById("vocabSortSelect")?.value || "recent";
+
+  let data = Object.values(getVocabData())
+    .filter(item => {
+      if (!filter) return true;
+      return (item.word || "").toLowerCase().includes(filter) ||
+             (item.meaning || "").toLowerCase().includes(filter);
+    });
+
+  if (sortMode === "high") {
+    data.sort((a, b) =>
+      Number(b.count || 0) - Number(a.count || 0) ||
+      new Date(b.lastSeen || 0) - new Date(a.lastSeen || 0)
+    );
+  } else if (sortMode === "earliest") {
+    data.sort((a, b) => new Date(a.firstSeen || 0) - new Date(b.firstSeen || 0));
+  } else if (sortMode === "az") {
+    data.sort((a, b) => String(a.word || "").localeCompare(String(b.word || "")));
+  } else {
+    data.sort((a, b) => new Date(b.lastSeen || 0) - new Date(a.lastSeen || 0));
+  }
+
+  if (!data.length) {
+    box.innerHTML =
+      '<div class="searchEmpty">这里还没有查询记录。点击文章单词或使用搜索框后会自动记录。</div>';
+    return;
+  }
+
+  box.innerHTML = data.map(item => {
+    const articleCount = Number(item.articleCount || 0);
+    const searchCount = Number(item.searchCount || 0);
+    let sourceText = "";
+
+    if (articleCount || searchCount) {
+      const parts = [];
+      if (articleCount) parts.push(`文章点击 ${articleCount} 次`);
+      if (searchCount) parts.push(`搜索 ${searchCount} 次`);
+      sourceText = parts.join(" · ");
+    } else {
+      sourceText = "早期版本记录";
+    }
+
+    return `
+      <div class="vocabItem">
+        <div>
+          <div class="vocabWord">${escapeHtml(item.word || "")}
+            <span style="font-weight:400;color:#8e8e93;font-size:13px">
+              ${escapeHtml(item.phonetic || "")}
+            </span>
+          </div>
+          <div class="vocabMeaning">${escapeHtml(item.meaning || "")}</div>
+          <div class="vocabMeta">${escapeHtml(item.pos || "")}</div>
+          <div class="querySourceMeta">${escapeHtml(sourceText)}</div>
+          <div class="vocabMeta">
+            首次：${formatLearningDate(item.firstSeen)} · 最近：${formatLearningDate(item.lastSeen)}
+          </div>
+        </div>
+
+        <div class="vocabRight">
+          查询 ${Number(item.count || 0)} 次
+          <div class="historyItemActions">
+            <button class="secondary compactButton historySpeakButton"
+                    onclick="speakHistoryWord('${escapeJs(item.word || "")}', this)"
+                    title="朗读 ${escapeHtml(item.word || "")}">
+              🔊 发音
+            </button>
+            <button class="removeTiny" onclick="removeVocabWord('${escapeJs(item.word || "")}')">删除记录</button>
+          </div>
+        </div>
+      </div>
+    `;
+  }).join("");
+}
+
+function removeVocabWord(word) {
+  const normalized = normalizeWord(word);
+  if (!normalized) return;
+
+  const events = getQueryEvents();
+  for (const [id, event] of Object.entries(events)) {
+    if (normalizeWord(event?.word || "") === normalized) {
+      delete events[id];
+    }
+  }
+  setQueryEvents(events);
+
+  const baselines = getHistoryBaselines();
+  for (const baseline of Object.values(baselines)) {
+    if (baseline?.records && Object.prototype.hasOwnProperty.call(baseline.records, normalized)) {
+      delete baseline.records[normalized];
+    }
+  }
+  setHistoryBaselines(baselines);
+
+  rebuildVocabFromMergeData();
+  renderVocabBook();
+}
+
+function clearVocabBook() {
+  if (!confirm("确定清空全部查询记录吗？收藏内容不会被删除。")) return;
+  localStorage.removeItem(VOCAB_STORAGE_KEY);
+  localStorage.removeItem(QUERY_EVENTS_KEY);
+  localStorage.removeItem(HISTORY_BASELINES_KEY);
+  updateVocabBadges();
+  renderVocabBook();
+}
+
+function exportVocabCSV() {
+  const items = Object.values(getVocabData());
+
+  if (!items.length) {
+    alert("查询记录还是空的。");
+    return;
+  }
+
+  const rows = [
+    ["word", "phonetic", "pos", "meaning", "count", "article_count", "search_count", "first_seen", "last_seen"]
+  ];
+
+  for (const item of items) {
+    rows.push([
+      item.word || "",
+      item.phonetic || "",
+      item.pos || "",
+      item.meaning || "",
+      item.count || 0,
+      item.articleCount || 0,
+      item.searchCount || 0,
+      item.firstSeen || "",
+      item.lastSeen || ""
+    ]);
+  }
+
+  const csv = "\uFEFF" + rows.map(row =>
+    row.map(csvEscape).join(",")
+  ).join("\n");
+
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "english-reader-query-history.csv";
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function formatLearningDate(value) {
+  if (!value) return "—";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleString("zh-CN", {
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit"
+  });
+}
+
+function csvEscape(value) {
+  const text = String(value ?? "");
+  return '"' + text.replace(/"/g, '""') + '"';
+}
+
+function escapeHtml(text) {
+  return String(text ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function escapeJs(text) {
+  return String(text ?? "")
+    .replace(/\\/g, "\\\\")
+    .replace(/'/g, "\\'");
+}
+
+/* =========================
+   手动收藏
+   ========================= */
+
+function getFavoriteKey(word, result) {
+  return normalizeWord(result?.baseWord || word);
+}
+
+function isFavorite(word, result) {
+  const key = getFavoriteKey(word, result);
+  return Boolean(key && getFavoritesData()[key]);
+}
+
+function updateFavoriteButton() {
+  const btn = document.getElementById("favoriteCurrentButton");
+  if (!btn) return;
+
+  if (!currentLookupState.word) {
+    btn.textContent = "☆ 收藏";
+    btn.classList.remove("favoriteCardActive");
+    btn.disabled = true;
+    return;
+  }
+
+  btn.disabled = false;
+
+  if (isFavorite(currentLookupState.word, currentLookupState.result)) {
+    btn.textContent = "★ 已收藏";
+    btn.classList.add("favoriteCardActive");
+  } else {
+    btn.textContent = "☆ 收藏";
+    btn.classList.remove("favoriteCardActive");
+  }
+}
+
+function saveCurrentFavorite() {
+  const { word, result, sentence, source } = currentLookupState;
+  if (!word) return;
+
+  const key = getFavoriteKey(word, result);
+  if (!key) return;
+
+  const favorites = getFavoritesData();
+  const existing = favorites[key];
+
+  favorites[key] = {
+    word: key,
+    displayWord: word,
+    phonetic: result?.phonetic || existing?.phonetic || "",
+    pos: result?.pos || existing?.pos || "",
+    meaning: result?.meaning || existing?.meaning || "",
+    sentence: existing?.sentence ?? sentence ?? "",
+    note: existing?.note || "",
+    tags: existing?.tags || [],
+    mastered: Boolean(existing?.mastered),
+    source: source || existing?.source || "",
+    dictionaryFound: Boolean(result),
+    createdAt: existing?.createdAt || new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+
+  setFavoritesData(favorites);
+}
+
+function toggleCurrentFavorite() {
+  const { word, result } = currentLookupState;
+  if (!word) return;
+
+  const key = getFavoriteKey(word, result);
+  const favorites = getFavoritesData();
+
+  if (favorites[key]) {
+    if (!confirm(`取消收藏 “${key}” 吗？你写的释义、句子和备注也会一起删除。`)) return;
+    delete favorites[key];
+    setFavoritesData(favorites);
+    return;
+  }
+
+  saveCurrentFavorite();
+}
+
+function openFavorites() {
+  document.getElementById("favoritesModal").classList.add("show");
+  renderFavorites();
+}
+
+function renderFavorites() {
+  const box = document.getElementById("favoritesList");
+  const filter = (document.getElementById("favoriteFilterInput")?.value || "")
+    .trim().toLowerCase();
+  const sortMode = document.getElementById("favoriteSortSelect")?.value || "recent";
+
+  const masterFilter = document.getElementById("favoriteMasterFilter")?.value || "all";
+
+  let items = Object.values(getFavoritesData()).filter(item => {
+    const matchesText = !filter ||
+      (item.word || "").toLowerCase().includes(filter) ||
+      (item.meaning || "").toLowerCase().includes(filter) ||
+      (item.sentence || "").toLowerCase().includes(filter) ||
+      (item.note || "").toLowerCase().includes(filter) ||
+      (item.tags || []).some(tag => String(tag).toLowerCase().includes(filter));
+
+    const matchesMaster =
+      masterFilter === "all" ||
+      (masterFilter === "mastered" && item.mastered) ||
+      (masterFilter === "learning" && !item.mastered);
+
+    return matchesText && matchesMaster;
+  });
+
+  if (sortMode === "az") {
+    items.sort((a, b) => String(a.word || "").localeCompare(String(b.word || "")));
+  } else if (sortMode === "mastered") {
+    items.sort((a, b) => Number(Boolean(b.mastered)) - Number(Boolean(a.mastered)) ||
+      new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+  } else if (sortMode === "learning") {
+    items.sort((a, b) => Number(Boolean(a.mastered)) - Number(Boolean(b.mastered)) ||
+      new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+  } else {
+    items.sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+  }
+
+  if (!items.length) {
+    box.innerHTML =
+      '<div class="searchEmpty">还没有收藏。阅读时点开单词，再点右侧卡片里的“☆ 收藏”。</div>';
+    return;
+  }
+
+  box.innerHTML = items.map(item => {
+    const sentence = item.sentence || "";
+    const note = item.note || "";
+
+    return `
+      <div class="favoriteItem" data-favorite-key="${escapeHtml(item.word || "")}">
+        <div class="favoriteTop">
+          <div>
+            <div class="favoriteWord">
+              ${escapeHtml(item.word || "")}
+              <span class="favoritePhonetic">${escapeHtml(item.phonetic || "")}</span>
+            </div>
+            <div class="favoriteMeaning">
+              ${item.meaning
+                ? escapeHtml(item.meaning)
+                : '<span style="color:#999">未填写释义</span>'}
+            </div>
+            <div class="vocabMeta">
+              ${item.pos
+                ? escapeHtml(item.pos)
+                : '<span style="color:#aaa">词性 / 说明未填写</span>'}
+            </div>
+            ${item.dictionaryFound === false
+              ? '<div class="querySourceMeta">个人词卡 · 本地词库未收录</div>'
+              : ''}
+
+            <div class="favoriteBadgeRow">
+              <span class="masterBadge ${item.mastered ? 'mastered' : ''}">
+                ${item.mastered ? '✓ 已掌握' : '学习中'}
+              </span>
+              ${(item.tags || []).map(tag => `<span class="tagBadge">#${escapeHtml(tag)}</span>`).join("")}
+            </div>
+          </div>
+
+          <div class="favoriteTopActions">
+            <button class="secondary compactButton favoriteSpeakButton"
+                    onclick="event.stopPropagation(); speakFavoriteWord('${escapeJs(item.displayWord || item.word || "")}', this)"
+                    title="朗读 ${escapeHtml(item.displayWord || item.word || "")}">
+              🔊 发音
+            </button>
+
+            <button class="secondary compactButton editFavoriteButton"
+                    onclick="editFavorite('${escapeJs(item.word || "")}', this)">
+              ✏️ 编辑
+            </button>
+
+            <button class="secondary compactButton favoriteCancelEditButton"
+                    onclick="cancelFavoriteEdit(this)">
+              收起
+            </button>
+
+            <button class="removeTiny"
+                    onclick="removeFavorite('${escapeJs(item.word || "")}')">
+              取消收藏
+            </button>
+          </div>
+        </div>
+
+        <div class="favoritePreviewArea">
+          ${sentence ? `
+            <div class="favoritePreviewBlock">
+              <div class="favoritePreviewLabel">上下文</div>
+              <div class="favoritePreviewText">${escapeHtml(sentence)}</div>
+            </div>
+          ` : ""}
+
+          ${note ? `
+            <div class="favoritePreviewBlock favoriteNotePreview">
+              <div class="favoritePreviewLabel">我的备注</div>
+              <div class="favoritePreviewText">${escapeHtml(note)}</div>
+            </div>
+          ` : ""}
+
+          <div class="favoriteCompactBottom">
+            <div class="favoriteDate">收藏：${formatLearningDate(item.createdAt)}</div>
+            ${note ? '<div class="favoriteDate">已有备注</div>' : ''}
+          </div>
+        </div>
+
+        <div class="favoriteEditPanel">
+          <div class="favoriteFieldGrid">
+            <div>
+              <div class="favoriteSectionLabel">音标 / 发音说明</div>
+              <input class="favoriteInlineEditor phoneticEditor"
+                     value="${escapeHtml(item.phonetic || "")}"
+                     placeholder="可留空，例如 /dɪˈveləp/">
+            </div>
+
+            <div>
+              <div class="favoriteSectionLabel">词性 / 说明</div>
+              <input class="favoriteInlineEditor posEditor"
+                     value="${escapeHtml(item.pos || "")}"
+                     placeholder="例如 noun / verb / 专业术语">
+            </div>
+          </div>
+
+          <div class="favoriteSectionLabel">中文释义 / 自定义解释</div>
+          <textarea class="favoriteEditor meaningEditor"
+                    placeholder="词库没有也没关系，这里可以自己填写释义。">${escapeHtml(item.meaning || "")}</textarea>
+
+          <div class="favoriteFieldGrid favoriteMetaGrid">
+            <div>
+              <div class="favoriteSectionLabel">标签</div>
+              <input class="favoriteInlineEditor tagsEditor"
+                     value="${escapeHtml((item.tags || []).join(', '))}"
+                     placeholder="例如 IELTS, 写作, 工作">
+            </div>
+
+            <label class="masterToggle">
+              <input class="masteredEditor" type="checkbox" ${item.mastered ? "checked" : ""}>
+              <span>标记为已掌握</span>
+            </label>
+          </div>
+
+          <div class="favoriteSectionLabel">上下文句子（可修改）</div>
+          <textarea class="favoriteEditor contextEditor">${escapeHtml(sentence)}</textarea>
+
+          <div class="favoriteSectionLabel">我的备注</div>
+          <textarea class="favoriteEditor note noteEditor"
+                    placeholder="写下自己的理解、搭配、易错点、来源或复习提示…">${escapeHtml(note)}</textarea>
+
+          <div class="favoriteBottom">
+            <div class="favoriteDate">收藏：${formatLearningDate(item.createdAt)}</div>
+            <div>
+              <button class="secondary compactButton"
+                      onclick="saveFavoriteEdit('${escapeJs(item.word || "")}', this)">
+                保存修改
+              </button>
+              <span class="favoriteSavedHint"></span>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+  }).join("");
+}
+
+function editFavorite(key, button) {
+  const card = button.closest(".favoriteItem");
+  if (!card) return;
+
+  // 一次只展开一个收藏，避免页面又被撑得很长
+  document.querySelectorAll(".favoriteItem.editing").forEach(item => {
+    if (item !== card) item.classList.remove("editing");
+  });
+
+  card.classList.add("editing");
+
+  const noteEditor = card.querySelector(".noteEditor");
+  if (noteEditor && !noteEditor.value.trim()) {
+    noteEditor.focus();
+  }
+}
+
+function cancelFavoriteEdit(button) {
+  const card = button.closest(".favoriteItem");
+  if (!card) return;
+
+  // 取消编辑时重新渲染，丢弃尚未保存的修改
+  renderFavorites();
+}
+
+function saveFavoriteEdit(key, button) {
+  const card = button.closest(".favoriteItem");
+  if (!card) return;
+
+  const favorites = getFavoritesData();
+  if (!favorites[key]) return;
+
+  favorites[key].phonetic = card.querySelector(".phoneticEditor")?.value || "";
+  favorites[key].pos = card.querySelector(".posEditor")?.value || "";
+  favorites[key].meaning = card.querySelector(".meaningEditor")?.value || "";
+  favorites[key].tags = (card.querySelector(".tagsEditor")?.value || "")
+    .split(/[,，]/)
+    .map(x => x.trim())
+    .filter(Boolean)
+    .filter((x, i, arr) => arr.indexOf(x) === i);
+  favorites[key].mastered = Boolean(card.querySelector(".masteredEditor")?.checked);
+  favorites[key].sentence = card.querySelector(".contextEditor")?.value || "";
+  favorites[key].note = card.querySelector(".noteEditor")?.value || "";
+  favorites[key].updatedAt = new Date().toISOString();
+
+  setFavoritesData(favorites);
+
+  const hint = card.querySelector(".favoriteSavedHint");
+  if (hint) hint.textContent = "已保存";
+
+  // 稍微停一下让用户看到保存成功，然后恢复紧凑浏览状态
+  setTimeout(() => {
+    renderFavorites();
+  }, 450);
+}
+
+function removeFavorite(key) {
+  if (!confirm(`确定取消收藏 “${key}” 吗？`)) return;
+
+  const favorites = getFavoritesData();
+  delete favorites[key];
+  setFavoritesData(favorites);
+  renderFavorites();
+}
+
+function exportFavoritesCSV() {
+  const items = Object.values(getFavoritesData());
+
+  if (!items.length) {
+    alert("收藏还是空的。");
+    return;
+  }
+
+  const rows = [
+    ["word", "phonetic", "pos", "meaning", "tags", "mastered", "context_sentence", "note", "created_at", "updated_at"]
+  ];
+
+  for (const item of items) {
+    rows.push([
+      item.word || "",
+      item.phonetic || "",
+      item.pos || "",
+      item.meaning || "",
+      (item.tags || []).join("|"),
+      item.mastered ? "yes" : "no",
+      item.sentence || "",
+      item.note || "",
+      item.createdAt || "",
+      item.updatedAt || ""
+    ]);
+  }
+
+  const csv = "\uFEFF" + rows.map(row =>
+    row.map(csvEscape).join(",")
+  ).join("\n");
+
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  downloadBlob(blob, "english-reader-favorites.csv");
+}
+
+/* =========================
+   句子上下文提取
+   ========================= */
+
+function extractSentenceAt(text, wordIndex) {
+  if (!text) return "";
+
+  const sentenceBreaks = ".!?。！？\n";
+  let start = 0;
+
+  for (let i = wordIndex - 1; i >= 0; i--) {
+    if (sentenceBreaks.includes(text[i])) {
+      start = i + 1;
+      break;
+    }
+  }
+
+  let end = text.length;
+
+  for (let i = wordIndex; i < text.length; i++) {
+    if (sentenceBreaks.includes(text[i])) {
+      end = i + 1;
+      break;
+    }
+  }
+
+  return text.slice(start, end).replace(/\s+/g, " ").trim();
+}
+
+
+/* =========================
+   V0.5.2 阅读显示 / 快捷键 / 拖拽 / 进度
+   ========================= */
+
+function getReadingPreferences() {
+  try {
+    return JSON.parse(localStorage.getItem(READING_PREFS_KEY) || "{}");
+  } catch {
+    return {};
+  }
+}
+
+function applyAppearance(mode) {
+  let useDark = mode === "dark";
+  if (mode === "system") {
+    useDark = window.matchMedia?.("(prefers-color-scheme: dark)")?.matches || false;
+  }
+  document.body.classList.toggle("darkMode", useDark);
+}
+
+function applyReadingPreferences() {
+  const prefs = {
+    fontSize: "21",
+    lineHeight: "2",
+    appearance: "system",
+    ...getReadingPreferences()
+  };
+
+  document.documentElement.style.setProperty("--reader-font-size", `${prefs.fontSize}px`);
+  document.documentElement.style.setProperty("--reader-line-height", prefs.lineHeight);
+  applyAppearance(prefs.appearance);
+
+  ["readerFontSize", "readerFontSizeQuick"].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.value = prefs.fontSize;
+  });
+
+  ["readerLineHeight", "readerLineHeightQuick"].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.value = prefs.lineHeight;
+  });
+
+  ["appearanceMode", "appearanceModeQuick"].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.value = prefs.appearance;
+  });
+}
+
+function saveReadingPreferences() {
+  const old = getReadingPreferences();
+  const prefs = {
+    ...old,
+    fontSize: document.getElementById("readerFontSize")?.value || old.fontSize || "21",
+    lineHeight: document.getElementById("readerLineHeight")?.value || old.lineHeight || "2",
+    appearance: document.getElementById("appearanceMode")?.value || old.appearance || "system"
+  };
+
+  localStorage.setItem(READING_PREFS_KEY, JSON.stringify(prefs));
+  applyReadingPreferences();
+}
+
+function syncQuickReadingSetting(type, value) {
+  const prefs = { ...getReadingPreferences() };
+
+  if (type === "font") prefs.fontSize = value;
+  if (type === "line") prefs.lineHeight = value;
+  if (type === "appearance") prefs.appearance = value;
+
+  localStorage.setItem(READING_PREFS_KEY, JSON.stringify(prefs));
+  applyReadingPreferences();
+}
+
+function openReadingSettings() {
+  applyReadingPreferences();
+  document.getElementById("readingSettingsModal").classList.add("show");
+}
+
+function openHelp() {
+  document.getElementById("helpModal").classList.add("show");
+}
+
+async function loadTxtFile(file) {
+  if (!file) return false;
+
+  const name = String(file.name || "").toLowerCase();
+  if (!name.endsWith(".txt") && file.type !== "text/plain") {
+    alert("当前版本的文章文件导入只支持 TXT。");
+    return false;
+  }
+
+  const text = await file.text();
+  document.getElementById("inputText").value = text;
+  return true;
+}
+
+function setupTextDropZone() {
+  const zone = document.getElementById("textDropZone");
+  const fileInput = document.getElementById("fileInput");
+  if (!zone || !fileInput) return;
+
+  const title = zone.querySelector(".dropZoneTitle");
+  const hint = zone.querySelector(".dropZoneHint");
+  let dragDepth = 0;
+
+  const resetCopy = () => {
+    if (title) title.textContent = "拖拽 TXT 文件到这里";
+    if (hint) hint.textContent = "或点击此区域选择文件";
+  };
+
+  const showLoaded = file => {
+    if (title) title.textContent = `已载入：${file.name}`;
+    if (hint) hint.textContent = "现在点击“生成可点击文章”即可开始阅读";
+  };
+
+  zone.addEventListener("click", () => fileInput.click());
+
+  zone.addEventListener("keydown", event => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      fileInput.click();
+    }
+  });
+
+  zone.addEventListener("dragenter", event => {
+    event.preventDefault();
+    dragDepth += 1;
+    zone.classList.add("dragging");
+    if (title) title.textContent = "松开即可导入 TXT";
+    if (hint) hint.textContent = "文件只会先载入，不会自动生成文章";
+  });
+
+  zone.addEventListener("dragover", event => {
+    event.preventDefault();
+  });
+
+  zone.addEventListener("dragleave", event => {
+    event.preventDefault();
+    dragDepth = Math.max(0, dragDepth - 1);
+    if (dragDepth === 0) {
+      zone.classList.remove("dragging");
+      resetCopy();
+    }
+  });
+
+  zone.addEventListener("drop", async event => {
+    event.preventDefault();
+    dragDepth = 0;
+    zone.classList.remove("dragging");
+
+    const file = event.dataTransfer?.files?.[0];
+    if (!file) {
+      resetCopy();
+      return;
+    }
+
+    const ok = await loadTxtFile(file);
+    if (ok) showLoaded(file);
+    else resetCopy();
+  });
+
+  fileInput.addEventListener("change", async event => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const ok = await loadTxtFile(file);
+    if (ok) showLoaded(file);
+
+    // 允许用户连续两次选择同一个文件
+    event.target.value = "";
+  });
+}
+
+function updateReadingProgress() {
+  const layout = document.getElementById("readerLayout");
+  const progress = document.getElementById("readingProgress");
+  const topButton = document.getElementById("backToTop");
+
+  if (!layout?.classList.contains("show")) {
+    if (progress) progress.style.width = "0%";
+    if (topButton) topButton.classList.remove("show");
+    return;
+  }
+
+  const maxScroll = Math.max(1, document.documentElement.scrollHeight - window.innerHeight);
+  const percent = Math.min(100, Math.max(0, window.scrollY / maxScroll * 100));
+
+  if (progress) progress.style.width = `${percent}%`;
+  if (topButton) topButton.classList.toggle("show", window.scrollY > 500);
+}
+
+function checkBackupReminder() {
+  const total = Object.keys(getVocabData()).length + Object.keys(getFavoritesData()).length;
+  const box = document.getElementById("backupReminder");
+  if (!box || total < 10) return;
+
+  const dismissed = localStorage.getItem(BACKUP_DISMISS_KEY);
+  const today = new Date().toISOString().slice(0,10);
+  if (dismissed === today) return;
+
+  const last = localStorage.getItem(LAST_BACKUP_KEY);
+  const overdue = !last || (Date.now() - new Date(last).getTime()) > 7 * 24 * 60 * 60 * 1000;
+
+  box.classList.toggle("show", overdue);
+}
+
+function dismissBackupReminder() {
+  localStorage.setItem(BACKUP_DISMISS_KEY, new Date().toISOString().slice(0,10));
+  document.getElementById("backupReminder")?.classList.remove("show");
+}
+
+document.addEventListener("keydown", event => {
+  const cmd = event.ctrlKey || event.metaKey;
+
+  if (cmd && event.key.toLowerCase() === "k") {
+    event.preventDefault();
+    closeModal("settingsModal");
+    closeModal("favoritesModal");
+    closeModal("vocabModal");
+    const input = document.getElementById("directSearchInput");
+    input?.focus();
+    input?.select();
+  }
+
+  if (cmd && event.key.toLowerCase() === "f") {
+    const readerShown = document.getElementById("readerLayout")?.classList.contains("show");
+    if (readerShown) {
+      event.preventDefault();
+      const input = document.getElementById("articleFindInput");
+      input?.focus();
+      input?.select();
+    }
+  }
+});
+
+window.addEventListener("scroll", updateReadingProgress, { passive: true });
+
+if (window.matchMedia) {
+  window.matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change", () => {
+    if ((getReadingPreferences().appearance || "system") === "system") applyReadingPreferences();
+  });
+}
+
+/* =========================
+   直接搜索 + 自动补全
+   ========================= */
+
+let suggestionItems = [];
+let suggestionIndex = -1;
+let suggestionTimer = null;
+
+async function directSearch(explicitWord = "") {
+  const input = document.getElementById("directSearchInput");
+  const word = (explicitWord || input.value).trim();
+
+  if (!word) {
+    input.focus();
+    return;
+  }
+
+  input.value = word;
+  hideSearchSuggestions();
+
+  const resultBox = document.getElementById("directSearchResult");
+  resultBox.innerHTML = '<div class="searchEmpty">正在查询本地词库…</div>';
+
+  speakWord(word);
+  const result = await lookupWord(word);
+
+  if (!result) {
+    addToVocab(word, null, "search");
+
+    currentLookupState = {
+      word,
+      result: null,
+      sentence: "",
+      source: "search"
+    };
+
+    resultBox.innerHTML = `
+      <div class="searchResultCard">
+        <div class="searchResultWord">${escapeHtml(word)}</div>
+        <div class="searchResultMeaning">
+          本地词库没有查到这个词，但你仍然可以收藏并建立自己的个人词卡。
+        </div>
+        <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+          <button class="secondary" onclick="speakWord('${escapeJs(word)}')">🔊 再听一次</button>
+          <button class="secondary" onclick="favoriteDirectSearchUnknown('${escapeJs(word)}', this)">
+            ${isFavorite(word, null) ? "★ 已收藏" : "☆ 收藏"}
+          </button>
+        </div>
+      </div>
+    `;
+    return;
+  }
+
+  addToVocab(word, result, "search");
+
+  currentLookupState = {
+    word,
+    result,
+    sentence: "",
+    source: "search"
+  };
+
+  const exchangeItems = formatExchange(result.exchange || "");
+
+  resultBox.innerHTML = `
+    <div class="searchResultCard">
+      <div class="searchResultTop">
+        <span class="searchResultWord">${escapeHtml(word)}</span>
+        <span class="searchResultPhonetic">${escapeHtml(result.phonetic || "")}</span>
+      </div>
+
+      <div class="searchResultPos">${escapeHtml(result.pos || "词性未标注")}</div>
+      <div class="searchResultMeaning">${escapeHtml(result.meaning || "暂无中文释义")}</div>
+
+      ${result.baseWord && result.baseWord !== normalizeWord(word) ? `
+        <div style="margin-top:11px;padding:10px;background:#fff;border-radius:8px;line-height:1.55">
+          <b>词形关系：</b>${escapeHtml(normalizeWord(word))} → ${escapeHtml(result.baseWord)}
+          ${result.surfaceMeaning ? `<div style="margin-top:5px;color:#666">当前词形释义：${escapeHtml(result.surfaceMeaning)}</div>` : ""}
+        </div>
+      ` : ""}
+
+      ${exchangeItems.length ? `
+        <div style="margin-top:9px;display:flex;flex-wrap:wrap;gap:5px">
+          ${exchangeItems.map(x => `<span class="exchangeChip" style="background:#e9e9ee;color:#333">${escapeHtml(x)}</span>`).join("")}
+        </div>
+      ` : ""}
+
+      ${result.ielts ? `
+        <div style="margin-top:12px;padding:10px;background:#fff;border-radius:8px;line-height:1.55">
+          <b>IELTS 提示：</b>${escapeHtml(result.ielts)}
+        </div>
+      ` : ""}
+
+      <div class="searchResultMeta">
+        来源：${escapeHtml(result.source || "")}
+      </div>
+
+      <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+        <button class="secondary" onclick="speakWord('${escapeJs(word)}')">🔊 再听一次</button>
+        <button class="secondary" onclick="favoriteDirectSearch('${escapeJs(word)}')">
+          ${isFavorite(word, result) ? "★ 已收藏" : "☆ 收藏"}
+        </button>
+      </div>
+    </div>
+  `;
+}
+
+function favoriteDirectSearchUnknown(word, button) {
+  currentLookupState = {
+    word,
+    result: null,
+    sentence: "",
+    source: "search"
+  };
+
+  const key = getFavoriteKey(word, null);
+  const favorites = getFavoritesData();
+
+  if (!favorites[key]) {
+    saveCurrentFavorite();
+  }
+
+  if (button) button.textContent = "★ 已收藏";
+}
+
+function favoriteDirectSearch(word) {
+  if (!currentLookupState.result ||
+      normalizeWord(currentLookupState.word) !== normalizeWord(word)) {
+    return;
+  }
+
+  const key = getFavoriteKey(currentLookupState.word, currentLookupState.result);
+  const favorites = getFavoritesData();
+
+  if (!favorites[key]) {
+    saveCurrentFavorite();
+  }
+
+  const buttons = document.getElementById("directSearchResult")
+    .querySelectorAll("button");
+
+  buttons.forEach(btn => {
+    if (btn.textContent.includes("收藏")) {
+      btn.textContent = "★ 已收藏";
+    }
+  });
+}
+
+async function refreshSearchSuggestions() {
+  const input = document.getElementById("directSearchInput");
+  const prefix = input.value.trim().toLowerCase();
+
+  if (!prefix || prefix.length < 2) {
+    hideSearchSuggestions();
+    return;
+  }
+
+  try {
+    suggestionItems = await getECDICTPrefix(prefix, 9);
+    suggestionIndex = -1;
+    renderSearchSuggestions();
+  } catch (error) {
+    console.error(error);
+    hideSearchSuggestions();
+  }
+}
+
+function renderSearchSuggestions() {
+  const box = document.getElementById("searchSuggestions");
+
+  if (!suggestionItems.length) {
+    hideSearchSuggestions();
+    return;
+  }
+
+  box.innerHTML = suggestionItems.map((item, index) => `
+    <div class="suggestionItem ${index === suggestionIndex ? "active" : ""}"
+         onmousedown="event.preventDefault(); chooseSuggestion(${index});">
+      <span class="suggestionWord">${escapeHtml(item.word || "")}</span>
+      <span class="suggestionMeaning">${escapeHtml((item.translation || "").split("\n")[0])}</span>
+    </div>
+  `).join("");
+
+  box.classList.add("show");
+}
+
+function hideSearchSuggestions() {
+  document.getElementById("searchSuggestions").classList.remove("show");
+  suggestionIndex = -1;
+}
+
+function chooseSuggestion(index) {
+  const item = suggestionItems[index];
+  if (!item) return;
+  directSearch(item.word);
+}
+
+const searchInput = document.getElementById("directSearchInput");
+
+searchInput.addEventListener("input", () => {
+  clearTimeout(suggestionTimer);
+  suggestionTimer = setTimeout(refreshSearchSuggestions, 160);
+});
+
+searchInput.addEventListener("keydown", event => {
+  if (event.key === "ArrowDown" && suggestionItems.length) {
+    event.preventDefault();
+    suggestionIndex = Math.min(suggestionItems.length - 1, suggestionIndex + 1);
+    renderSearchSuggestions();
+    return;
+  }
+
+  if (event.key === "ArrowUp" && suggestionItems.length) {
+    event.preventDefault();
+    suggestionIndex = Math.max(0, suggestionIndex - 1);
+    renderSearchSuggestions();
+    return;
+  }
+
+  if (event.key === "Escape") {
+    hideSearchSuggestions();
+    return;
+  }
+
+  if (event.key === "Enter") {
+    event.preventDefault();
+    if (suggestionIndex >= 0 && suggestionItems[suggestionIndex]) {
+      chooseSuggestion(suggestionIndex);
+    } else {
+      directSearch();
+    }
+  }
+});
+
+searchInput.addEventListener("blur", () => {
+  setTimeout(hideSearchSuggestions, 120);
+});
+
+/* =========================
+   原文全文定位
+   ========================= */
+
+let articleMatches = [];
+let articleMatchIndex = -1;
+
+function updateArticleFind() {
+  const input = document.getElementById("articleFindInput");
+  const query = normalizeWord(input.value || "");
+  const words = [...document.querySelectorAll("#article .word")];
+
+  words.forEach(w => w.classList.remove("findMatch", "findCurrent"));
+  articleMatches = [];
+  articleMatchIndex = -1;
+
+  if (!query) {
+    document.getElementById("articleFindCount").textContent = "";
+    return;
+  }
+
+  articleMatches = words.filter(w => normalizeWord(w.textContent) === query);
+  articleMatches.forEach(w => w.classList.add("findMatch"));
+
+  if (articleMatches.length) {
+    articleMatchIndex = 0;
+    focusArticleMatch();
+  } else {
+    document.getElementById("articleFindCount").textContent = "0 个";
+  }
+}
+
+function focusArticleMatch() {
+  articleMatches.forEach(w => w.classList.remove("findCurrent"));
+  if (!articleMatches.length || articleMatchIndex < 0) return;
+
+  const current = articleMatches[articleMatchIndex];
+  current.classList.add("findCurrent");
+  current.scrollIntoView({ behavior: "smooth", block: "center" });
+  document.getElementById("articleFindCount").textContent =
+    `${articleMatchIndex + 1}/${articleMatches.length}`;
+}
+
+function jumpArticleMatch(direction) {
+  if (!articleMatches.length) {
+    updateArticleFind();
+    return;
+  }
+
+  articleMatchIndex =
+    (articleMatchIndex + direction + articleMatches.length) % articleMatches.length;
+  focusArticleMatch();
+}
+
+document.getElementById("articleFindInput").addEventListener("input", updateArticleFind);
+document.getElementById("articleFindInput").addEventListener("keydown", event => {
+  if (event.key === "Enter") jumpArticleMatch(event.shiftKey ? -1 : 1);
+});
+
+/* =========================
+   模态框与设置
+   ========================= */
+
+function closeModal(id) {
+  document.getElementById(id).classList.remove("show");
+}
+
+function modalBackdropClose(event, id) {
+  if (event.target.id === id) closeModal(id);
+}
+
+function formatBytes(bytes) {
+  if (!Number.isFinite(bytes)) return "未知";
+  const units = ["B", "KB", "MB", "GB"];
+  let value = bytes;
+  let i = 0;
+
+  while (value >= 1024 && i < units.length - 1) {
+    value /= 1024;
+    i++;
+  }
+
+  return `${value.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
+}
+
+async function openSettings() {
+  applyReadingPreferences();
+  document.getElementById("settingsModal").classList.add("show");
+
+  const ready = await getECDICTMeta("ready");
+  const count = await getECDICTMeta("count");
+  const lemmaReady = await getECDICTMeta("lemma_ready");
+  const lemmaCount = await getECDICTMeta("lemma_count");
+
+  document.getElementById("settingsDictStatus").textContent =
+    ready?.value
+      ? `已导入 · ${count ? Number(count.value).toLocaleString() : "未知"} 条`
+      : "未导入";
+
+  document.getElementById("settingsLemmaStatus").textContent =
+    lemmaReady?.value
+      ? `已导入 · ${lemmaCount ? Number(lemmaCount.value).toLocaleString() : "未知"} 条映射`
+      : "未导入";
+
+  const vocabCount = Object.keys(getVocabData()).length;
+  const favoriteCount = Object.keys(getFavoritesData()).length;
+
+  document.getElementById("settingsVocabCount").textContent =
+    `${vocabCount.toLocaleString()} 条查询记录`;
+  document.getElementById("settingsVocabSize").textContent =
+    `约 ${formatBytes(getLocalStorageBytes(VOCAB_STORAGE_KEY))}`;
+
+  document.getElementById("settingsFavoriteCount").textContent =
+    `${favoriteCount.toLocaleString()} 个收藏`;
+  document.getElementById("settingsFavoriteSize").textContent =
+    `约 ${formatBytes(getLocalStorageBytes(FAVORITES_STORAGE_KEY))}`;
+
+  const dictScan = await getECDICTMeta("scan_entries_bytes");
+  const lemmaScan = await getECDICTMeta("scan_lemmas_bytes");
+  const dictSource = await getECDICTMeta("source_file_size");
+  const lemmaSource = await getECDICTMeta("lemma_source_file_size");
+
+  document.getElementById("settingsDictSize").textContent = dictScan?.value
+    ? `逻辑数据约 ${formatBytes(Number(dictScan.value))}`
+    : dictSource?.value
+      ? `导入源文件 ${formatBytes(Number(dictSource.value))}（可点“计算明细”）`
+      : "旧版导入，点“计算明细”可估算";
+
+  document.getElementById("settingsLemmaSize").textContent = lemmaScan?.value
+    ? `逻辑数据约 ${formatBytes(Number(lemmaScan.value))}`
+    : lemmaSource?.value
+      ? `导入源文件 ${formatBytes(Number(lemmaSource.value))}（可点“计算明细”）`
+      : "旧版导入，点“计算明细”可估算";
+
+  const knownTotalBox = document.getElementById("settingsKnownTotal");
+  const overheadBox = document.getElementById("settingsStorageOverhead");
+
+  const vocabBytes = getLocalStorageBytes(VOCAB_STORAGE_KEY);
+  const favoriteBytes = getLocalStorageBytes(FAVORITES_STORAGE_KEY);
+  const learningBytes = vocabBytes + favoriteBytes;
+
+  const cachedKnownBytes =
+    Number(dictScan?.value || 0) +
+    Number(lemmaScan?.value || 0) +
+    learningBytes;
+
+  knownTotalBox.textContent = cachedKnownBytes > learningBytes
+    ? `已知数据合计：约 ${formatBytes(cachedKnownBytes)}`
+    : `已知数据合计：至少 ${formatBytes(learningBytes)}（点“计算明细”统计词库）`;
+
+  const storageBox = document.getElementById("settingsStorage");
+
+  if (navigator.storage?.estimate) {
+    try {
+      const estimate = await navigator.storage.estimate();
+      const usage = Number(estimate.usage || 0);
+
+      storageBox.textContent =
+        `${formatBytes(usage)} 已使用 / ${formatBytes(estimate.quota || 0)} 可用配额`;
+
+      if (cachedKnownBytes > learningBytes && usage > 0) {
+        const other = Math.max(0, usage - cachedKnownBytes);
+        overheadBox.textContent =
+          `数据库开销 / 其他：约 ${formatBytes(other)}（浏览器估算）`;
+      } else {
+        overheadBox.textContent =
+          "数据库开销 / 其他：计算词库明细后可估算";
+      }
+    } catch {
+      storageBox.textContent = "浏览器未提供精确估算";
+      overheadBox.textContent = "数据库开销 / 其他：无法估算";
+    }
+  } else {
+    storageBox.textContent = "当前浏览器不支持存储估算";
+    overheadBox.textContent = "数据库开销 / 其他：无法估算";
+  }
+}
+
+
+function getLocalStorageBytes(key) {
+  const value = localStorage.getItem(key) || "";
+  return new TextEncoder().encode(value).length;
+}
+
+async function estimateStoreBytes(storeName, onProgress) {
+  const db = await openECDICTDatabase();
+  const tx = db.transaction(storeName, "readonly");
+  const store = tx.objectStore(storeName);
+
+  return await new Promise((resolve, reject) => {
+    let bytes = 0;
+    let count = 0;
+    const encoder = new TextEncoder();
+    const req = store.openCursor();
+
+    req.onsuccess = () => {
+      const cursor = req.result;
+      if (!cursor) {
+        resolve({ bytes, count });
+        return;
+      }
+
+      const json = JSON.stringify(cursor.value);
+      bytes += encoder.encode(json).length;
+      count++;
+
+      if (onProgress && count % 10000 === 0) onProgress(count);
+      cursor.continue();
+    };
+
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function scanStorageBreakdown() {
+  const status = document.getElementById("storageScanStatus");
+  const dictSize = document.getElementById("settingsDictSize");
+  const lemmaSize = document.getElementById("settingsLemmaSize");
+
+  try {
+    status.textContent = "正在统计 ECDICT…";
+    const dict = await estimateStoreBytes("entries", count => {
+      status.textContent = `正在统计 ECDICT… ${count.toLocaleString()} 条`;
+    });
+    dictSize.textContent = `逻辑数据约 ${formatBytes(dict.bytes)} · ${dict.count.toLocaleString()} 条`;
+
+    status.textContent = "正在统计 Lemma…";
+    const lemma = await estimateStoreBytes("lemmas", count => {
+      status.textContent = `正在统计 Lemma… ${count.toLocaleString()} 条`;
+    });
+    lemmaSize.textContent = `逻辑数据约 ${formatBytes(lemma.bytes)} · ${lemma.count.toLocaleString()} 条`;
+
+    await setECDICTMeta("scan_entries_bytes", dict.bytes);
+    await setECDICTMeta("scan_lemmas_bytes", lemma.bytes);
+
+    const vocabBytes = getLocalStorageBytes(VOCAB_STORAGE_KEY);
+    const favoriteBytes = getLocalStorageBytes(FAVORITES_STORAGE_KEY);
+    const knownTotal = dict.bytes + lemma.bytes + vocabBytes + favoriteBytes;
+
+    document.getElementById("settingsKnownTotal").textContent =
+      `已知数据合计：约 ${formatBytes(knownTotal)}`;
+
+    if (navigator.storage?.estimate) {
+      try {
+        const estimate = await navigator.storage.estimate();
+        const usage = Number(estimate.usage || 0);
+        const other = Math.max(0, usage - knownTotal);
+
+        document.getElementById("settingsStorageOverhead").textContent =
+          `数据库开销 / 其他：约 ${formatBytes(other)}（浏览器估算）`;
+
+        document.getElementById("settingsStorage").textContent =
+          `${formatBytes(usage)} 已使用 / ${formatBytes(estimate.quota || 0)} 可用配额`;
+      } catch {
+        document.getElementById("settingsStorageOverhead").textContent =
+          "数据库开销 / 其他：无法估算";
+      }
+    }
+
+    status.textContent =
+      `统计完成：ECDICT + Lemma 逻辑数据约 ${formatBytes(dict.bytes + lemma.bytes)}`;
+  } catch (error) {
+    console.error(error);
+    status.textContent = "统计失败，请稍后重试。";
+  }
+}
+
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1500);
+}
+
+async function exportLearningBackup() {
+  const backup = {
+    app: "EnglishReader",
+    backupType: "learning",
+    version: "0.5.2",
+    createdAt: new Date().toISOString(),
+    vocab: getVocabData(),
+    favorites: getFavoritesData(),
+    historyBaselines: getHistoryBaselines(),
+    queryEvents: getQueryEvents(),
+    preferences: {
+      speed: document.getElementById("speed")?.value || "1",
+      reading: getReadingPreferences()
+    }
+  };
+
+  const blob = new Blob([JSON.stringify(backup, null, 2)], {
+    type: "application/json;charset=utf-8"
+  });
+
+  downloadBlob(blob, `english-reader-learning-${new Date().toISOString().slice(0,10)}.json`);
+  localStorage.setItem(LAST_BACKUP_KEY, new Date().toISOString());
+  document.getElementById("backupReminder")?.classList.remove("show");
+  document.getElementById("backupStatus").textContent = "✅ 学习数据已导出。";
+}
+
+async function appendStoreToBackupParts(storeName, type, parts, statusEl, batchSize = 600) {
+  const db = await openECDICTDatabase();
+  const tx = db.transaction(storeName, "readonly");
+  const store = tx.objectStore(storeName);
+
+  return await new Promise((resolve, reject) => {
+    let lines = [];
+    let count = 0;
+    const req = store.openCursor();
+
+    req.onsuccess = () => {
+      const cursor = req.result;
+
+      if (!cursor) {
+        if (lines.length) parts.push(lines.join("\n") + "\n");
+        resolve(count);
+        return;
+      }
+
+      lines.push(JSON.stringify({ type, data: cursor.value }));
+      count++;
+
+      if (lines.length >= batchSize) {
+        parts.push(lines.join("\n") + "\n");
+        lines = [];
+      }
+
+      if (statusEl && count % 20000 === 0) {
+        statusEl.textContent = `正在打包 ${type}… ${count.toLocaleString()} 条`;
+      }
+
+      cursor.continue();
+    };
+
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function exportFullBackup() {
+  const status = document.getElementById("backupStatus");
+
+  if (!confirm("完整备份会包含整个 ECDICT 和 Lemma，文件可能很大，并且导出需要一些时间。继续吗？")) return;
+
+  try {
+    status.textContent = "正在准备完整备份，请不要关闭页面…";
+    const parts = [];
+
+    parts.push(JSON.stringify({
+      type: "header",
+      app: "EnglishReader",
+      version: "0.5.2",
+      createdAt: new Date().toISOString()
+    }) + "\n");
+
+    parts.push(JSON.stringify({ type: "vocab", data: getVocabData() }) + "\n");
+    parts.push(JSON.stringify({ type: "favorites", data: getFavoritesData() }) + "\n");
+    parts.push(JSON.stringify({ type: "historyBaselines", data: getHistoryBaselines() }) + "\n");
+    parts.push(JSON.stringify({ type: "queryEvents", data: getQueryEvents() }) + "\n");
+    parts.push(JSON.stringify({
+      type: "preferences",
+      data: {
+        speed: document.getElementById("speed")?.value || "1",
+        reading: getReadingPreferences()
+      }
+    }) + "\n");
+
+    const entryCount = await appendStoreToBackupParts("entries", "entry", parts, status, 500);
+    const lemmaCount = await appendStoreToBackupParts("lemmas", "lemma", parts, status, 1000);
+
+    parts.push(JSON.stringify({
+      type: "footer",
+      entryCount,
+      lemmaCount
+    }) + "\n");
+
+    status.textContent = "正在生成备份文件…";
+    const blob = new Blob(parts, { type: "application/x-ndjson;charset=utf-8" });
+    downloadBlob(blob, `english-reader-full-${new Date().toISOString().slice(0,10)}.erbackup`);
+    localStorage.setItem(LAST_BACKUP_KEY, new Date().toISOString());
+    document.getElementById("backupReminder")?.classList.remove("show");
+    status.textContent = `✅ 完整备份已生成：ECDICT ${entryCount.toLocaleString()} 条，Lemma ${lemmaCount.toLocaleString()} 条。`;
+  } catch (error) {
+    console.error(error);
+    status.textContent = "❌ 完整备份失败：" + (error.message || "未知错误");
+  }
+}
+
+async function importBackupFile(file, expectedType = "auto") {
+  const status = document.getElementById("backupStatus");
+
+  // Small JSON learning backup
+  if (file.name.toLowerCase().endsWith(".json")) {
+    if (expectedType === "full") {
+      throw new Error("这里请选择 .erbackup 完整备份文件，而不是学习数据 JSON。");
+    }
+
+    const text = await file.text();
+    const data = JSON.parse(text);
+
+    if (data.app !== "EnglishReader" || data.backupType !== "learning") {
+      throw new Error("不是有效的 English Reader 学习数据备份。");
+    }
+
+    const mode = document.getElementById("learningImportMode")?.value || "merge";
+
+    if (mode === "preview") {
+      const incomingEventCount = Object.keys(data.queryEvents || {}).length;
+      const incomingFavoriteCount = Object.keys(data.favorites || {}).length;
+      const currentEventCount = Object.keys(getQueryEvents()).length;
+      const currentFavoriteCount = Object.keys(getFavoritesData()).length;
+
+      const ok = confirm(
+        `准备智能合并：\n\n` +
+        `当前：${currentEventCount} 条 V0.5.2 查询事件，${currentFavoriteCount} 个收藏\n` +
+        `导入：${incomingEventCount} 条 V0.5.2 查询事件，${incomingFavoriteCount} 个收藏\n\n` +
+        `相同事件 ID 会自动去重。继续吗？`
+      );
+      if (!ok) return;
+    }
+
+    if (mode === "overwrite") {
+      if (!confirm("完全覆盖会替换当前查询记录和收藏。确定继续吗？")) return;
+
+      setFavoritesData(data.favorites || {});
+      setHistoryBaselines(data.historyBaselines || convertLegacyBackupToBaseline(data, file));
+      setQueryEvents(data.queryEvents || {});
+      if (!Object.keys(data.historyBaselines || {}).length && !Object.keys(data.queryEvents || {}).length) {
+        setVocabData(data.vocab || {});
+      } else {
+        rebuildVocabFromMergeData();
+      }
+    } else {
+      ensureHistoryMigration();
+
+      const incomingBaselines = Object.keys(data.historyBaselines || {}).length
+        ? data.historyBaselines
+        : convertLegacyBackupToBaseline(data, file);
+
+      setHistoryBaselines(mergeUniqueMaps(getHistoryBaselines(), incomingBaselines));
+      setQueryEvents(mergeUniqueMaps(getQueryEvents(), data.queryEvents || {}));
+      setFavoritesData(mergeFavoritesMaps(getFavoritesData(), data.favorites || {}));
+      rebuildVocabFromMergeData();
+    }
+
+    if (data.preferences?.speed && document.getElementById("speed")) {
+      document.getElementById("speed").value = data.preferences.speed;
+    }
+
+    if (data.preferences?.reading) {
+      localStorage.setItem(READING_PREFS_KEY, JSON.stringify({
+        ...getReadingPreferences(),
+        ...data.preferences.reading
+      }));
+      applyReadingPreferences();
+    }
+
+    const finalEventCount = Object.keys(getQueryEvents()).length;
+    const finalFavoriteCount = Object.keys(getFavoritesData()).length;
+
+    if (mode === "overwrite") {
+      status.textContent =
+        `✅ 已完全覆盖：当前 ${finalEventCount} 条查询事件，${finalFavoriteCount} 个收藏。`;
+    } else {
+      const incomingEventCount = Object.keys(data.queryEvents || {}).length;
+      const incomingFavoriteCount = Object.keys(data.favorites || {}).length;
+
+      status.textContent =
+        `✅ 智能合并完成：导入包包含 ${incomingEventCount} 条查询事件、${incomingFavoriteCount} 个收藏；` +
+        `合并后共有 ${finalEventCount} 条查询事件、${finalFavoriteCount} 个收藏。重复事件已自动去重。`;
+    }
+    return;
+  }
+
+  if (expectedType === "learning") {
+    throw new Error("这里请选择由“导出学习数据”生成的 .json 文件。");
+  }
+
+  const preview = await file.slice(0, 4096).text();
+  const firstLine = preview.split(/\r?\n/).find(line => line.trim());
+
+  if (!firstLine) throw new Error("备份文件是空的。");
+
+  let headerPreview;
+  try {
+    headerPreview = JSON.parse(firstLine);
+  } catch {
+    throw new Error("无法识别备份文件格式。");
+  }
+
+  if (headerPreview.type !== "header" || headerPreview.app !== "EnglishReader") {
+    throw new Error("不是有效的 English Reader 完整备份。");
+  }
+
+  if (!confirm("恢复完整备份会覆盖当前 ECDICT、Lemma、查询记录和收藏。确定继续吗？")) return;
+
+  status.textContent = "正在清空旧词库…";
+  await clearECDICTEntries();
+  await clearLemmaEntries();
+
+  const reader = file.stream().getReader();
+  const decoder = new TextDecoder("utf-8");
+  let carry = "";
+  let entryBatch = [];
+  let lemmaBatch = [];
+  let vocab = null;
+  let favorites = null;
+  let historyBaselines = null;
+  let queryEvents = null;
+  let importedPreferences = null;
+  let entries = 0;
+  let lemmas = 0;
+  let sawHeader = false;
+
+  async function flush() {
+    if (entryBatch.length) {
+      await writeECDICTBatch(entryBatch);
+      entries += entryBatch.length;
+      entryBatch = [];
+    }
+
+    if (lemmaBatch.length) {
+      await writeLemmaBatch(lemmaBatch);
+      lemmas += lemmaBatch.length;
+      lemmaBatch = [];
+    }
+  }
+
+  async function processLine(line) {
+    if (!line.trim()) return;
+    const obj = JSON.parse(line);
+
+    if (obj.type === "header") {
+      if (obj.app !== "EnglishReader") throw new Error("备份文件格式不正确。");
+      sawHeader = true;
+      return;
+    }
+
+    if (obj.type === "vocab") {
+      vocab = obj.data || {};
+      return;
+    }
+
+    if (obj.type === "favorites") {
+      favorites = obj.data || {};
+      return;
+    }
+
+    if (obj.type === "historyBaselines") {
+      historyBaselines = obj.data || {};
+      return;
+    }
+
+    if (obj.type === "queryEvents") {
+      queryEvents = obj.data || {};
+      return;
+    }
+
+    if (obj.type === "preferences") {
+      importedPreferences = obj.data || {};
+      return;
+    }
+
+    if (obj.type === "entry" && obj.data) entryBatch.push(obj.data);
+    if (obj.type === "lemma" && obj.data) lemmaBatch.push(obj.data);
+
+    if (entryBatch.length >= 1200 || lemmaBatch.length >= 2200) {
+      await flush();
+      status.textContent = `正在恢复… ECDICT ${entries.toLocaleString()} / Lemma ${lemmas.toLocaleString()}`;
+      await new Promise(resolve => setTimeout(resolve, 0));
+    }
+  }
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+
+    carry += decoder.decode(value, { stream: true });
+    const lines = carry.split(/\r?\n/);
+    carry = lines.pop() || "";
+
+    for (const line of lines) await processLine(line);
+  }
+
+  carry += decoder.decode();
+  if (carry.trim()) await processLine(carry);
+  await flush();
+
+  if (!sawHeader) throw new Error("没有找到备份文件头。文件可能损坏。");
+
+  await setECDICTMeta("ready", entries > 0);
+  await setECDICTMeta("count", entries);
+  await setECDICTMeta("lemma_ready", lemmas > 0);
+  await setECDICTMeta("lemma_count", lemmas);
+
+  if (favorites) setFavoritesData(favorites);
+
+  if (historyBaselines || queryEvents) {
+    setHistoryBaselines(historyBaselines || {});
+    setQueryEvents(queryEvents || {});
+    rebuildVocabFromMergeData();
+  } else if (vocab) {
+    setVocabData(vocab);
+    setHistoryBaselines({});
+    ensureHistoryMigration();
+  }
+
+  if (importedPreferences?.speed && document.getElementById("speed")) {
+    document.getElementById("speed").value = importedPreferences.speed;
+  }
+  if (importedPreferences?.reading) {
+    localStorage.setItem(READING_PREFS_KEY, JSON.stringify(importedPreferences.reading));
+    applyReadingPreferences();
+  }
+
+  await refreshDictionaryStatus();
+  status.textContent = `✅ 恢复完成：ECDICT ${entries.toLocaleString()} 条，Lemma ${lemmas.toLocaleString()} 条。`;
+}
+
+document.getElementById("learningBackupFileInput").addEventListener("change", async event => {
+  const file = event.target.files[0];
+  if (!file) return;
+
+  try {
+    document.getElementById("backupStatus").textContent = "正在导入学习数据…";
+    await importBackupFile(file, "learning");
+  } catch (error) {
+    console.error(error);
+    document.getElementById("backupStatus").textContent =
+      "❌ 学习数据导入失败：" + (error.message || "未知错误");
+  } finally {
+    event.target.value = "";
+  }
+});
+
+document.getElementById("fullBackupFileInput").addEventListener("change", async event => {
+  const file = event.target.files[0];
+  if (!file) return;
+
+  try {
+    document.getElementById("backupStatus").textContent = "正在读取完整备份…";
+    await importBackupFile(file, "full");
+  } catch (error) {
+    console.error(error);
+    document.getElementById("backupStatus").textContent =
+      "❌ 完整备份导入失败：" + (error.message || "未知错误");
+  } finally {
+    event.target.value = "";
+  }
+});
+
+function openChangelog() {
+  document.getElementById("changelogModal").classList.add("show");
+}
+
+async function deleteECDICTOnly() {
+  if (!confirm("确定删除本地 ECDICT 词库吗？")) return;
+
+  await clearECDICTEntries();
+  await setECDICTMeta("ready", false);
+  await setECDICTMeta("count", 0);
+  await setECDICTMeta("scan_entries_bytes", 0);
+
+  await refreshDictionaryStatus();
+  await openSettings();
+}
+
+async function deleteLemmaOnly() {
+  if (!confirm("确定删除本地 Lemma 词形库吗？")) return;
+
+  await clearLemmaEntries();
+  await setECDICTMeta("lemma_ready", false);
+  await setECDICTMeta("lemma_count", 0);
+  await setECDICTMeta("scan_lemmas_bytes", 0);
+
+  await refreshDictionaryStatus();
+  await openSettings();
+}
+
+async function deleteAllLocalDictionary() {
+  if (!confirm("确定删除 ECDICT 和 Lemma 两个本地词库吗？查询记录和收藏都会保留。")) return;
+
+  await clearECDICTEntries();
+  await clearLemmaEntries();
+
+  await setECDICTMeta("ready", false);
+  await setECDICTMeta("count", 0);
+  await setECDICTMeta("lemma_ready", false);
+  await setECDICTMeta("lemma_count", 0);
+  await setECDICTMeta("scan_entries_bytes", 0);
+  await setECDICTMeta("scan_lemmas_bytes", 0);
+
+  await refreshDictionaryStatus();
+  await openSettings();
+}
+
+
+document.getElementById("lemmaFileInput").addEventListener(
+  "change",
+  async function(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+
+    try {
+      await importLemmaFile(file);
+    } catch (error) {
+      console.error(error);
+      document.getElementById("lemmaImportStatus").textContent =
+        "❌ Lemma 导入失败：" + (error.message || "未知错误");
+    } finally {
+      event.target.value = "";
+      refreshDictionaryStatus();
+    }
+  }
+);
+
+/* =========================
+   单词卡片
+   ========================= */
+
+async function showWordCard(word, contextSentence = "", sourceType = "article") {
+  const card = document.getElementById("wordCard");
+  const emptySide = document.getElementById("emptySide");
+
+  document.getElementById("currentWord").textContent = word;
+  document.getElementById("phonetic").textContent = "";
+  document.getElementById("partOfSpeech").textContent = "查询中";
+  document.getElementById("meaning").textContent = "正在查询本地词库…";
+  document.getElementById("ieltsBox").style.display = "none";
+  document.getElementById("morphologyBox").classList.remove("show");
+  document.getElementById("morphologyRelation").textContent = "";
+  document.getElementById("surfaceMeaning").textContent = "";
+  document.getElementById("exchangeList").innerHTML = "";
+  document.getElementById("dictionaryStatus").textContent = "";
+  currentLookupState = {
+    word,
+    result: null,
+    sentence: contextSentence || "",
+    source: sourceType
+  };
+  updateFavoriteButton();
+
+  emptySide.style.display = "none";
+  card.classList.add("show");
+
+  const result = await lookupWord(word);
+
+  if (document.getElementById("currentWord").textContent !== word) return;
+
+  if (result) {
+    addToVocab(word, result, sourceType);
+
+    currentLookupState = {
+      word,
+      result,
+      sentence: contextSentence || "",
+      source: sourceType
+    };
+    updateFavoriteButton();
+
+    document.getElementById("phonetic").textContent = result.phonetic || "";
+    document.getElementById("partOfSpeech").textContent =
+      result.pos || "词性未标注";
+    document.getElementById("meaning").textContent =
+      result.meaning || "暂无中文释义";
+
+    const exchangeItems = formatExchange(result.exchange || "");
+    const hasMorphology =
+      (result.baseWord && result.baseWord !== normalizeWord(word)) ||
+      result.surfaceMeaning ||
+      exchangeItems.length;
+
+    if (hasMorphology) {
+      document.getElementById("morphologyBox").classList.add("show");
+      document.getElementById("morphologyRelation").textContent =
+        result.baseWord && result.baseWord !== normalizeWord(word)
+          ? `原形：${result.baseWord}（${normalizeWord(word)} → ${result.baseWord}）`
+          : `词形变化：${result.baseWord || normalizeWord(word)}`;
+
+      document.getElementById("surfaceMeaning").textContent =
+        result.surfaceMeaning && result.surfaceMeaning !== result.meaning
+          ? `当前词形释义：${result.surfaceMeaning}`
+          : "";
+
+      document.getElementById("exchangeList").innerHTML = exchangeItems
+        .map(item => `<span class="exchangeChip">${escapeHtml(item)}</span>`)
+        .join("");
+    }
+
+    document.getElementById("dictionaryStatus").textContent =
+      "来源：" + result.source +
+      (result.baseWord && result.baseWord !== normalizeWord(word)
+        ? " · 原形：" + result.baseWord
+        : "");
+
+    if (result.ielts) {
+      document.getElementById("ieltsBox").style.display = "block";
+      document.getElementById("ieltsText").textContent = result.ielts;
+    } else {
+      document.getElementById("ieltsBox").style.display = "none";
+    }
+  } else {
+    currentLookupState = {
+      word,
+      result: null,
+      sentence: contextSentence || "",
+      source: sourceType
+    };
+    updateFavoriteButton();
+
+    addToVocab(word, null, sourceType);
+
+    document.getElementById("phonetic").textContent = "";
+    document.getElementById("partOfSpeech").textContent = "未收录";
+    document.getElementById("meaning").textContent =
+      "词库暂未收录。你仍然可以点“☆ 收藏”，之后在“我的收藏”里自己填写释义、词性、上下文和备注。";
+    document.getElementById("ieltsBox").style.display = "none";
+    document.getElementById("morphologyBox").classList.remove("show");
+    document.getElementById("dictionaryStatus").textContent =
+      "未命中本地词库 · 已记入查询记录 · 仍可建立个人词卡";
+  }
+}
+
+function closeWordCard() {
+  document.getElementById("wordCard").classList.remove("show");
+  currentLookupState = { word: "", result: null, sentence: "", source: "" };
+  updateFavoriteButton();
+
+  if (window.innerWidth > 820) {
+    document.getElementById("emptySide").style.display = "block";
+  }
+
+  document.querySelectorAll(".word").forEach(el => {
+    el.classList.remove("active");
+  });
+}
+
+/* =========================
+   文章处理
+   ========================= */
+
+function generateArticle() {
+  const text = document.getElementById("inputText").value;
+  const article = document.getElementById("article");
+
+  if (!text.trim()) {
+    alert("请先粘贴英文文章。");
+    return;
+  }
+
+  article.innerHTML = "";
+  articleMatches = [];
+  articleMatchIndex = -1;
+
+  const findInput = document.getElementById("articleFindInput");
+  if (findInput) findInput.value = "";
+
+  const findCount = document.getElementById("articleFindCount");
+  if (findCount) findCount.textContent = "";
+
+  const regex = /[A-Za-z]+(?:['’][A-Za-z]+)*/g;
+
+  let lastIndex = 0;
+  let match;
+
+  while ((match = regex.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      article.appendChild(
+        document.createTextNode(text.slice(lastIndex, match.index))
+      );
+    }
+
+    const piece = match[0];
+    const span = document.createElement("span");
+    span.className = "word";
+    span.textContent = piece;
+    span.dataset.sentence = extractSentenceAt(text, match.index);
+
+    span.addEventListener("click", function() {
+      document.querySelectorAll(".word").forEach(item => {
+        item.classList.remove("active");
+      });
+
+      span.classList.add("active");
+      speakWord(piece);
+      showWordCard(piece, span.dataset.sentence || "", "article");
+    });
+
+    article.appendChild(span);
+    lastIndex = regex.lastIndex;
+  }
+
+  if (lastIndex < text.length) {
+    article.appendChild(
+      document.createTextNode(text.slice(lastIndex))
+    );
+  }
+
+  document.getElementById("inputPanel").style.display = "none";
+  document.getElementById("readingToolbar").classList.add("show");
+  document.getElementById("readerLayout").classList.add("show");
+
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+function editArticle() {
+  speechSynthesis.cancel();
+  closeWordCard();
+
+  document.getElementById("inputPanel").style.display = "block";
+  document.getElementById("readingToolbar").classList.remove("show");
+  document.getElementById("readerLayout").classList.remove("show");
+
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+/* =========================
+   TXT 导入
+   ========================= */
+
+/* Esc 键关闭释义卡 */
+document.addEventListener("keydown", function(event) {
+  if (event.key === "Escape") {
+    closeWordCard();
+  }
+});
+
+ensureHistoryMigration();
+refreshDictionaryStatus();
+updateVocabBadges();
+applyReadingPreferences();
+setupTextDropZone();
+checkBackupReminder();
+updateReadingProgress();
+
+document.addEventListener("keydown", function(event) {
+  if (event.key === "Escape") {
+    closeModal("vocabModal");
+    closeModal("favoritesModal");
+    closeModal("settingsModal");
+    closeModal("readingSettingsModal");
+    closeModal("helpModal");
+    closeModal("changelogModal");
+    hideSearchSuggestions();
+  }
+
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+    event.preventDefault();
+    const search = document.getElementById("directSearchInput");
+    if (document.getElementById("inputPanel").style.display === "none") {
+      editArticle();
+    }
+    setTimeout(() => {
+      search.focus();
+      search.select();
+      search.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 80);
+  }
+});
+</script>
+
+</body>
+</html>
