@@ -1,0 +1,1606 @@
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+                 "Microsoft YaHei", sans-serif;
+    background: #f5f5f7;
+    color: #1d1d1f;
+  }
+
+  .page {
+    max-width: 1220px;
+    margin: 0 auto;
+    padding: 28px 24px 60px;
+  }
+
+  h1 {
+    margin: 0 0 6px;
+    font-size: 38px;
+    line-height: 1.2;
+  }
+
+  .description {
+    color: #6e6e73;
+    font-size: 17px;
+    line-height: 1.6;
+    margin-bottom: 22px;
+  }
+
+  #inputPanel {
+    transition: .2s ease;
+  }
+
+  textarea {
+    width: 100%;
+    height: 210px;
+    resize: vertical;
+    padding: 18px;
+    border: 1px solid #d2d2d7;
+    border-radius: 14px;
+    background: #fff;
+    font-size: 17px;
+    line-height: 1.7;
+    outline: none;
+  }
+
+  textarea:focus {
+    border-color: #86868b;
+  }
+
+  .controls {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+    align-items: center;
+    margin-top: 14px;
+  }
+
+  button {
+    border: none;
+    border-radius: 10px;
+    padding: 11px 18px;
+    font-size: 15px;
+    cursor: pointer;
+    background: #1d1d1f;
+    color: white;
+  }
+
+  button:hover { opacity: .88; }
+
+  .secondary {
+    background: white;
+    color: #1d1d1f;
+    border: 1px solid #d2d2d7;
+  }
+
+  select {
+    padding: 9px 10px;
+    border: 1px solid #d2d2d7;
+    border-radius: 8px;
+    background: white;
+  }
+
+  .readingToolbar {
+    display: none;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin: 18px 0;
+  }
+
+  .readingToolbar.show {
+    display: flex;
+  }
+
+  .toolbarGroup {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+
+  /* 阅读区：桌面双栏 */
+  #readerLayout {
+    display: none;
+    grid-template-columns: minmax(0, 1fr) 360px;
+    gap: 22px;
+    align-items: start;
+  }
+
+  #readerLayout.show {
+    display: grid;
+  }
+
+  #article {
+    background: white;
+    border-radius: 16px;
+    padding: 28px;
+    min-height: 360px;
+    font-size: 21px;
+    line-height: 2;
+    white-space: pre-wrap;
+    box-shadow: 0 2px 18px rgba(0,0,0,.05);
+  }
+
+  .word {
+    cursor: pointer;
+    padding: 1px 2px;
+    border-radius: 5px;
+    transition: .12s;
+  }
+
+  .word:hover {
+    background: #ececf0;
+  }
+
+  .word.active {
+    background: #fff0a8;
+  }
+
+  /* 桌面右侧释义卡：让右侧栏跟随当前屏幕，而不是被长文章甩在上方 */
+  #readerLayout > aside {
+    position: sticky;
+    top: 18px;
+    align-self: start;
+    max-height: calc(100vh - 36px);
+  }
+
+  #wordCard {
+    position: static;
+    background: #1d1d1f;
+    color: white;
+    border-radius: 16px;
+    padding: 20px;
+    display: none;
+    max-height: calc(100vh - 36px);
+    overflow-y: auto;
+    box-shadow: 0 12px 35px rgba(0,0,0,.18);
+  }
+
+  #wordCard.show {
+    display: block;
+  }
+
+  .cardHeader {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  .wordLine {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+
+  #currentWord {
+    font-size: 29px;
+    font-weight: 750;
+  }
+
+  #phonetic {
+    color: #b8b8bd;
+    font-size: 16px;
+  }
+
+  #closeCard {
+    width: 34px;
+    height: 34px;
+    padding: 0;
+    border-radius: 50%;
+    background: #353537;
+    font-size: 20px;
+    line-height: 34px;
+  }
+
+  #partOfSpeech {
+    display: inline-block;
+    margin-top: 10px;
+    padding: 4px 9px;
+    background: #454547;
+    color: #e6e6ea;
+    border-radius: 7px;
+    font-size: 13px;
+  }
+
+  #meaning {
+    margin-top: 15px;
+    font-size: 20px;
+    line-height: 1.55;
+  }
+
+  #ieltsBox {
+    margin-top: 16px;
+    padding: 14px;
+    background: #333335;
+    border-radius: 10px;
+    display: none;
+  }
+
+  #ieltsTitle {
+    color: #aaaab0;
+    font-size: 13px;
+    margin-bottom: 7px;
+  }
+
+  #ieltsText {
+    font-size: 15px;
+    line-height: 1.65;
+  }
+
+  .cardButtons {
+    margin-top: 15px;
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .cardButton {
+    background: white;
+    color: #1d1d1f;
+    padding: 8px 12px;
+  }
+
+  #dictionaryStatus {
+    margin-top: 14px;
+    color: #96969c;
+    font-size: 12px;
+  }
+
+  #emptySide {
+    color: #8e8e93;
+    font-size: 14px;
+    line-height: 1.6;
+    padding: 8px 4px;
+  }
+
+  /* 手机：底部弹窗，不占满屏 */
+  @media (max-width: 820px) {
+    .page {
+      padding: 20px 14px 100px;
+    }
+
+    h1 {
+      font-size: 30px;
+    }
+
+    #readerLayout,
+    #readerLayout.show {
+      display: block;
+    }
+
+    #article {
+      padding: 20px;
+      font-size: 19px;
+      line-height: 1.9;
+      min-height: 320px;
+    }
+
+    #emptySide {
+      display: none;
+    }
+
+    #readerLayout > aside {
+      position: static;
+      max-height: none;
+    }
+
+    #wordCard {
+      position: fixed;
+      left: 10px;
+      right: 10px;
+      bottom: 10px;
+      top: auto;
+      z-index: 9999;
+      max-height: 45vh;
+      border-radius: 16px;
+      padding: 18px;
+      box-shadow: 0 -8px 35px rgba(0,0,0,.28);
+    }
+
+    #currentWord {
+      font-size: 25px;
+    }
+
+    #meaning {
+      font-size: 18px;
+    }
+  }
+
+  .dictionaryPanel {
+    margin-bottom: 16px;
+    padding: 15px 16px;
+    border: 1px solid #d2d2d7;
+    border-radius: 13px;
+    background: #fff;
+  }
+
+  .dictionaryRow {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+
+  #dictImportStatus {
+    color: #6e6e73;
+    font-size: 14px;
+  }
+
+  .dictHint {
+    margin-top: 9px;
+    color: #8e8e93;
+    font-size: 13px;
+    line-height: 1.55;
+  }
+
+  .dictProgressWrap {
+    height: 7px;
+    margin-top: 12px;
+    border-radius: 999px;
+    background: #ececf0;
+    overflow: hidden;
+    display: none;
+  }
+
+  .dictProgressBar {
+    width: 0%;
+    height: 100%;
+    background: #1d1d1f;
+    transition: width .12s linear;
+  }
+
+  .dictStatusGrid {
+    margin-top: 10px;
+    display: grid;
+    gap: 5px;
+    color: #6e6e73;
+    font-size: 14px;
+  }
+
+  .searchPanel {
+    margin: 16px 0;
+    padding: 16px;
+    background: white;
+    border: 1px solid #d2d2d7;
+    border-radius: 13px;
+  }
+
+  .searchTitle {
+    font-size: 16px;
+    font-weight: 700;
+    margin-bottom: 10px;
+  }
+
+  .searchRow {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 10px;
+  }
+
+  #directSearchInput, .smallInput {
+    width: 100%;
+    padding: 11px 12px;
+    border: 1px solid #d2d2d7;
+    border-radius: 9px;
+    background: #fff;
+    font-size: 15px;
+    outline: none;
+  }
+
+  #directSearchInput:focus, .smallInput:focus {
+    border-color: #86868b;
+  }
+
+  .directSearchResult {
+    margin-top: 12px;
+    min-height: 30px;
+  }
+
+  .searchEmpty {
+    color: #8e8e93;
+    font-size: 14px;
+  }
+
+  .searchResultCard {
+    padding: 15px;
+    border-radius: 11px;
+    background: #f5f5f7;
+  }
+
+  .searchResultTop {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 9px;
+  }
+
+  .searchResultWord {
+    font-size: 25px;
+    font-weight: 750;
+  }
+
+  .searchResultPhonetic {
+    color: #77777c;
+  }
+
+  .searchResultPos {
+    margin-top: 8px;
+    display: inline-block;
+    padding: 3px 8px;
+    border-radius: 6px;
+    background: #e4e4e8;
+    font-size: 12px;
+  }
+
+  .searchResultMeaning {
+    margin-top: 10px;
+    line-height: 1.65;
+    font-size: 17px;
+    white-space: pre-line;
+  }
+
+  .searchResultMeta {
+    margin-top: 9px;
+    color: #8e8e93;
+    font-size: 12px;
+  }
+
+  .modalOverlay {
+    position: fixed;
+    inset: 0;
+    z-index: 20000;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    background: rgba(0,0,0,.38);
+    backdrop-filter: blur(3px);
+  }
+
+  .modalOverlay.show {
+    display: flex;
+  }
+
+  .modalCard {
+    width: min(820px, 100%);
+    max-height: 82vh;
+    overflow: auto;
+    padding: 20px;
+    border-radius: 16px;
+    background: #fff;
+    box-shadow: 0 20px 60px rgba(0,0,0,.25);
+  }
+
+  .modalHeader {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 14px;
+    margin-bottom: 16px;
+  }
+
+  .modalTitle {
+    font-size: 23px;
+    font-weight: 750;
+  }
+
+  .modalSub {
+    margin-top: 4px;
+    color: #77777c;
+    font-size: 13px;
+    line-height: 1.55;
+  }
+
+  .iconClose {
+    width: 36px;
+    height: 36px;
+    padding: 0;
+    border-radius: 50%;
+    background: #ececf0;
+    color: #1d1d1f;
+    font-size: 21px;
+  }
+
+  .modalActions {
+    display: grid;
+    grid-template-columns: 1fr auto auto;
+    gap: 9px;
+    margin-bottom: 14px;
+  }
+
+  .dangerButton {
+    background: #b42318;
+    color: white;
+  }
+
+  .vocabList {
+    display: grid;
+    gap: 8px;
+  }
+
+  .vocabItem {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 12px;
+    padding: 13px 14px;
+    border: 1px solid #e3e3e7;
+    border-radius: 10px;
+  }
+
+  .vocabWord {
+    font-weight: 750;
+    font-size: 17px;
+  }
+
+  .vocabMeaning {
+    margin-top: 4px;
+    color: #4f4f54;
+    font-size: 14px;
+    line-height: 1.5;
+  }
+
+  .vocabMeta {
+    margin-top: 5px;
+    color: #929297;
+    font-size: 12px;
+  }
+
+  .vocabRight {
+    text-align: right;
+    color: #6e6e73;
+    font-size: 13px;
+  }
+
+  .removeTiny {
+    margin-top: 6px;
+    padding: 5px 8px;
+    background: #ececf0;
+    color: #1d1d1f;
+    font-size: 12px;
+  }
+
+  .settingsGrid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+
+  .settingItem {
+    padding: 14px;
+    background: #f5f5f7;
+    border-radius: 10px;
+  }
+
+  .settingLabel {
+    color: #77777c;
+    font-size: 12px;
+  }
+
+  .settingValue {
+    margin-top: 6px;
+    font-size: 16px;
+    font-weight: 650;
+    line-height: 1.4;
+  }
+
+  .settingsButtons {
+    margin-top: 16px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 9px;
+  }
+
+  .settingsNote {
+    margin-top: 13px;
+    color: #8e8e93;
+    font-size: 12px;
+    line-height: 1.55;
+  }
+
+  @media (max-width: 680px) {
+    .searchRow {
+      grid-template-columns: 1fr;
+    }
+
+    .modalActions {
+      grid-template-columns: 1fr;
+    }
+
+    .settingsGrid {
+      grid-template-columns: 1fr;
+    }
+
+    .modalOverlay {
+      padding: 10px;
+      align-items: flex-end;
+    }
+
+    .modalCard {
+      max-height: 88vh;
+      border-radius: 16px 16px 10px 10px;
+    }
+  }
+
+
+  .topActions {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 9px;
+    margin: -8px 0 18px;
+  }
+
+  .versionBadge {
+    display: inline-flex;
+    align-items: center;
+    padding: 5px 9px;
+    border-radius: 999px;
+    background: #1d1d1f;
+    color: #fff;
+    font-size: 12px;
+    font-weight: 700;
+  }
+
+  .shortcutHint {
+    color: #8e8e93;
+    font-size: 12px;
+  }
+
+  .compactButton {
+    padding: 7px 10px;
+    font-size: 13px;
+  }
+
+  .searchInputWrap {
+    position: relative;
+    min-width: 0;
+  }
+
+  .searchSuggestions {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: calc(100% + 5px);
+    z-index: 15000;
+    display: none;
+    max-height: 300px;
+    overflow-y: auto;
+    border: 1px solid #d2d2d7;
+    border-radius: 10px;
+    background: #fff;
+    box-shadow: 0 12px 30px rgba(0,0,0,.14);
+  }
+
+  .searchSuggestions.show { display: block; }
+
+  .suggestionItem {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 12px;
+    cursor: pointer;
+    border-bottom: 1px solid #eeeeF2;
+  }
+
+  .suggestionItem:last-child { border-bottom: none; }
+  .suggestionItem:hover, .suggestionItem.active { background: #f3f3f6; }
+  .suggestionWord { font-weight: 700; }
+  .suggestionMeaning { color: #8e8e93; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 65%; }
+
+  .articleFindWrap {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+
+  .articleFindInput {
+    width: 180px;
+    padding: 8px 9px;
+    border: 1px solid #d2d2d7;
+    border-radius: 8px;
+    background: #fff;
+    outline: none;
+  }
+
+  .articleFindCount { min-width: 44px; color: #77777c; font-size: 12px; }
+  .word.findMatch { box-shadow: inset 0 -3px 0 #c8c8ce; }
+  .word.findCurrent { background: #ffd36a; box-shadow: 0 0 0 2px rgba(255,190,60,.25); }
+
+  .morphologyBox {
+    display: none;
+    margin-top: 14px;
+    padding: 12px;
+    border-radius: 10px;
+    background: #2d2d2f;
+  }
+
+  .morphologyBox.show { display: block; }
+  .morphologyTitle { color: #aaaab0; font-size: 12px; margin-bottom: 6px; }
+  .morphologyRelation { font-size: 15px; font-weight: 700; line-height: 1.5; }
+  .surfaceMeaning { margin-top: 7px; color: #dedee3; font-size: 13px; line-height: 1.55; white-space: pre-line; }
+  .exchangeList { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 5px; }
+  .exchangeChip { padding: 4px 7px; background: #454548; border-radius: 6px; font-size: 11px; color: #dedee3; }
+
+  .settingSubValue {
+    margin-top: 6px;
+    color: #8e8e93;
+    font-size: 12px;
+    line-height: 1.45;
+  }
+
+  .settingsSectionTitle {
+    margin-top: 18px;
+    margin-bottom: 8px;
+    font-size: 14px;
+    font-weight: 750;
+  }
+
+  .backupPanel {
+    padding: 13px;
+    border-radius: 10px;
+    background: #f5f5f7;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+  }
+
+  .backupStatus {
+    flex-basis: 100%;
+    color: #7d7d82;
+    font-size: 12px;
+    line-height: 1.55;
+  }
+
+  .changeVersion {
+    padding: 14px 0;
+    border-top: 1px solid #ececf0;
+  }
+
+  .changeVersion:first-of-type { border-top: none; }
+  .changeVersionTitle { font-size: 19px; font-weight: 800; }
+  .changeDate { margin-top: 3px; color: #8e8e93; font-size: 12px; }
+  .changeVersion ul { margin: 10px 0 0; padding-left: 20px; line-height: 1.7; }
+
+  @media (max-width: 820px) {
+    .articleFindWrap { width: 100%; }
+    .articleFindInput { flex: 1; width: auto; min-width: 150px; }
+  }
+
+
+  .backupPanelFinal {
+    display: grid;
+    gap: 12px;
+  }
+
+  .backupGroup {
+    padding: 14px;
+    border: 1px solid #e3e3e7;
+    border-radius: 11px;
+    background: #fff;
+  }
+
+  .backupGroupTitle {
+    font-size: 15px;
+    font-weight: 750;
+  }
+
+  .backupGroupHint {
+    margin-top: 4px;
+    color: #8e8e93;
+    font-size: 12px;
+    line-height: 1.55;
+  }
+
+  .backupButtonRow {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 9px;
+    margin-top: 10px;
+  }
+
+  .appFooter {
+    margin: 34px 0 0;
+    padding: 20px 10px 0;
+    border-top: 1px solid #dedee3;
+    text-align: center;
+  }
+
+  .footerMain {
+    color: #55555a;
+    font-size: 13px;
+    font-weight: 650;
+  }
+
+  .footerSub {
+    max-width: 760px;
+    margin: 7px auto 0;
+    color: #98989d;
+    font-size: 11px;
+    line-height: 1.55;
+  }
+
+  @media (max-width: 680px) {
+    .backupButtonRow {
+      display: grid;
+      grid-template-columns: 1fr;
+    }
+  }
+
+
+  .historyActions {
+    grid-template-columns: minmax(180px, 1fr) auto auto auto;
+  }
+
+  .historySortSelect {
+    padding: 10px 12px;
+    border: 1px solid #d2d2d7;
+    border-radius: 9px;
+    background: white;
+    font-size: 14px;
+  }
+
+  .querySourceMeta {
+    margin-top: 5px;
+    color: #8e8e93;
+    font-size: 12px;
+  }
+
+  .favoritesList {
+    display: grid;
+    gap: 12px;
+  }
+
+  .favoriteItem {
+    padding: 16px;
+    border: 1px solid #e1e1e6;
+    border-radius: 12px;
+    background: #fff;
+  }
+
+  .favoriteTop {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  .favoriteWord {
+    font-size: 19px;
+    font-weight: 750;
+  }
+
+  .favoritePhonetic {
+    margin-left: 7px;
+    color: #8e8e93;
+    font-size: 13px;
+    font-weight: 400;
+  }
+
+  .favoriteMeaning {
+    margin-top: 5px;
+    line-height: 1.55;
+    color: #414146;
+    font-size: 14px;
+  }
+
+  .favoriteSectionLabel {
+    margin-top: 13px;
+    margin-bottom: 5px;
+    font-size: 12px;
+    font-weight: 700;
+    color: #77777d;
+  }
+
+  .favoriteEditor {
+    width: 100%;
+    min-height: 64px;
+    resize: vertical;
+    padding: 10px 11px;
+    border: 1px solid #d7d7dc;
+    border-radius: 9px;
+    background: #fafafa;
+    font: inherit;
+    font-size: 14px;
+    line-height: 1.55;
+  }
+
+  .favoriteEditor.note {
+    min-height: 76px;
+  }
+
+  .favoriteBottom {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 10px;
+  }
+
+  .favoriteDate {
+    color: #9a9aa0;
+    font-size: 12px;
+  }
+
+  .favoriteSavedHint {
+    margin-left: 7px;
+    color: #3b7a57;
+    font-size: 12px;
+  }
+
+  .favoriteCardActive {
+    background: #fff3b0 !important;
+    color: #1d1d1f !important;
+  }
+
+  @media (max-width: 760px) {
+    .historyActions {
+      grid-template-columns: 1fr;
+    }
+
+    .favoriteActions {
+      grid-template-columns: 1fr;
+    }
+  }
+
+
+  .favoriteTopActions {
+    display: flex;
+    gap: 7px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .favoritePreviewBlock {
+    margin-top: 10px;
+    padding: 9px 11px;
+    border-radius: 9px;
+    background: #f7f7f9;
+  }
+
+  .favoritePreviewLabel {
+    margin-bottom: 4px;
+    color: #85858b;
+    font-size: 11px;
+    font-weight: 700;
+  }
+
+  .favoritePreviewText {
+    color: #444449;
+    font-size: 13px;
+    line-height: 1.55;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  .favoriteNotePreview {
+    background: #fffaf0;
+  }
+
+  .favoriteEditPanel {
+    display: none;
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid #e5e5e9;
+  }
+
+  .favoriteItem.editing .favoriteEditPanel {
+    display: block;
+  }
+
+  .favoriteItem.editing .favoritePreviewArea {
+    display: none;
+  }
+
+  .favoriteItem.editing .editFavoriteButton {
+    display: none;
+  }
+
+  .favoriteCancelEditButton {
+    display: none;
+  }
+
+  .favoriteItem.editing .favoriteCancelEditButton {
+    display: inline-block;
+  }
+
+  .favoriteItem {
+    padding: 13px 14px;
+  }
+
+  .favoriteMeaning {
+    margin-top: 3px;
+  }
+
+  .favoriteCompactBottom {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-top: 9px;
+  }
+
+  @media (max-width: 680px) {
+    .favoriteTop {
+      align-items: flex-start;
+    }
+
+    .favoriteTopActions {
+      max-width: 150px;
+    }
+  }
+
+  .favoriteFieldGrid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+
+  .favoriteInlineEditor {
+    width: 100%;
+    padding: 9px 10px;
+    border: 1px solid #d7d7dc;
+    border-radius: 8px;
+    background: #fafafa;
+    font: inherit;
+    font-size: 14px;
+    outline: none;
+  }
+
+  .favoriteInlineEditor:focus,
+  .favoriteEditor:focus {
+    border-color: #8e8e93;
+    background: #fff;
+  }
+
+  .meaningEditor {
+    min-height: 74px;
+  }
+
+  @media (max-width: 680px) {
+    .favoriteFieldGrid {
+      grid-template-columns: 1fr;
+    }
+  }
+
+
+  :root {
+    --app-bg: #f5f5f7;
+    --app-card: #ffffff;
+    --app-text: #1d1d1f;
+    --app-muted: #6e6e73;
+    --app-border: #d2d2d7;
+    --reader-font-size: 21px;
+    --reader-line-height: 2;
+  }
+
+  body {
+    background: var(--app-bg);
+    color: var(--app-text);
+  }
+
+  #article {
+    font-size: var(--reader-font-size);
+    line-height: var(--reader-line-height);
+  }
+
+  body.darkMode {
+    --app-bg: #121214;
+    --app-card: #1d1d20;
+    --app-text: #f4f4f5;
+    --app-muted: #b1b1b6;
+    --app-border: #3a3a3e;
+    background: var(--app-bg);
+    color: var(--app-text);
+  }
+
+  body.darkMode textarea,
+  body.darkMode .dictionaryPanel,
+  body.darkMode .searchPanel,
+  body.darkMode #article,
+  body.darkMode .modalCard,
+  body.darkMode .settingItem,
+  body.darkMode .backupGroup,
+  body.darkMode .favoriteItem,
+  body.darkMode .searchResultCard,
+  body.darkMode .favoriteInlineEditor,
+  body.darkMode .favoriteEditor,
+  body.darkMode .smallInput,
+  body.darkMode #directSearchInput,
+  body.darkMode select {
+    background: var(--app-card);
+    color: var(--app-text);
+    border-color: var(--app-border);
+  }
+
+  body.darkMode .description,
+  body.darkMode .dictHint,
+  body.darkMode .modalSub,
+  body.darkMode .settingSubValue,
+  body.darkMode .vocabMeta,
+  body.darkMode .querySourceMeta,
+  body.darkMode .favoriteDate {
+    color: var(--app-muted);
+  }
+
+  body.darkMode .word:hover { background: #343439; }
+  body.darkMode .word.active { background: #7a6825; }
+  body.darkMode .secondary { background: #2a2a2e; color: #f3f3f4; border-color: #46464b; }
+  body.darkMode .favoritePreviewBlock { background: #28282c; }
+  body.darkMode .favoritePreviewText { color: #e0e0e3; }
+  body.darkMode .favoriteNotePreview { background: #312d22; }
+
+  .textDropZone {
+    margin-top: 14px;
+    padding: 13px 16px;
+    border: 1.5px dashed #b8b8bd;
+    border-radius: 11px;
+    color: #77777c;
+    text-align: center;
+    transition: .15s ease;
+  }
+
+  .textDropZone.dragging {
+    border-color: #0071e3;
+    background: rgba(0,113,227,.07);
+    color: #0071e3;
+  }
+
+  .backupReminder {
+    display: none;
+    margin-top: 14px;
+    padding: 11px 13px;
+    border-radius: 10px;
+    background: #fff8df;
+    color: #66520d;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .backupReminder.show { display: flex; }
+
+  .settingsSelect {
+    width: 100%;
+    margin-top: 7px;
+    padding: 9px 10px;
+    border: 1px solid #d2d2d7;
+    border-radius: 8px;
+    background: white;
+  }
+
+  .compactSelect {
+    width: auto;
+    min-width: 225px;
+    margin-top: 0;
+  }
+
+  .smallModalCard { width: min(620px, 100%); }
+
+  .favoriteBadgeRow {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    margin-top: 7px;
+  }
+
+  .masterBadge, .tagBadge {
+    display: inline-flex;
+    align-items: center;
+    padding: 3px 7px;
+    border-radius: 999px;
+    background: #eeeeF1;
+    color: #66666b;
+    font-size: 11px;
+  }
+
+  .masterBadge.mastered {
+    background: #e4f6e9;
+    color: #22733b;
+  }
+
+  .favoriteMetaGrid { align-items: end; }
+
+  .masterToggle {
+    min-height: 58px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px;
+    border: 1px solid #d7d7dc;
+    border-radius: 9px;
+    background: #fafafa;
+    font-size: 14px;
+  }
+
+  .helpSteps {
+    display: grid;
+    gap: 9px;
+  }
+
+  .helpStep {
+    display: grid;
+    grid-template-columns: 145px 1fr;
+    gap: 10px;
+    padding: 12px 13px;
+    border-radius: 10px;
+    background: #f5f5f7;
+    line-height: 1.55;
+    font-size: 14px;
+  }
+
+  .shortcutBox {
+    margin-top: 16px;
+    display: grid;
+    gap: 7px;
+    padding: 14px;
+    border-radius: 10px;
+    background: #1d1d1f;
+    color: white;
+    font-size: 13px;
+  }
+
+  #readingProgress {
+    position: fixed;
+    left: 0;
+    top: 0;
+    z-index: 30000;
+    height: 3px;
+    width: 0%;
+    background: #0071e3;
+    pointer-events: none;
+  }
+
+  #backToTop {
+    position: fixed;
+    right: 18px;
+    bottom: 18px;
+    z-index: 15000;
+    display: none;
+    width: 42px;
+    height: 42px;
+    padding: 0;
+    border-radius: 50%;
+    box-shadow: 0 6px 20px rgba(0,0,0,.15);
+  }
+
+  #backToTop.show { display: block; }
+
+  @media (max-width: 680px) {
+    .helpStep { grid-template-columns: 1fr; }
+    .compactSelect { width: 100%; }
+  }
+
+
+  /* =========================
+     V0.5.2 Stable Patch 2
+     Dark-mode consistency polish
+     ========================= */
+
+  body.darkMode .helpStep {
+    background: #28282c;
+    color: #f1f1f3;
+    border: 1px solid #37373c;
+  }
+
+  body.darkMode .helpStep b {
+    color: #ffffff;
+  }
+
+  body.darkMode .shortcutBox {
+    background: #111113;
+    color: #f4f4f5;
+    border: 1px solid #343438;
+  }
+
+  body.darkMode .searchSuggestions {
+    background: #232326;
+    border-color: #3a3a3f;
+    box-shadow: 0 14px 36px rgba(0,0,0,.42);
+  }
+
+  body.darkMode .suggestionItem {
+    color: #f1f1f3;
+    border-bottom-color: #36363a;
+  }
+
+  body.darkMode .suggestionItem:hover,
+  body.darkMode .suggestionItem.active {
+    background: #323237;
+  }
+
+  body.darkMode .suggestionMeaning,
+  body.darkMode .searchResultPhonetic,
+  body.darkMode .searchResultMeta,
+  body.darkMode .articleFindCount,
+  body.darkMode .settingLabel,
+  body.darkMode .backupStatus,
+  body.darkMode .backupGroupHint,
+  body.darkMode .favoritePhonetic,
+  body.darkMode .favoriteSectionLabel,
+  body.darkMode .shortcutHint,
+  body.darkMode .changeDate {
+    color: #aaaab0;
+  }
+
+  body.darkMode .favoriteMeaning {
+    color: #e6e6e9;
+  }
+
+  body.darkMode .articleFindInput,
+  body.darkMode .historySortSelect {
+    background: #242428;
+    color: #f4f4f5;
+    border-color: #414147;
+  }
+
+  body.darkMode .articleFindInput::placeholder,
+  body.darkMode input::placeholder,
+  body.darkMode textarea::placeholder {
+    color: #77777e;
+  }
+
+  body.darkMode .searchResultPos {
+    background: #36363b;
+    color: #e7e7ea;
+  }
+
+  body.darkMode .iconClose {
+    background: #343438;
+    color: #f4f4f5;
+  }
+
+  body.darkMode .iconClose:hover {
+    background: #424247;
+  }
+
+  body.darkMode .removeTiny {
+    background: #303034;
+    color: #eeeeF1;
+  }
+
+  body.darkMode .backupPanel {
+    background: #242428;
+  }
+
+  body.darkMode .backupGroup {
+    background: #232326;
+    border-color: #39393e;
+  }
+
+  body.darkMode .changeVersion {
+    border-top-color: #38383d;
+  }
+
+  body.darkMode .appFooter {
+    border-top-color: #343438;
+  }
+
+  body.darkMode .footerMain {
+    color: #c9c9ce;
+  }
+
+  body.darkMode .footerSub {
+    color: #8f8f96;
+  }
+
+  body.darkMode .favoriteCardActive {
+    background: #665619 !important;
+    color: #ffffff !important;
+  }
+
+  body.darkMode .masterBadge,
+  body.darkMode .tagBadge {
+    background: #343438;
+    color: #d8d8dc;
+  }
+
+  body.darkMode .masterBadge.mastered {
+    background: #21472c;
+    color: #bcebc8;
+  }
+
+  body.darkMode .masterToggle {
+    background: #26262a;
+    color: #eeeeF1;
+    border-color: #404046;
+  }
+
+  body.darkMode .backupReminder {
+    background: #3b3218;
+    color: #f0df9a;
+    border: 1px solid #5a4b22;
+  }
+
+  body.darkMode .textDropZone {
+    color: #aaaab0;
+    border-color: #4a4a50;
+  }
+
+  body.darkMode .textDropZone.dragging {
+    color: #7fbcff;
+    border-color: #398fe8;
+    background: rgba(50,143,232,.12);
+  }
+
+  body.darkMode .dictProgressWrap {
+    background: #35353a;
+  }
+
+  body.darkMode .dictProgressBar {
+    background: #4aa3ff;
+  }
+
+  body.darkMode .word.findMatch {
+    box-shadow: inset 0 -3px 0 #66666d;
+  }
+
+  body.darkMode .word.findCurrent {
+    background: #695719;
+    color: #ffffff;
+    box-shadow: 0 0 0 2px rgba(236,190,73,.22);
+  }
+
+  body.darkMode .favoritePreviewBlock {
+    border-color: #38383d;
+  }
+
+  body.darkMode .favoriteNotePreview {
+    color: #ded5b9;
+  }
+
+  body.darkMode .settingsSelect,
+  body.darkMode .favoriteInlineEditor,
+  body.darkMode .favoriteEditor {
+    box-shadow: none;
+  }
+
+
+  /* =========================
+     V0.5.2 Stable Patch 2
+     Interaction polish
+     ========================= */
+
+  .textDropZone {
+    min-height: 180px;
+    padding: 32px 22px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    cursor: pointer;
+    user-select: none;
+    outline: none;
+  }
+
+  .textDropZone:hover,
+  .textDropZone:focus-visible {
+    border-color: #0071e3;
+    background: rgba(0, 113, 227, .045);
+  }
+
+  .textDropZone.dragging {
+    transform: scale(1.006);
+    border-color: #0071e3;
+    background: rgba(0,113,227,.075);
+    box-shadow: 0 0 0 4px rgba(0,113,227,.08);
+  }
+
+  .dropZoneIcon {
+    font-size: 32px;
+    line-height: 1;
+    margin-bottom: 3px;
+  }
+
+  .dropZoneTitle {
+    font-size: 17px;
+    font-weight: 750;
+    color: #333336;
+  }
+
+  .dropZoneHint {
+    font-size: 14px;
+    color: #66666b;
+  }
+
+  .dropZoneSub {
+    margin-top: 2px;
+    font-size: 12px;
+    color: #99999f;
+  }
+
+  body.darkMode .dropZoneTitle { color: #f1f1f3; }
+  body.darkMode .dropZoneHint { color: #b7b7bd; }
+  body.darkMode .dropZoneSub { color: #85858c; }
+
+  .favoriteSpeakButton,
+  .historySpeakButton {
+    white-space: nowrap;
+  }
+
+  .historyItemActions {
+    margin-top: 7px;
+    display: flex;
+    justify-content: flex-end;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+
+  .favoriteWord,
+  .vocabWord,
+  .searchResultWord,
+  #selectedWord {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  .favoritePreviewText,
+  .favoriteMeaning,
+  .vocabMeaning,
+  .querySourceMeta,
+  .favoriteNotePreview {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  .modalCard {
+    max-height: min(88vh, 900px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  .modalHeader {
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    background: var(--app-card, #fff);
+    padding-top: 2px;
+    padding-bottom: 10px;
+  }
+
+  body.darkMode .modalHeader {
+    background: var(--app-card);
+  }
+
+  .favoriteActions,
+  .historyActions,
+  .modalActions {
+    align-items: center;
+  }
+
+  .favoriteActions select,
+  .historyActions select {
+    min-height: 38px;
+  }
+
+  .backupGroupHint {
+    line-height: 1.65;
+  }
+
+  @media (max-width: 680px) {
+    .textDropZone {
+      min-height: 150px;
+      padding: 25px 16px;
+    }
+
+    .modalCard {
+      max-height: 92vh;
+    }
+
+    .favoriteTopActions {
+      max-width: none;
+    }
+  }
+
