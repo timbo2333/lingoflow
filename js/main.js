@@ -435,6 +435,14 @@ const ECDICT_DB_VERSION = 2;
 const DICTIONARY_MANIFEST_PATH = "data/dictionary/manifest.json";
 const ECDICT_WRITE_BATCH_SIZE = 1500;
 const LEMMA_WRITE_BATCH_SIZE = 2500;
+const ECDICT_AUTO_VERSION_META = "auto_ecdict_dictionary_version";
+const ECDICT_AUTO_CHUNKS_META = "auto_ecdict_completed_chunks";
+const ECDICT_AUTO_RECORDS_META = "auto_ecdict_imported_records";
+const ECDICT_AUTO_CHECKPOINT_KEYS = [
+  ECDICT_AUTO_VERSION_META,
+  ECDICT_AUTO_CHUNKS_META,
+  ECDICT_AUTO_RECORDS_META
+];
 let ecdictDbPromise = null;
 let dictionaryInitializationPromise = null;
 
@@ -500,7 +508,7 @@ async function setECDICTMeta(key, value) {
   });
 }
 
-async function setECDICTMetaValues(values) {
+async function setECDICTMetaValues(values, keysToDelete = []) {
   const db = await openECDICTDatabase();
 
   return new Promise((resolve, reject) => {
@@ -510,6 +518,8 @@ async function setECDICTMetaValues(values) {
     for (const [key, value] of Object.entries(values)) {
       store.put({ key, value });
     }
+
+    for (const key of keysToDelete) store.delete(key);
 
     tx.oncomplete = resolve;
     tx.onerror = () => reject(tx.error);
@@ -546,6 +556,21 @@ async function writeECDICTBatch(batch) {
     const store = tx.objectStore("entries");
 
     for (const item of batch) store.put(item);
+
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error || new Error("IndexedDB transaction aborted"));
+  });
+}
+
+async function deleteECDICTBatch(batch) {
+  const db = await openECDICTDatabase();
+
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction("entries", "readwrite");
+    const store = tx.objectStore("entries");
+
+    for (const item of batch) store.delete(item.word);
 
     tx.oncomplete = resolve;
     tx.onerror = () => reject(tx.error);
@@ -1021,7 +1046,9 @@ async function importECDICTReadableStream(readable, options = {}) {
     if (!batch.length) return;
     const pending = batch;
     batch = [];
-    await writeECDICTBatch(pending);
+    if (!options.validateOnly) {
+      await (options.batchWriter || writeECDICTBatch)(pending);
+    }
     imported += pending.length;
     await new Promise(resolve => setTimeout(resolve, 0));
   };
@@ -1475,6 +1502,43 @@ async function fetchDictionaryResource(url, label) {
   return response;
 }
 
+async function downloadDictionaryChunkBlob(response, chunk, onProgress) {
+  const reader = response.body.getReader();
+  const parts = [];
+  let bytesRead = 0;
+
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+
+      parts.push(value);
+      bytesRead += value.byteLength;
+      onProgress?.(bytesRead);
+    }
+  } catch (error) {
+    try { await reader.cancel(); } catch {}
+    throw new Error(`${chunk.filename} 下载中断：${error.message || "网络连接中断"}`);
+  }
+
+  if (bytesRead !== chunk.sizeBytes) {
+    throw new Error(
+      `${chunk.filename} 大小校验失败：应为 ${chunk.sizeBytes.toLocaleString()} bytes，` +
+      `实际 ${bytesRead.toLocaleString()} bytes。`
+    );
+  }
+
+  return new Blob(parts, { type: "text/csv" });
+}
+
+async function rollbackAutomaticECDICTChunk(blob, headers, recordCount) {
+  await importECDICTReadableStream(blob.stream(), {
+    expectedHeader: headers,
+    expectedRecordCount: recordCount,
+    batchWriter: deleteECDICTBatch
+  });
+}
+
 function createAutomaticProgress(manifest, needsECDICT, needsLemma) {
   const ecdictBytes = needsECDICT
     ? manifest.ecdict.chunks.reduce((sum, chunk) => sum + chunk.sizeBytes, 0)
@@ -1517,12 +1581,57 @@ async function importAutomaticECDICT(manifest, resourceBaseUrl, progress) {
   const chunks = manifest.ecdict.chunks;
   const sourceSize = chunks.reduce((sum, chunk) => sum + chunk.sizeBytes, 0);
   let expectedHeader = null;
+  const checkpointMeta = await getECDICTMetaValues(ECDICT_AUTO_CHECKPOINT_KEYS);
+  const checkpointChunks = Number(checkpointMeta[ECDICT_AUTO_CHUNKS_META]);
+  const checkpointRecords = Number(checkpointMeta[ECDICT_AUTO_RECORDS_META]);
+  const checkpointShapeValid =
+    checkpointMeta[ECDICT_AUTO_VERSION_META] === manifest.dictionaryVersion &&
+    Number.isInteger(checkpointChunks) &&
+    checkpointChunks >= 0 &&
+    checkpointChunks <= chunks.length &&
+    Number.isInteger(checkpointRecords) &&
+    checkpointRecords >= 0;
+  const expectedCheckpointRecords = checkpointShapeValid
+    ? chunks
+        .slice(0, checkpointChunks)
+        .reduce((sum, chunk) => sum + chunk.recordCount, 0)
+    : -1;
+  const actualEntries = await countECDICTStore("entries");
+  const checkpointValid =
+    checkpointShapeValid &&
+    checkpointRecords === expectedCheckpointRecords &&
+    actualEntries === expectedCheckpointRecords;
+
+  let startIndex = 0;
   let importedTotal = 0;
 
-  await setECDICTMetaValues({ ready: false, count: 0 });
-  await clearECDICTEntries();
+  if (checkpointValid) {
+    startIndex = checkpointChunks;
+    importedTotal = checkpointRecords;
+    progress.completedBytes = Math.min(
+      progress.totalBytes,
+      progress.completedBytes + chunks
+        .slice(0, startIndex)
+        .reduce((sum, chunk) => sum + chunk.sizeBytes, 0)
+    );
+    await setECDICTMetaValues({ ready: false, count: 0 });
 
-  for (let index = 0; index < chunks.length; index++) {
+    if (startIndex > 0) {
+      status.textContent =
+        `ECDICT：已恢复前 ${startIndex} 个分片，共 ${importedTotal.toLocaleString()} 条`;
+    }
+  } else {
+    await clearECDICTEntries();
+    await setECDICTMetaValues({
+      ready: false,
+      count: 0,
+      [ECDICT_AUTO_VERSION_META]: manifest.dictionaryVersion,
+      [ECDICT_AUTO_CHUNKS_META]: 0,
+      [ECDICT_AUTO_RECORDS_META]: 0
+    });
+  }
+
+  for (let index = startIndex; index < chunks.length; index++) {
     const chunk = chunks[index];
     const label = `第 ${index + 1} / ${chunks.length} 个词典分片`;
     status.textContent = `ECDICT：正在处理 ${label}`;
@@ -1532,30 +1641,104 @@ async function importAutomaticECDICT(manifest, resourceBaseUrl, progress) {
       new URL(chunk.filename, resourceBaseUrl),
       `词典分片 ${index + 1} / ${chunks.length} `
     );
-    const result = await importECDICTReadableStream(response.body, {
-      expectedHeader,
-      expectedRecordCount: chunk.recordCount,
-      onProgress: ({ bytesRead, imported }) => {
-        status.textContent =
-          `ECDICT：${label} · 已处理 ${imported.toLocaleString()} 条`;
-        updateAutomaticProgress(
-          progress,
-          Math.min(bytesRead, chunk.sizeBytes),
-          label,
-          `${imported.toLocaleString()} 条`
-        );
-      }
+
+    const chunkBlob = await downloadDictionaryChunkBlob(response, chunk, bytesRead => {
+      status.textContent = `ECDICT：${label} · 正在下载`;
+      updateAutomaticProgress(
+        progress,
+        Math.min(bytesRead, chunk.sizeBytes),
+        label,
+        "正在下载"
+      );
     });
 
-    if (result.bytesRead !== chunk.sizeBytes) {
+    status.textContent = `ECDICT：${label} · 正在校验`;
+    const validation = await importECDICTReadableStream(chunkBlob.stream(), {
+      expectedHeader,
+      expectedRecordCount: chunk.recordCount,
+      validateOnly: true
+    });
+
+    if (validation.bytesRead !== chunk.sizeBytes) {
       throw new Error(
         `${chunk.filename} 大小校验失败：应为 ${chunk.sizeBytes.toLocaleString()} bytes，` +
-        `实际 ${result.bytesRead.toLocaleString()} bytes。`
+        `实际 ${validation.bytesRead.toLocaleString()} bytes。`
       );
     }
 
-    if (!expectedHeader) expectedHeader = result.headers;
-    importedTotal += result.imported;
+    if (validation.imported !== chunk.recordCount) {
+      throw new Error(
+        `${chunk.filename} 有效记录数校验失败：应为 ${chunk.recordCount.toLocaleString()} 条，` +
+        `实际读取 ${validation.imported.toLocaleString()} 条。`
+      );
+    }
+
+    if (!expectedHeader) expectedHeader = validation.headers;
+
+    const nextImportedTotal = importedTotal + validation.imported;
+
+    try {
+      const result = await importECDICTReadableStream(chunkBlob.stream(), {
+        expectedHeader,
+        expectedRecordCount: chunk.recordCount,
+        onProgress: ({ imported }) => {
+          status.textContent =
+            `ECDICT：${label} · 已写入 ${imported.toLocaleString()} 条`;
+          updateAutomaticProgress(
+            progress,
+            chunk.sizeBytes,
+            label,
+            `正在写入 ${imported.toLocaleString()} 条`
+          );
+        }
+      });
+
+      if (result.bytesRead !== chunk.sizeBytes || result.imported !== chunk.recordCount) {
+        throw new Error(`${chunk.filename} 写入后的分片校验失败。`);
+      }
+
+      const actualCount = await countECDICTStore("entries");
+      if (actualCount !== nextImportedTotal) {
+        throw new Error(
+          `${chunk.filename} 写入校验失败：累计应为 ${nextImportedTotal.toLocaleString()} 条，` +
+          `IndexedDB 中实际有 ${actualCount.toLocaleString()} 条。`
+        );
+      }
+
+      await setECDICTMetaValues({
+        [ECDICT_AUTO_VERSION_META]: manifest.dictionaryVersion,
+        [ECDICT_AUTO_CHUNKS_META]: index + 1,
+        [ECDICT_AUTO_RECORDS_META]: nextImportedTotal
+      });
+    } catch (error) {
+      try {
+        await rollbackAutomaticECDICTChunk(
+          chunkBlob,
+          expectedHeader,
+          chunk.recordCount
+        );
+
+        const restoredCount = await countECDICTStore("entries");
+        if (restoredCount !== importedTotal) {
+          throw new Error(
+            `回滚后应保留 ${importedTotal.toLocaleString()} 条，` +
+            `实际有 ${restoredCount.toLocaleString()} 条。`
+          );
+        }
+      } catch (rollbackError) {
+        throw new Error(
+          `${chunk.filename} 写入 IndexedDB 失败：${error.message || "写入事务失败"} ` +
+          `当前分片回滚失败：${rollbackError.message || "未知错误"}`
+        );
+      }
+
+      throw new Error(
+        `${chunk.filename} 写入 IndexedDB 失败：${error.message || "写入事务失败"} ` +
+        "当前分片已移除，之前完成的分片仍然保留。"
+      );
+    }
+
+    importedTotal = nextImportedTotal;
     finishAutomaticProgressResource(progress, chunk.sizeBytes);
   }
 
@@ -1574,15 +1757,18 @@ async function importAutomaticECDICT(manifest, resourceBaseUrl, progress) {
     );
   }
 
-  await setECDICTMetaValues({
-    ready: true,
-    count: actualCount,
-    dictionaryVersion: manifest.dictionaryVersion,
-    importedAt: new Date().toISOString(),
-    source: "web-auto",
-    filename: "manifest.json",
-    source_file_size: sourceSize
-  });
+  await setECDICTMetaValues(
+    {
+      ready: true,
+      count: actualCount,
+      dictionaryVersion: manifest.dictionaryVersion,
+      importedAt: new Date().toISOString(),
+      source: "web-auto",
+      filename: "manifest.json",
+      source_file_size: sourceSize
+    },
+    ECDICT_AUTO_CHECKPOINT_KEYS
+  );
 
   status.textContent = `✅ ECDICT 已就绪：${actualCount.toLocaleString()} 条`;
 }
