@@ -59,18 +59,30 @@
         <input type="file" id="lemmaFileInput" accept=".txt,text/plain" hidden>
       </div>
 
-      <div class="dictStatusGrid">
-        <div id="dictImportStatus">正在检查 ECDICT…</div>
-        <div id="lemmaImportStatus">正在检查词形库…</div>
+      <div id="dictionarySetupStatus" class="dictionarySetupStatus" data-state="checking"
+           role="status" aria-live="polite">
+        <div id="dictionarySetupTitle" class="dictionarySetupTitle">正在检查离线词典…</div>
+        <div id="dictionarySetupDetail" class="dictionarySetupDetail">页面可以正常使用，检查会在后台完成。</div>
+        <button id="dictionaryRetryButton" class="secondary compactButton dictionaryRetryButton"
+                type="button" onclick="retryAutomaticDictionarySetup()">
+          重试自动恢复
+        </button>
       </div>
 
-      <div id="dictProgressWrap" class="dictProgressWrap">
+      <div class="dictStatusGrid">
+        <div id="dictImportStatus">ECDICT：等待检查…</div>
+        <div id="lemmaImportStatus">Lemma：等待检查…</div>
+      </div>
+
+      <div id="dictProgressWrap" class="dictProgressWrap" role="progressbar"
+           aria-label="离线词典准备进度" aria-valuemin="0" aria-valuemax="100"
+           aria-valuenow="0">
         <div id="dictProgressBar" class="dictProgressBar"></div>
       </div>
 
       <div class="dictHint">
-        第一次使用：先导入 <b>ecdict.csv</b>，再导入 <b>lemma.en.txt</b>。
-        两者导入后都保存在浏览器本地，日常查词无需联网。
+        首次使用需要下载约 68 MB，完成后会保存在本机，日常查询无需联网。
+        如果自动恢复失败，仍可使用上方按钮手动导入 ECDICT 和 lemma。
       </div>
     </div>
 
@@ -493,7 +505,7 @@ I felt nervous when I asked my friends for advice, but their suggestions helped 
       </div>
 
       <div class="helpSteps">
-        <div class="helpStep"><b>1. 首次准备</b><span>导入 ECDICT，再导入 lemma.en.txt；以后通常不用重复导入。</span></div>
+        <div class="helpStep"><b>1. 首次准备</b><span>网页会自动准备离线词典；完成后保存在本机，日常查询无需联网。</span></div>
         <div class="helpStep"><b>2. 开始阅读</b><span>粘贴英文或拖入 TXT → 生成文章 → 点击不会的词。</span></div>
         <div class="helpStep"><b>3. 查询 ≠ 收藏</b><span>点词只进入“查询记录”；真正想学的词再手动点“☆ 收藏”。</span></div>
         <div class="helpStep"><b>4. 收藏可自定义</b><span>词库没有也能收藏；释义、词性、标签、上下文和备注都能自己改。</span></div>

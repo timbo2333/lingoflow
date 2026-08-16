@@ -327,6 +327,45 @@
     gap: 12px;
   }
 
+  .dictionarySetupStatus {
+    margin-top: 12px;
+    padding: 12px 13px;
+    border: 1px solid #dfe3e8;
+    border-radius: 10px;
+    background: #f7f8fa;
+  }
+
+  .dictionarySetupStatus[data-state="ready"] {
+    border-color: #b9dfc5;
+    background: #f0faf3;
+  }
+
+  .dictionarySetupStatus[data-state="error"] {
+    border-color: #efc2c2;
+    background: #fff5f5;
+  }
+
+  .dictionarySetupTitle {
+    font-size: 15px;
+    font-weight: 700;
+  }
+
+  .dictionarySetupDetail {
+    margin-top: 4px;
+    color: #6e6e73;
+    font-size: 13px;
+    line-height: 1.5;
+  }
+
+  .dictionaryRetryButton {
+    display: none;
+    margin-top: 9px;
+  }
+
+  .dictionaryRetryButton.show {
+    display: inline-flex;
+  }
+
   #dictImportStatus {
     color: #6e6e73;
     font-size: 14px;
@@ -1126,12 +1165,28 @@
 
   body.darkMode .description,
   body.darkMode .dictHint,
+  body.darkMode .dictionarySetupDetail,
   body.darkMode .modalSub,
   body.darkMode .settingSubValue,
   body.darkMode .vocabMeta,
   body.darkMode .querySourceMeta,
   body.darkMode .favoriteDate {
     color: var(--app-muted);
+  }
+
+  body.darkMode .dictionarySetupStatus {
+    background: #242428;
+    border-color: #3b3b40;
+  }
+
+  body.darkMode .dictionarySetupStatus[data-state="ready"] {
+    background: #183021;
+    border-color: #315d3d;
+  }
+
+  body.darkMode .dictionarySetupStatus[data-state="error"] {
+    background: #3a2020;
+    border-color: #684040;
   }
 
   body.darkMode .word:hover { background: #343439; }
@@ -1603,4 +1658,3 @@
       max-width: none;
     }
   }
-

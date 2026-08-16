@@ -432,7 +432,11 @@ function repeatCurrentWord() {
 
 const ECDICT_DB_NAME = "EnglishReaderECDICT";
 const ECDICT_DB_VERSION = 2;
+const DICTIONARY_MANIFEST_PATH = "data/dictionary/manifest.json";
+const ECDICT_WRITE_BATCH_SIZE = 1500;
+const LEMMA_WRITE_BATCH_SIZE = 2500;
 let ecdictDbPromise = null;
+let dictionaryInitializationPromise = null;
 
 function openECDICTDatabase() {
   if (ecdictDbPromise) return ecdictDbPromise;
@@ -476,6 +480,15 @@ async function getECDICTMeta(key) {
   return await idbRequest(tx.objectStore("meta").get(key));
 }
 
+async function getECDICTMetaValues(keys) {
+  const db = await openECDICTDatabase();
+  const tx = db.transaction("meta", "readonly");
+  const store = tx.objectStore("meta");
+  const values = await Promise.all(keys.map(key => idbRequest(store.get(key))));
+
+  return Object.fromEntries(keys.map((key, index) => [key, values[index]?.value]));
+}
+
 async function setECDICTMeta(key, value) {
   const db = await openECDICTDatabase();
   return new Promise((resolve, reject) => {
@@ -483,7 +496,36 @@ async function setECDICTMeta(key, value) {
     tx.objectStore("meta").put({ key, value });
     tx.oncomplete = resolve;
     tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error || new Error("Meta transaction aborted"));
   });
+}
+
+async function setECDICTMetaValues(values) {
+  const db = await openECDICTDatabase();
+
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction("meta", "readwrite");
+    const store = tx.objectStore("meta");
+
+    for (const [key, value] of Object.entries(values)) {
+      store.put({ key, value });
+    }
+
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error || new Error("Meta transaction aborted"));
+  });
+}
+
+async function countECDICTStore(storeName) {
+  const db = await openECDICTDatabase();
+
+  if (!db.objectStoreNames.contains(storeName)) {
+    throw new Error(`本地词典数据库缺少 ${storeName}，无法在不升级数据库版本的情况下恢复。`);
+  }
+
+  const tx = db.transaction(storeName, "readonly");
+  return Number(await idbRequest(tx.objectStore(storeName).count()));
 }
 
 async function clearECDICTEntries() {
@@ -818,6 +860,7 @@ class CSVStreamParser {
     this.field = "";
     this.inQuotes = false;
     this.afterQuote = false;
+    this.rowStarted = false;
   }
 
   feed(text, isFinal = false) {
@@ -832,6 +875,7 @@ class CSVStreamParser {
       finishField();
       completedRows.push(this.row);
       this.row = [];
+      this.rowStarted = false;
     };
 
     for (let i = 0; i < text.length; i++) {
@@ -851,7 +895,7 @@ class CSVStreamParser {
             } else if (ch === "\n") {
               finishRow();
             } else if (ch !== "\r") {
-              this.field += ch;
+              throw new Error("CSV 格式错误：引号字段结束后出现了无效字符。");
             }
           }
         } else if (ch === '"') {
@@ -862,11 +906,14 @@ class CSVStreamParser {
       } else {
         if (ch === '"' && this.field.length === 0) {
           this.inQuotes = true;
+          this.rowStarted = true;
         } else if (ch === ",") {
+          this.rowStarted = true;
           finishField();
         } else if (ch === "\n") {
           finishRow();
         } else if (ch !== "\r") {
+          this.rowStarted = true;
           this.field += ch;
         }
       }
@@ -876,143 +923,229 @@ class CSVStreamParser {
       if (this.afterQuote) {
         this.inQuotes = false;
         this.afterQuote = false;
+      } else if (this.inQuotes) {
+        throw new Error("CSV 格式错误：文件结束时仍有未闭合的引号字段。");
       }
 
-      if (this.field.length || this.row.length) finishRow();
+      if (this.rowStarted || this.field.length || this.row.length) finishRow();
     }
 
     return completedRows;
   }
 }
 
-async function importECDICTCsv(file) {
-  const status = document.getElementById("dictImportStatus");
+function setDictionaryProgress(percent, visible = true) {
   const progressWrap = document.getElementById("dictProgressWrap");
   const progressBar = document.getElementById("dictProgressBar");
+  const value = Math.max(0, Math.min(100, Number(percent) || 0));
 
-  status.textContent = "准备导入…";
-  progressWrap.style.display = "block";
-  progressBar.style.width = "0%";
+  progressWrap.style.display = visible ? "block" : "none";
+  progressWrap.setAttribute("aria-valuenow", String(Math.round(value)));
+  progressBar.style.width = value + "%";
+}
 
-  await clearECDICTEntries();
-  await setECDICTMeta("ready", false);
+function setDictionarySetupState(state, title, detail, options = {}) {
+  const setup = document.getElementById("dictionarySetupStatus");
+  const retryButton = document.getElementById("dictionaryRetryButton");
+
+  setup.dataset.state = state;
+  document.getElementById("dictionarySetupTitle").textContent = title;
+  document.getElementById("dictionarySetupDetail").textContent = detail;
+  retryButton.classList.toggle("show", Boolean(options.showRetry));
+  retryButton.disabled = state === "checking" || state === "initializing";
+
+  if (typeof options.progress === "number") {
+    setDictionaryProgress(options.progress, true);
+  } else if (options.hideProgress) {
+    setDictionaryProgress(0, false);
+  }
+}
+
+function normalizeCSVHeader(row) {
+  return row.map((value, index) => {
+    const text = String(value || "");
+    return (index === 0 ? text.replace(/^\uFEFF/, "") : text).trim().toLowerCase();
+  });
+}
+
+function getECDICTColumnIndexes(headers) {
+  const indexes = {
+    word: headers.indexOf("word"),
+    phonetic: headers.indexOf("phonetic"),
+    translation: headers.indexOf("translation"),
+    pos: headers.indexOf("pos"),
+    tag: headers.indexOf("tag"),
+    exchange: headers.indexOf("exchange")
+  };
+
+  if (indexes.word < 0 || indexes.translation < 0) {
+    throw new Error("没有识别到 ECDICT 的 CSV 表头。");
+  }
+
+  return indexes;
+}
+
+function makeECDICTEntry(row, indexes) {
+  const rawWord = row[indexes.word] || "";
+  const word = rawWord.trim().toLowerCase();
+  if (!word) return null;
+
+  return {
+    word,
+    phonetic: indexes.phonetic >= 0 ? (row[indexes.phonetic] || "") : "",
+    translation: indexes.translation >= 0 ? (row[indexes.translation] || "") : "",
+    pos: indexes.pos >= 0 ? (row[indexes.pos] || "") : "",
+    tag: indexes.tag >= 0 ? (row[indexes.tag] || "") : "",
+    exchange: indexes.exchange >= 0 ? (row[indexes.exchange] || "") : ""
+  };
+}
+
+function headersMatch(left, right) {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+async function importECDICTReadableStream(readable, options = {}) {
+  if (!readable?.getReader) throw new Error("浏览器没有提供可读取的词典下载流。");
 
   const parser = new CSVStreamParser();
-  const decoder = new TextDecoder("utf-8");
-  const reader = file.stream().getReader();
-
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  const reader = readable.getReader();
   let headers = null;
   let indexes = null;
   let batch = [];
   let imported = 0;
+  let recordCount = 0;
   let bytesRead = 0;
 
-  const addRow = row => {
-    if (!indexes) return;
-
-    const rawWord = row[indexes.word] || "";
-    const word = rawWord.trim().toLowerCase();
-    if (!word) return;
-
-    batch.push({
-      word,
-      phonetic: indexes.phonetic >= 0 ? (row[indexes.phonetic] || "") : "",
-      translation: indexes.translation >= 0 ? (row[indexes.translation] || "") : "",
-      pos: indexes.pos >= 0 ? (row[indexes.pos] || "") : "",
-      tag: indexes.tag >= 0 ? (row[indexes.tag] || "") : "",
-      exchange: indexes.exchange >= 0 ? (row[indexes.exchange] || "") : ""
-    });
+  const flushBatch = async () => {
+    if (!batch.length) return;
+    const pending = batch;
+    batch = [];
+    await writeECDICTBatch(pending);
+    imported += pending.length;
+    await new Promise(resolve => setTimeout(resolve, 0));
   };
 
   const consumeRows = async rows => {
     for (const row of rows) {
       if (!headers) {
-        headers = row.map(x => x.trim().toLowerCase());
+        headers = normalizeCSVHeader(row);
+        indexes = getECDICTColumnIndexes(headers);
 
-        indexes = {
-          word: headers.indexOf("word"),
-          phonetic: headers.indexOf("phonetic"),
-          translation: headers.indexOf("translation"),
-          pos: headers.indexOf("pos"),
-          tag: headers.indexOf("tag"),
-          exchange: headers.indexOf("exchange")
-        };
-
-        if (indexes.word < 0 || indexes.translation < 0) {
-          throw new Error("没有识别到 ECDICT 的 CSV 表头。");
+        if (options.expectedHeader && !headersMatch(headers, options.expectedHeader)) {
+          throw new Error("词典分片的 CSV 表头与其他分片不一致。");
         }
-
         continue;
       }
 
-      addRow(row);
+      recordCount++;
+      const entry = makeECDICTEntry(row, indexes);
+      if (entry) batch.push(entry);
 
-      if (batch.length >= 1500) {
-        await writeECDICTBatch(batch);
-        imported += batch.length;
-        batch = [];
-
-        const percent = Math.min(99, Math.round(bytesRead / file.size * 100));
-        progressBar.style.width = percent + "%";
-        status.textContent =
-          `正在导入词库… ${percent}%（约 ${imported.toLocaleString()} 条）`;
-
-        await new Promise(resolve => setTimeout(resolve, 0));
-      }
+      if (batch.length >= ECDICT_WRITE_BATCH_SIZE) await flushBatch();
     }
   };
 
-  while (true) {
-    const { value, done } = await reader.read();
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
 
-    if (done) {
-      await consumeRows(parser.feed(decoder.decode(), true));
-      break;
+      if (done) {
+        await consumeRows(parser.feed(decoder.decode(), true));
+        break;
+      }
+
+      bytesRead += value.byteLength;
+      await consumeRows(parser.feed(decoder.decode(value, { stream: true }), false));
+      options.onProgress?.({ bytesRead, imported: imported + batch.length, recordCount });
     }
-
-    bytesRead += value.byteLength;
-    const text = decoder.decode(value, { stream: true });
-    await consumeRows(parser.feed(text, false));
+  } catch (error) {
+    try { await reader.cancel(); } catch {}
+    throw error;
   }
 
-  if (batch.length) {
-    await writeECDICTBatch(batch);
-    imported += batch.length;
+  await flushBatch();
+
+  if (!headers) throw new Error("没有读取到 ECDICT CSV 表头。");
+  if (Number.isFinite(options.expectedRecordCount) && recordCount !== options.expectedRecordCount) {
+    throw new Error(
+      `词典分片记录数不一致：应为 ${options.expectedRecordCount.toLocaleString()} 条，` +
+      `实际读取 ${recordCount.toLocaleString()} 条。`
+    );
   }
 
-  await setECDICTMeta("ready", true);
-  await setECDICTMeta("count", imported);
-  await setECDICTMeta("filename", file.name);
-  await setECDICTMeta("source_file_size", file.size);
+  options.onProgress?.({ bytesRead, imported, recordCount });
+  return { headers, imported, recordCount, bytesRead };
+}
 
-  progressBar.style.width = "100%";
+async function importECDICTCsv(file) {
+  const status = document.getElementById("dictImportStatus");
+
+  status.textContent = "ECDICT：准备手动导入…";
+  setDictionarySetupState(
+    "initializing",
+    "正在更新离线词典…",
+    "正在读取你选择的 ECDICT 文件。",
+    { progress: 0 }
+  );
+
+  await setECDICTMetaValues({ ready: false, count: 0 });
+  await clearECDICTEntries();
+
+  const result = await importECDICTReadableStream(file.stream(), {
+    onProgress: ({ bytesRead, imported }) => {
+      const percent = Math.min(99, Math.round(bytesRead / file.size * 100));
+      setDictionaryProgress(percent, true);
+      status.textContent =
+        `ECDICT：正在导入 ${percent}%（约 ${imported.toLocaleString()} 条）`;
+    }
+  });
+
+  const actualCount = await countECDICTStore("entries");
+  if (actualCount !== result.imported) {
+    throw new Error(
+      `ECDICT 写入校验失败：处理 ${result.imported.toLocaleString()} 条，` +
+      `数据库中实际有 ${actualCount.toLocaleString()} 条。`
+    );
+  }
+
+  await setECDICTMetaValues({
+    ready: true,
+    count: actualCount,
+    dictionaryVersion: "manual",
+    importedAt: new Date().toISOString(),
+    source: "manual",
+    filename: file.name,
+    source_file_size: file.size
+  });
+
+  setDictionaryProgress(100, true);
   status.textContent =
-    `✅ ECDICT 已导入：${imported.toLocaleString()} 条。现在可以离线查词。`;
+    `✅ ECDICT 已导入：${actualCount.toLocaleString()} 条。现在可以离线查词。`;
 
   setTimeout(() => {
-    progressWrap.style.display = "none";
+    setDictionaryProgress(0, false);
   }, 1200);
 }
 
-async function importLemmaFile(file) {
-  const status = document.getElementById("lemmaImportStatus");
-  const progressWrap = document.getElementById("dictProgressWrap");
-  const progressBar = document.getElementById("dictProgressBar");
+async function importLemmaReadableStream(readable, options = {}) {
+  if (!readable?.getReader) throw new Error("浏览器没有提供可读取的词形库下载流。");
 
-  status.textContent = "准备导入词形库…";
-  progressWrap.style.display = "block";
-  progressBar.style.width = "0%";
-
-  await clearLemmaEntries();
-  await setECDICTMeta("lemma_ready", false);
-
-  const reader = file.stream().getReader();
-  const decoder = new TextDecoder("utf-8");
-
+  const reader = readable.getReader();
+  const decoder = new TextDecoder("utf-8", { fatal: true });
   let carry = "";
   let batch = [];
   let imported = 0;
   let bytesRead = 0;
+
+  const flushBatch = async () => {
+    if (!batch.length) return;
+    const pending = batch;
+    batch = [];
+    await writeLemmaBatch(pending);
+    imported += pending.length;
+    await new Promise(resolve => setTimeout(resolve, 0));
+  };
 
   const processLine = async rawLine => {
     const line = rawLine.trim();
@@ -1041,56 +1174,162 @@ async function importLemmaFile(file) {
       if (form) batch.push({ form, lemma });
     }
 
-    if (batch.length >= 2500) {
-      await writeLemmaBatch(batch);
-      imported += batch.length;
-      batch = [];
-      await new Promise(resolve => setTimeout(resolve, 0));
-    }
+    if (batch.length >= LEMMA_WRITE_BATCH_SIZE) await flushBatch();
   };
 
-  while (true) {
-    const { value, done } = await reader.read();
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
 
-    if (done) break;
+      bytesRead += value.byteLength;
+      carry += decoder.decode(value, { stream: true });
+      const lines = carry.split(/\r?\n/);
+      carry = lines.pop() || "";
 
-    bytesRead += value.byteLength;
-    carry += decoder.decode(value, { stream: true });
-
-    const lines = carry.split(/\r?\n/);
-    carry = lines.pop() || "";
-
-    for (const line of lines) {
-      await processLine(line);
+      for (const line of lines) await processLine(line);
+      options.onProgress?.({ bytesRead, imported: imported + batch.length });
     }
-
-    const percent = Math.min(99, Math.round(bytesRead / file.size * 100));
-    progressBar.style.width = percent + "%";
-    status.textContent =
-      `正在导入词形库… ${percent}%（约 ${imported.toLocaleString()} 条映射）`;
+  } catch (error) {
+    try { await reader.cancel(); } catch {}
+    throw error;
   }
 
   carry += decoder.decode();
-
   if (carry.trim()) await processLine(carry);
+  await flushBatch();
+  options.onProgress?.({ bytesRead, imported });
 
-  if (batch.length) {
-    await writeLemmaBatch(batch);
-    imported += batch.length;
-  }
+  return { imported, bytesRead };
+}
 
-  await setECDICTMeta("lemma_ready", true);
-  await setECDICTMeta("lemma_count", imported);
-  await setECDICTMeta("lemma_filename", file.name);
-  await setECDICTMeta("lemma_source_file_size", file.size);
+async function importLemmaFile(file) {
+  const status = document.getElementById("lemmaImportStatus");
 
-  progressBar.style.width = "100%";
+  status.textContent = "Lemma：准备手动导入…";
+  setDictionarySetupState(
+    "initializing",
+    "正在更新离线词典…",
+    "正在读取你选择的 lemma 文件。",
+    { progress: 0 }
+  );
+
+  await setECDICTMetaValues({ lemma_ready: false, lemma_count: 0 });
+  await clearLemmaEntries();
+
+  await importLemmaReadableStream(file.stream(), {
+    onProgress: ({ bytesRead, imported }) => {
+      const percent = Math.min(99, Math.round(bytesRead / file.size * 100));
+      setDictionaryProgress(percent, true);
+      status.textContent =
+        `Lemma：正在导入 ${percent}%（约 ${imported.toLocaleString()} 条映射）`;
+    }
+  });
+
+  const actualCount = await countECDICTStore("lemmas");
+  if (actualCount <= 0) throw new Error("Lemma 文件没有生成任何可用的词形映射。");
+
+  await setECDICTMetaValues({
+    lemma_ready: true,
+    lemma_count: actualCount,
+    lemma_dictionaryVersion: "manual",
+    lemma_importedAt: new Date().toISOString(),
+    lemma_source: "manual",
+    lemma_filename: file.name,
+    lemma_source_file_size: file.size
+  });
+
+  setDictionaryProgress(100, true);
   status.textContent =
-    `✅ Lemma 已导入：${imported.toLocaleString()} 条词形映射。`;
+    `✅ Lemma 已导入：${actualCount.toLocaleString()} 条词形映射。`;
 
   setTimeout(() => {
-    progressWrap.style.display = "none";
+    setDictionaryProgress(0, false);
   }, 1200);
+}
+
+async function inspectDictionaryIntegrity() {
+  const db = await openECDICTDatabase();
+  const requiredStores = ["entries", "lemmas", "meta"];
+  const missingStores = requiredStores.filter(name => !db.objectStoreNames.contains(name));
+
+  if (missingStores.length) {
+    throw new Error(
+      `本地数据库缺少 ${missingStores.join("、")}。本次实现不会擅自升级数据库版本。`
+    );
+  }
+
+  const keys = [
+    "ready", "count", "dictionaryVersion", "importedAt", "source",
+    "lemma_ready", "lemma_count", "lemma_dictionaryVersion", "lemma_importedAt", "lemma_source"
+  ];
+  const [meta, entriesCount, lemmasCount] = await Promise.all([
+    getECDICTMetaValues(keys),
+    countECDICTStore("entries"),
+    countECDICTStore("lemmas")
+  ]);
+
+  const recordedEntries = Number(meta.count || 0);
+  const recordedLemmas = Number(meta.lemma_count || 0);
+  const managedECDICT = meta.source === "web-auto" || meta.source === "manual";
+  const managedLemma = meta.lemma_source === "web-auto" || meta.lemma_source === "manual";
+  const ecdictMetadataComplete = !managedECDICT || Boolean(
+    meta.dictionaryVersion && meta.importedAt && meta.source
+  );
+  const lemmaMetadataComplete = !managedLemma || Boolean(
+    meta.lemma_dictionaryVersion && meta.lemma_importedAt && meta.lemma_source
+  );
+
+  const ecdictComplete =
+    meta.ready === true &&
+    recordedEntries > 0 &&
+    entriesCount > 0 &&
+    entriesCount === recordedEntries &&
+    ecdictMetadataComplete;
+
+  // 旧版 Lemma 的 meta 记录的是写入尝试次数，重复 form 会覆盖，因此旧数据
+  // 不强求 meta 与实际 store 数量相等；本版本产生的数据会记录实际唯一键数量。
+  const lemmaCountValid = managedLemma
+    ? lemmasCount === recordedLemmas
+    : lemmasCount > 0;
+  const lemmaComplete =
+    meta.lemma_ready === true &&
+    recordedLemmas > 0 &&
+    lemmasCount > 0 &&
+    lemmaCountValid &&
+    lemmaMetadataComplete;
+
+  return {
+    ecdict: {
+      complete: ecdictComplete,
+      ready: meta.ready === true,
+      recordedCount: recordedEntries,
+      actualCount: entriesCount,
+      dictionaryVersion: meta.dictionaryVersion || "",
+      source: meta.source || "legacy"
+    },
+    lemma: {
+      complete: lemmaComplete,
+      ready: meta.lemma_ready === true,
+      recordedCount: recordedLemmas,
+      actualCount: lemmasCount,
+      dictionaryVersion: meta.lemma_dictionaryVersion || "",
+      source: meta.lemma_source || "legacy"
+    }
+  };
+}
+
+function renderDictionaryIntegrity(integrity) {
+  const status = document.getElementById("dictImportStatus");
+  const lemmaStatus = document.getElementById("lemmaImportStatus");
+
+  status.textContent = integrity.ecdict.complete
+    ? `✅ ECDICT 已就绪：${integrity.ecdict.actualCount.toLocaleString()} 条`
+    : `ECDICT 需要恢复（本地实际 ${integrity.ecdict.actualCount.toLocaleString()} 条）`;
+
+  lemmaStatus.textContent = integrity.lemma.complete
+    ? `✅ Lemma 已就绪：${integrity.lemma.actualCount.toLocaleString()} 条映射`
+    : `Lemma 需要恢复（本地实际 ${integrity.lemma.actualCount.toLocaleString()} 条映射）`;
 }
 
 async function refreshDictionaryStatus() {
@@ -1104,32 +1343,414 @@ async function refreshDictionaryStatus() {
   }
 
   try {
-    const ready = await getECDICTMeta("ready");
-    const count = await getECDICTMeta("count");
+    const integrity = await inspectDictionaryIntegrity();
+    renderDictionaryIntegrity(integrity);
 
-    if (ready && ready.value === true) {
-      status.textContent =
-        `✅ ECDICT 已就绪${count ? "：" + Number(count.value).toLocaleString() + " 条" : ""}`;
+    if (integrity.ecdict.complete && integrity.lemma.complete) {
+      setDictionarySetupState(
+        "ready",
+        "离线词典已就绪",
+        "词典已保存在本机，日常查询无需联网。",
+        { hideProgress: true }
+      );
     } else {
-      status.textContent = "⚠️ 尚未导入 ECDICT。";
-    }
-
-    const lemmaReady = await getECDICTMeta("lemma_ready");
-    const lemmaCount = await getECDICTMeta("lemma_count");
-
-    if (lemmaReady && lemmaReady.value === true) {
-      lemmaStatus.textContent =
-        `✅ Lemma 已就绪${lemmaCount ? "：" + Number(lemmaCount.value).toLocaleString() + " 条映射" : ""}`;
-    } else {
-      lemmaStatus.textContent = "⚠️ 尚未导入 lemma.en.txt。";
+      setDictionarySetupState(
+        "error",
+        "离线词典需要恢复",
+        "可以重试自动恢复，也可以使用上方按钮手动导入。",
+        { showRetry: true, hideProgress: true }
+      );
     }
   } catch (error) {
     console.error(error);
     status.textContent = "本地词库状态读取失败。";
     lemmaStatus.textContent = "词形库状态读取失败。";
+    setDictionarySetupState(
+      "error",
+      "无法检查离线词典",
+      error.message || "本地数据库读取失败。",
+      { showRetry: true, hideProgress: true }
+    );
   }
 
   updateVocabBadges();
+}
+
+function validateDictionaryManifest(manifest) {
+  if (!manifest || typeof manifest !== "object") {
+    throw new Error("词典资源清单格式不正确。");
+  }
+
+  if (typeof manifest.dictionaryVersion !== "string" || !manifest.dictionaryVersion.trim()) {
+    throw new Error("词典资源清单缺少 dictionaryVersion。");
+  }
+
+  const ecdict = manifest.ecdict;
+  const chunks = ecdict?.chunks;
+  if (!Number.isInteger(ecdict?.totalRecords) || ecdict.totalRecords <= 0) {
+    throw new Error("词典资源清单中的 ECDICT 总记录数无效。");
+  }
+  if (!Array.isArray(chunks) || !chunks.length) {
+    throw new Error("词典资源清单中没有 ECDICT 分片。");
+  }
+  if (ecdict.chunkCount != null && ecdict.chunkCount !== chunks.length) {
+    throw new Error("词典资源清单中的分片数量不一致。");
+  }
+
+  const safeFilename = /^[A-Za-z0-9._-]+$/;
+  const filenames = new Set();
+  let chunkRecords = 0;
+
+  for (const chunk of chunks) {
+    if (!safeFilename.test(chunk?.filename || "") || filenames.has(chunk.filename)) {
+      throw new Error("词典资源清单包含无效或重复的分片文件名。");
+    }
+    if (!Number.isInteger(chunk.recordCount) || chunk.recordCount < 0) {
+      throw new Error(`词典分片 ${chunk.filename} 的记录数无效。`);
+    }
+    if (!Number.isInteger(chunk.sizeBytes) || chunk.sizeBytes <= 0) {
+      throw new Error(`词典分片 ${chunk.filename} 的大小无效。`);
+    }
+    filenames.add(chunk.filename);
+    chunkRecords += chunk.recordCount;
+  }
+
+  if (chunkRecords !== ecdict.totalRecords) {
+    throw new Error("词典资源清单中的分片记录数之和与总记录数不一致。");
+  }
+
+  if (!safeFilename.test(manifest.lemma?.filename || "")) {
+    throw new Error("词典资源清单中的 lemma 文件名无效。");
+  }
+  if (!Number.isInteger(manifest.lemma?.sizeBytes) || manifest.lemma.sizeBytes <= 0) {
+    throw new Error("词典资源清单中的 lemma 文件大小无效。");
+  }
+
+  return manifest;
+}
+
+async function fetchDictionaryManifest() {
+  const requestedUrl = new URL(DICTIONARY_MANIFEST_PATH, document.baseURI);
+  let response;
+
+  try {
+    response = await fetch(requestedUrl, { cache: "no-store" });
+  } catch (error) {
+    throw new Error(`资源清单下载失败：${error.message || "网络连接中断"}`);
+  }
+
+  if (!response.ok) {
+    throw new Error(`资源清单下载失败（HTTP ${response.status}）。`);
+  }
+
+  let manifest;
+  try {
+    manifest = await response.json();
+  } catch (error) {
+    throw new Error(`资源清单解析失败：${error.message || "不是有效的 JSON"}`);
+  }
+
+  return {
+    manifest: validateDictionaryManifest(manifest),
+    resourceBaseUrl: new URL("./", response.url || requestedUrl.href)
+  };
+}
+
+async function fetchDictionaryResource(url, label) {
+  let response;
+
+  try {
+    response = await fetch(url);
+  } catch (error) {
+    throw new Error(`${label}下载失败：${error.message || "网络连接中断"}`);
+  }
+
+  if (!response.ok) {
+    throw new Error(`${label}下载失败（HTTP ${response.status}）。`);
+  }
+  if (!response.body) {
+    throw new Error(`${label}下载失败：浏览器没有提供响应数据。`);
+  }
+
+  return response;
+}
+
+function createAutomaticProgress(manifest, needsECDICT, needsLemma) {
+  const ecdictBytes = needsECDICT
+    ? manifest.ecdict.chunks.reduce((sum, chunk) => sum + chunk.sizeBytes, 0)
+    : 0;
+  const lemmaBytes = needsLemma ? manifest.lemma.sizeBytes : 0;
+
+  return {
+    totalBytes: ecdictBytes + lemmaBytes,
+    completedBytes: 0
+  };
+}
+
+function updateAutomaticProgress(progress, currentBytes, label, extra = "") {
+  const processedBytes = Math.min(
+    progress.totalBytes,
+    progress.completedBytes + Math.max(0, currentBytes)
+  );
+  const percent = progress.totalBytes > 0
+    ? Math.min(99, Math.floor(processedBytes / progress.totalBytes * 100))
+    : 0;
+  const suffix = extra ? ` · ${extra}` : "";
+
+  setDictionarySetupState(
+    "initializing",
+    "正在准备离线词典…",
+    `${label} · ${percent}% · ${formatBytes(processedBytes)} / ${formatBytes(progress.totalBytes)}${suffix}`,
+    { progress: percent }
+  );
+}
+
+function finishAutomaticProgressResource(progress, sizeBytes) {
+  progress.completedBytes = Math.min(
+    progress.totalBytes,
+    progress.completedBytes + sizeBytes
+  );
+}
+
+async function importAutomaticECDICT(manifest, resourceBaseUrl, progress) {
+  const status = document.getElementById("dictImportStatus");
+  const chunks = manifest.ecdict.chunks;
+  const sourceSize = chunks.reduce((sum, chunk) => sum + chunk.sizeBytes, 0);
+  let expectedHeader = null;
+  let importedTotal = 0;
+
+  await setECDICTMetaValues({ ready: false, count: 0 });
+  await clearECDICTEntries();
+
+  for (let index = 0; index < chunks.length; index++) {
+    const chunk = chunks[index];
+    const label = `第 ${index + 1} / ${chunks.length} 个词典分片`;
+    status.textContent = `ECDICT：正在处理 ${label}`;
+    updateAutomaticProgress(progress, 0, label);
+
+    const response = await fetchDictionaryResource(
+      new URL(chunk.filename, resourceBaseUrl),
+      `词典分片 ${index + 1} / ${chunks.length} `
+    );
+    const result = await importECDICTReadableStream(response.body, {
+      expectedHeader,
+      expectedRecordCount: chunk.recordCount,
+      onProgress: ({ bytesRead, imported }) => {
+        status.textContent =
+          `ECDICT：${label} · 已处理 ${imported.toLocaleString()} 条`;
+        updateAutomaticProgress(
+          progress,
+          Math.min(bytesRead, chunk.sizeBytes),
+          label,
+          `${imported.toLocaleString()} 条`
+        );
+      }
+    });
+
+    if (result.bytesRead !== chunk.sizeBytes) {
+      throw new Error(
+        `${chunk.filename} 大小校验失败：应为 ${chunk.sizeBytes.toLocaleString()} bytes，` +
+        `实际 ${result.bytesRead.toLocaleString()} bytes。`
+      );
+    }
+
+    if (!expectedHeader) expectedHeader = result.headers;
+    importedTotal += result.imported;
+    finishAutomaticProgressResource(progress, chunk.sizeBytes);
+  }
+
+  if (importedTotal !== manifest.ecdict.totalRecords) {
+    throw new Error(
+      `ECDICT 总记录数校验失败：应为 ${manifest.ecdict.totalRecords.toLocaleString()} 条，` +
+      `实际导入 ${importedTotal.toLocaleString()} 条。`
+    );
+  }
+
+  const actualCount = await countECDICTStore("entries");
+  if (actualCount !== manifest.ecdict.totalRecords) {
+    throw new Error(
+      `IndexedDB ECDICT 校验失败：应为 ${manifest.ecdict.totalRecords.toLocaleString()} 条，` +
+      `实际 ${actualCount.toLocaleString()} 条。`
+    );
+  }
+
+  await setECDICTMetaValues({
+    ready: true,
+    count: actualCount,
+    dictionaryVersion: manifest.dictionaryVersion,
+    importedAt: new Date().toISOString(),
+    source: "web-auto",
+    filename: "manifest.json",
+    source_file_size: sourceSize
+  });
+
+  status.textContent = `✅ ECDICT 已就绪：${actualCount.toLocaleString()} 条`;
+}
+
+async function importAutomaticLemma(manifest, resourceBaseUrl, progress) {
+  const status = document.getElementById("lemmaImportStatus");
+  const label = "正在下载并导入 Lemma";
+
+  await setECDICTMetaValues({ lemma_ready: false, lemma_count: 0 });
+  await clearLemmaEntries();
+  status.textContent = "Lemma：正在自动恢复";
+  updateAutomaticProgress(progress, 0, label);
+
+  const response = await fetchDictionaryResource(
+    new URL(manifest.lemma.filename, resourceBaseUrl),
+    "Lemma "
+  );
+  const result = await importLemmaReadableStream(response.body, {
+    onProgress: ({ bytesRead, imported }) => {
+      status.textContent = `Lemma：正在导入（约 ${imported.toLocaleString()} 条映射）`;
+      updateAutomaticProgress(
+        progress,
+        Math.min(bytesRead, manifest.lemma.sizeBytes),
+        label,
+        `约 ${imported.toLocaleString()} 条映射`
+      );
+    }
+  });
+
+  if (result.bytesRead !== manifest.lemma.sizeBytes) {
+    throw new Error(
+      `Lemma 大小校验失败：应为 ${manifest.lemma.sizeBytes.toLocaleString()} bytes，` +
+      `实际 ${result.bytesRead.toLocaleString()} bytes。`
+    );
+  }
+  finishAutomaticProgressResource(progress, manifest.lemma.sizeBytes);
+
+  const actualCount = await countECDICTStore("lemmas");
+  if (actualCount <= 0) throw new Error("Lemma 导入完成后没有可用的词形映射。");
+
+  await setECDICTMetaValues({
+    lemma_ready: true,
+    lemma_count: actualCount,
+    lemma_dictionaryVersion: manifest.dictionaryVersion,
+    lemma_importedAt: new Date().toISOString(),
+    lemma_source: "web-auto",
+    lemma_filename: manifest.lemma.filename,
+    lemma_source_file_size: manifest.lemma.sizeBytes
+  });
+
+  status.textContent = `✅ Lemma 已就绪：${actualCount.toLocaleString()} 条映射`;
+}
+
+async function requestPersistentStorageBestEffort() {
+  if (!navigator.storage) return false;
+
+  try {
+    const alreadyPersistent = typeof navigator.storage.persisted === "function"
+      ? await navigator.storage.persisted()
+      : false;
+    if (alreadyPersistent) return true;
+
+    return typeof navigator.storage.persist === "function"
+      ? Boolean(await navigator.storage.persist())
+      : false;
+  } catch (error) {
+    console.warn("Persistent storage request was not available:", error);
+    return false;
+  }
+}
+
+function describeDictionarySetupError(error) {
+  if (error?.name === "QuotaExceededError") {
+    return "浏览器分配给本站的存储空间不足。请释放空间后重试，或使用手动导入作为备用方案。";
+  }
+  return error?.message || "发生未知错误。";
+}
+
+async function runAutomaticDictionarySetup() {
+  if (!("indexedDB" in window)) {
+    throw new Error("当前浏览器不支持 IndexedDB，无法保存离线词典。");
+  }
+
+  setDictionarySetupState(
+    "checking",
+    "正在检查离线词典…",
+    "页面可以正常使用，检查会在后台完成。",
+    { hideProgress: true }
+  );
+
+  const initialIntegrity = await inspectDictionaryIntegrity();
+  renderDictionaryIntegrity(initialIntegrity);
+
+  if (initialIntegrity.ecdict.complete && initialIntegrity.lemma.complete) {
+    setDictionarySetupState(
+      "ready",
+      "离线词典已就绪",
+      "已检测到完整的本地词典，本次没有下载任何词典资源。",
+      { hideProgress: true }
+    );
+    await requestPersistentStorageBestEffort();
+    return initialIntegrity;
+  }
+
+  setDictionarySetupState(
+    "initializing",
+    "正在准备离线词典…",
+    "首次使用需要下载约 68 MB，完成后将保存在本机。正在获取资源清单…",
+    { progress: 0 }
+  );
+
+  const { manifest, resourceBaseUrl } = await fetchDictionaryManifest();
+  const needsECDICT = !initialIntegrity.ecdict.complete;
+  const needsLemma = !initialIntegrity.lemma.complete;
+  const progress = createAutomaticProgress(manifest, needsECDICT, needsLemma);
+
+  if (needsECDICT) {
+    await importAutomaticECDICT(manifest, resourceBaseUrl, progress);
+  }
+  if (needsLemma) {
+    await importAutomaticLemma(manifest, resourceBaseUrl, progress);
+  }
+
+  const finalIntegrity = await inspectDictionaryIntegrity();
+  renderDictionaryIntegrity(finalIntegrity);
+  if (!finalIntegrity.ecdict.complete || !finalIntegrity.lemma.complete) {
+    throw new Error("自动恢复结束后，本地词典完整性校验没有通过。");
+  }
+
+  setDictionarySetupState(
+    "ready",
+    "离线词典已就绪",
+    `ECDICT ${finalIntegrity.ecdict.actualCount.toLocaleString()} 条，` +
+      `Lemma ${finalIntegrity.lemma.actualCount.toLocaleString()} 条映射。日常查询无需联网。`,
+    { progress: 100 }
+  );
+  await requestPersistentStorageBestEffort();
+  return finalIntegrity;
+}
+
+function initializeDictionaryOnStartup() {
+  if (dictionaryInitializationPromise) return dictionaryInitializationPromise;
+
+  dictionaryInitializationPromise = runAutomaticDictionarySetup()
+    .catch(async error => {
+      console.error("Automatic dictionary setup failed:", error);
+      try {
+        renderDictionaryIntegrity(await inspectDictionaryIntegrity());
+      } catch {}
+      setDictionarySetupState(
+        "error",
+        "离线词典准备失败",
+        `${describeDictionarySetupError(error)} 可以重试自动恢复，或使用上方按钮手动导入。`,
+        { showRetry: true, hideProgress: true }
+      );
+      throw error;
+    })
+    .finally(() => {
+      dictionaryInitializationPromise = null;
+    });
+
+  // 启动流程在后台运行；错误已在界面中呈现，避免产生未处理的 Promise 拒绝。
+  dictionaryInitializationPromise.catch(() => {});
+  return dictionaryInitializationPromise;
+}
+
+function retryAutomaticDictionarySetup() {
+  return initializeDictionaryOnStartup();
 }
 
 document.getElementById("dictFileInput").addEventListener(
@@ -1138,12 +1759,26 @@ document.getElementById("dictFileInput").addEventListener(
     const file = event.target.files[0];
     if (!file) return;
 
+    if (dictionaryInitializationPromise) {
+      document.getElementById("dictImportStatus").textContent =
+        "自动恢复正在进行，请完成后再手动导入。";
+      event.target.value = "";
+      return;
+    }
+
     try {
       await importECDICTCsv(file);
+      await refreshDictionaryStatus();
     } catch (error) {
       console.error(error);
       document.getElementById("dictImportStatus").textContent =
         "❌ 导入失败：" + (error.message || "未知错误");
+      setDictionarySetupState(
+        "error",
+        "ECDICT 手动导入失败",
+        error.message || "未知错误",
+        { showRetry: true, hideProgress: true }
+      );
     } finally {
       event.target.value = "";
     }
@@ -3253,15 +3888,28 @@ document.getElementById("lemmaFileInput").addEventListener(
     const file = event.target.files[0];
     if (!file) return;
 
+    if (dictionaryInitializationPromise) {
+      document.getElementById("lemmaImportStatus").textContent =
+        "自动恢复正在进行，请完成后再手动导入。";
+      event.target.value = "";
+      return;
+    }
+
     try {
       await importLemmaFile(file);
+      await refreshDictionaryStatus();
     } catch (error) {
       console.error(error);
       document.getElementById("lemmaImportStatus").textContent =
         "❌ Lemma 导入失败：" + (error.message || "未知错误");
+      setDictionarySetupState(
+        "error",
+        "Lemma 手动导入失败",
+        error.message || "未知错误",
+        { showRetry: true, hideProgress: true }
+      );
     } finally {
       event.target.value = "";
-      refreshDictionaryStatus();
     }
   }
 );
@@ -3478,7 +4126,7 @@ document.addEventListener("keydown", function(event) {
 });
 
 ensureHistoryMigration();
-refreshDictionaryStatus();
+initializeDictionaryOnStartup();
 updateVocabBadges();
 applyReadingPreferences();
 setupTextDropZone();
