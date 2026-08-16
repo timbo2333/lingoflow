@@ -1,0 +1,58 @@
+{
+  "dictionaryVersion": "2026-08-16",
+  "ecdict": {
+    "totalRecords": 770611,
+    "chunkCount": 9,
+    "chunks": [
+      {
+        "filename": "ecdict-001.csv",
+        "recordCount": 98710,
+        "sizeBytes": 7999959
+      },
+      {
+        "filename": "ecdict-002.csv",
+        "recordCount": 92803,
+        "sizeBytes": 7999959
+      },
+      {
+        "filename": "ecdict-003.csv",
+        "recordCount": 92522,
+        "sizeBytes": 7999996
+      },
+      {
+        "filename": "ecdict-004.csv",
+        "recordCount": 94368,
+        "sizeBytes": 7999747
+      },
+      {
+        "filename": "ecdict-005.csv",
+        "recordCount": 98142,
+        "sizeBytes": 7999975
+      },
+      {
+        "filename": "ecdict-006.csv",
+        "recordCount": 94375,
+        "sizeBytes": 7999970
+      },
+      {
+        "filename": "ecdict-007.csv",
+        "recordCount": 87297,
+        "sizeBytes": 7999918
+      },
+      {
+        "filename": "ecdict-008.csv",
+        "recordCount": 91617,
+        "sizeBytes": 7999944
+      },
+      {
+        "filename": "ecdict-009.csv",
+        "recordCount": 20777,
+        "sizeBytes": 1934688
+      }
+    ]
+  },
+  "lemma": {
+    "filename": "lemma.en.txt",
+    "sizeBytes": 2318694
+  }
+}
