@@ -70,13 +70,17 @@ description: LingoFlow 项目的产品、架构、数据安全、开发流程与
 ## 当前产品方向（可演进）
 
 - 将“文章库 + 阅读进度 + 信息架构升级”视为当前已确认的 V0.6 设计方向，而非永久不可修改的架构约束；执行相关任务前与当前产品计划和代码核对，后续明确的新决策优先。
-- 为文章使用独立数据库或数据层，例如 `LingoFlowLibraryDB`。
-- 至少为文章考虑 `id`、`title`、`content`、`sourceType`、`createdAt`、`updatedAt`、`lastReadAt`、reading progress 和 `paragraphIndex`。
-- 使用稳定 `id` 关联数据，绝不使用文章标题作为主键。
-- 允许收藏和查询记录逐步增加 `articleId` 与 `articleTitle`；旧记录没有 `articleId` 时自然保留，不做复杂迁移。
-- 删除文章时只删除文章正文和阅读状态，不自动删除已收藏的 WORD 或 PHRASE；其来源可显示“原文章已删除”。
-- 单篇文章删除采用一键删除加短时间撤销，不弹二次确认；批量删除可以确认一次。
-- 让“粘贴／导入 → 开始阅读 → 自动保存文章 → 自动保存进度”成为默认体验。
+- 为文章使用独立数据库或数据层（如 `LingoFlowLibraryDB`）和稳定 `id`，不以标题作为关联主键。至少考虑 `id`、`title`、`content`、`sourceType`（`paste`／`txt`／`library`）、`sourceId`、`sourceTitle`、`sourceAttribution`、`createdAt`、`updatedAt`、`lastReadAt`、`reading.progress`、`reading.paragraphIndex`、`reading.updatedAt`、`deletedAt`；来源字段仅在需要时使用并允许为空。
+- 将粘贴或导入的文本先视为草稿；用户点击“开始阅读”后自动保存文章，阅读中自动保存进度，不增加“保存文章”按钮，也不对相同粘贴内容自动去重。
+- 以 `progress + paragraphIndex` 恢复阅读，不把 `scrollTop` 像素作为核心数据；对自动写入节流或防抖。95% 以上可在 UI 视为已读完，不另存易冲突的 `finished`；改标题不影响进度，改正文时尽量保留进度，段落失效则用百分比兜底。
+- 让 V0.6 新收藏逐步具备稳定 favorite id、`type: WORD | PHRASE`、`sentence` 原句快照、`articleId`、`articleTitle`、`createdAt` 和 `updatedAt`。始终保留原句快照，不只靠 `articleId` 回原文取句；旧收藏缺少 id 或 `articleId` 时自然兼容或按需补齐，不为测试数据做复杂迁移。
+- 暂不开发复习系统，也不把 `correctCount`、`wrongCount`、`nextReviewAt`、`interval` 等算法字段塞进收藏；未来用 `reviewProgress` 或等价独立数据层通过 favorite id 关联，以支持听句填空等基于原句的复习。
+- 允许新查询逐步增加 `articleId` 与 `articleTitle`；文章查询数、收藏数等统计优先从关联数据动态计算，不维护容易失同步的冗余计数。
+- 单篇文章一键删除、不二次确认，并提供短时间即时撤销；删除以 `deletedAt` 进入“最近删除”，支持恢复，并按每篇自己的删除时间保留 7 天。下次打开应用时清理过期文章，不依赖后台定时任务；永久删除或清空最近删除等不可逆操作可以确认一次。
+- 删除文章不自动删除 WORD／PHRASE 收藏、原句、释义、备注或查询记录；关联来源可显示“原文章已删除”。
+- V0.6 只预留少量示例文章，不把大型内容库作为主线。内置文章使用 `sourceType: library` 与稳定 `sourceId`；首次开始阅读时创建个人文章记录，再次打开同一 `sourceId` 时继续原记录和进度。允许用户修改个人 `title`，同时保留原 `sourceTitle`。
+- 让普通用户备份从“学习数据备份”逐步发展为“个人数据备份”，包含文章、阅读进度、WORD／PHRASE 收藏、查询记录、自定义释义与备注、阅读设置和发音设置；普通迁移不包含可重建的 ECDICT／Lemma。
+- 按“长期结构清晰 > 用户体验简单 > 重要用户数据保护 > 测试阶段历史实现兼容”取舍；能低成本兼容就兼容，不为少量测试数据让 V0.6 架构变臃肿。
 
 ## 执行开发流程
 
