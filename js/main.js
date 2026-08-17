@@ -1651,7 +1651,7 @@ async function refreshDictionaryStatus(options = {}) {
       setDictionarySetupState(
         "ready",
         "离线词典已就绪",
-        `ECDICT ${integrity.ecdict.actualCount.toLocaleString()} 条，` +
+        `ECDICT ${integrity.ecdict.actualCount.toLocaleString()} 条 · ` +
           `Lemma ${integrity.lemma.actualCount.toLocaleString()} 条映射。日常查询无需联网。`,
         { showCancel: false, showManual: false, hideProgress: true }
       );
@@ -2218,7 +2218,7 @@ async function runAutomaticDictionarySetup(signal) {
   setDictionarySetupState(
     "ready",
     "离线词典已就绪",
-    `ECDICT ${finalIntegrity.ecdict.actualCount.toLocaleString()} 条，` +
+    `ECDICT ${finalIntegrity.ecdict.actualCount.toLocaleString()} 条 · ` +
       `Lemma ${finalIntegrity.lemma.actualCount.toLocaleString()} 条映射。日常查询无需联网。`,
     { progress: 100, showCancel: false, showManual: false }
   );
@@ -2248,7 +2248,7 @@ function initializeDictionaryOnStartup() {
         setDictionarySetupState(
           "ready",
           "离线词典已就绪",
-          `ECDICT ${integrity.ecdict.actualCount.toLocaleString()} 条，` +
+          `ECDICT ${integrity.ecdict.actualCount.toLocaleString()} 条 · ` +
             `Lemma ${integrity.lemma.actualCount.toLocaleString()} 条映射。日常查询无需联网。`,
           { showCancel: false, showManual: false, hideProgress: true }
         );
