@@ -29,13 +29,13 @@
 
     <div class="dictionaryPanel">
       <div class="dictionaryRow">
-        <button class="secondary" type="button"
-                onclick="document.getElementById('dictFileInput').click()">
+        <button id="manualECDICTButton" class="secondary" type="button"
+                onclick="requestManualDictionaryFile('ecdict')">
           📚 导入 / 更新 ECDICT
         </button>
 
-        <button class="secondary" type="button"
-                onclick="document.getElementById('lemmaFileInput').click()">
+        <button id="manualLemmaButton" class="secondary" type="button"
+                onclick="requestManualDictionaryFile('lemma')">
           🔤 导入词形库 lemma
         </button>
 
@@ -63,10 +63,24 @@
            role="status" aria-live="polite">
         <div id="dictionarySetupTitle" class="dictionarySetupTitle">正在检查离线词典…</div>
         <div id="dictionarySetupDetail" class="dictionarySetupDetail">页面可以正常使用，检查会在后台完成。</div>
-        <button id="dictionaryRetryButton" class="secondary compactButton dictionaryRetryButton"
-                type="button" onclick="retryAutomaticDictionarySetup()">
-          重试自动恢复
-        </button>
+        <div class="dictionarySetupActions">
+          <button id="dictionaryRetryButton" class="secondary compactButton dictionarySetupAction"
+                  type="button" onclick="retryAutomaticDictionarySetup()">
+            重试
+          </button>
+          <button id="dictionaryCancelButton" class="secondary compactButton dictionarySetupAction"
+                  type="button" onclick="cancelAutomaticDictionarySetup()">
+            取消加载
+          </button>
+          <button id="dictionaryManualButton" class="secondary compactButton dictionarySetupAction"
+                  type="button" onclick="showDictionaryManualChoices()">
+            手动导入
+          </button>
+          <button id="dictionaryPrepareButton" class="secondary compactButton dictionarySetupAction"
+                  type="button" onclick="openDictionaryGuide()">
+            准备词库
+          </button>
+        </div>
       </div>
 
       <div class="dictStatusGrid">
@@ -128,6 +142,53 @@ I felt nervous when I asked my friends for advice, but their suggestions helped 
       <button class="secondary compactButton" onclick="dismissBackupReminder()">今天不提醒</button>
     </div>
   </section>
+
+  <div id="dictionaryGuideModal" class="modalOverlay" role="dialog"
+       aria-modal="true" aria-labelledby="dictionaryGuideTitle">
+    <div class="modalCard dictionaryGuideCard">
+      <div class="modalHeader">
+        <div>
+          <div id="dictionaryGuideTitle" class="modalTitle">准备离线词库</div>
+          <div class="modalSub">
+            LingoFlow 使用保存在本机的离线词库快速查词。自动加载首次约需下载 68 MB，完成后日常查词无需联网。
+          </div>
+        </div>
+      </div>
+
+      <div class="dictionaryGuideOptions">
+        <button class="dictionaryGuideOption recommended" type="button"
+                onclick="startAutomaticDictionarySetup()">
+          <span class="dictionaryGuideBadge">推荐</span>
+          <strong>自动加载词库</strong>
+          <span>首次下载约 68 MB</span>
+          <span>完成后可离线查词</span>
+        </button>
+
+        <button class="dictionaryGuideOption" type="button"
+                onclick="showDictionaryManualChoices()">
+          <strong>手动导入</strong>
+          <span>适合网络较慢，或已经拥有 ECDICT / Lemma 文件的用户</span>
+        </button>
+
+        <button class="dictionaryGuideOption" type="button"
+                onclick="deferDictionarySetup()">
+          <strong>稍后再说</strong>
+          <span>先进入阅读器，以后可随时准备词典</span>
+        </button>
+      </div>
+
+      <div id="dictionaryGuideManualActions" class="dictionaryGuideManualActions">
+        <div class="dictionaryGuideManualHint">
+          可直接选择以前使用的完整 ECDICT CSV，无需自行拆分。ECDICT 和 Lemma 都导入后，离线词库才会显示为完整就绪。
+        </div>
+        <div class="dictionaryGuideManualButtons">
+          <button type="button" onclick="requestManualDictionaryFile('ecdict')">选择 ECDICT CSV</button>
+          <button class="secondary" type="button" onclick="requestManualDictionaryFile('lemma')">选择 Lemma 文件</button>
+          <button class="secondary" type="button" onclick="deferDictionarySetup()">稍后再说</button>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <div id="readingToolbar" class="readingToolbar">
     <div class="toolbarGroup">
@@ -472,12 +533,17 @@ I felt nervous when I asked my friends for advice, but their suggestions helped 
       <div class="settingsSectionTitle">词库管理</div>
       <div class="settingsButtons">
         <button class="secondary"
-                onclick="closeModal('settingsModal'); document.getElementById('dictFileInput').click();">
+                onclick="closeModal('settingsModal'); openDictionaryGuide();">
+          准备离线词库
+        </button>
+
+        <button class="secondary"
+                onclick="requestManualDictionaryFile('ecdict', true)">
           重新导入 ECDICT
         </button>
 
         <button class="secondary"
-                onclick="closeModal('settingsModal'); document.getElementById('lemmaFileInput').click();">
+                onclick="requestManualDictionaryFile('lemma', true)">
           重新导入 Lemma
         </button>
 
