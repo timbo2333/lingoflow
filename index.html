@@ -40,7 +40,7 @@
         </button>
 
         <button class="secondary" type="button" onclick="openSettings()">
-          ⚙️ 词库设置
+          ⚙️ 设置
         </button>
 
         <button class="secondary" type="button" onclick="openVocabBook()">
@@ -149,7 +149,7 @@ I felt nervous when I asked my friends for advice, but their suggestions helped 
     <div class="toolbarGroup">
       <label>
         语速：
-        <select id="speed">
+        <select id="speed" onchange="handleSpeechRateChange(this.value)">
           <option value="0.7">慢</option>
           <option value="0.85">稍慢</option>
           <option value="1" selected>正常</option>
@@ -159,7 +159,7 @@ I felt nervous when I asked my friends for advice, but their suggestions helped 
 
       <label>
         英语声音：
-        <select id="voiceSelect">
+        <select id="voiceSelect" onchange="handleSpeechVoiceChange(this.value)">
           <option value="">自动选择</option>
         </select>
       </label>
@@ -306,8 +306,8 @@ I felt nervous when I asked my friends for advice, but their suggestions helped 
     <div class="modalCard">
       <div class="modalHeader">
         <div>
-          <div class="modalTitle">⚙️ 词库与存储设置</div>
-          <div class="modalSub">查看本地词库状态、占用空间，或删除重新导入。</div>
+          <div class="modalTitle">⚙️ 设置</div>
+          <div class="modalSub">管理发音、阅读显示、词库状态与数据备份。</div>
         </div>
         <button class="iconClose" onclick="closeModal('settingsModal')">×</button>
       </div>
@@ -360,6 +360,34 @@ I felt nervous when I asked my friends for advice, but their suggestions helped 
           <div id="settingsKnownTotal" class="settingSubValue">已知数据合计：待统计</div>
           <div id="settingsStorageOverhead" class="settingSubValue">数据库开销 / 其他：待统计</div>
           <button class="secondary compactButton" onclick="scanStorageBreakdown()">计算明细</button>
+        </div>
+      </div>
+
+      <div class="settingsSectionTitle">发音设置</div>
+      <div class="settingsGrid">
+        <div class="settingItem">
+          <label class="settingLabel" for="settingsVoiceSelect">默认英语声音</label>
+          <select id="settingsVoiceSelect" class="settingsSelect"
+                  onchange="handleSpeechVoiceChange(this.value)">
+            <option value="">自动选择</option>
+          </select>
+        </div>
+
+        <div class="settingItem">
+          <label class="settingLabel" for="settingsSpeechRate">默认语速</label>
+          <select id="settingsSpeechRate" class="settingsSelect"
+                  onchange="handleSpeechRateChange(this.value)">
+            <option value="0.7">慢</option>
+            <option value="0.85">稍慢</option>
+            <option value="1" selected>正常</option>
+            <option value="1.15">稍快</option>
+          </select>
+        </div>
+
+        <div class="settingItem">
+          <div class="settingLabel">试听</div>
+          <button class="secondary compactButton" onclick="previewSpeechSettings(this)">🔊 试听</button>
+          <div class="settingSubValue">Hello, welcome to LingoFlow.</div>
         </div>
       </div>
 

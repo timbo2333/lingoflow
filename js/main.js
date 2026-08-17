@@ -302,54 +302,167 @@ let voices = [];
 let currentSpokenWord = "";
 let speechTimer = null;
 let speechRequestId = 0;
+const SPEECH_RATE_VALUES = new Set(["0.7", "0.85", "1", "1.15"]);
 
-function loadVoices() {
-  voices = speechSynthesis.getVoices();
-
-  const voiceSelect = document.getElementById("voiceSelect");
-  const previousValue = voiceSelect.value;
-
-  voiceSelect.innerHTML = '<option value="">自动选择</option>';
-
-  voices.forEach((voice, index) => {
-    if (voice.lang.toLowerCase().startsWith("en")) {
-      const option = document.createElement("option");
-      option.value = index;
-      option.textContent = `${voice.name} (${voice.lang})`;
-      voiceSelect.appendChild(option);
-    }
-  });
-
-  // 如果刷新 voices 列表，尽量保留用户当前选择
-  if (previousValue !== "" && voiceSelect.querySelector(`option[value="${previousValue}"]`)) {
-    voiceSelect.value = previousValue;
-  }
+function normalizeSpeechRate(value) {
+  const normalized = String(value ?? "1");
+  return SPEECH_RATE_VALUES.has(normalized) ? normalized : "1";
 }
 
-speechSynthesis.onvoiceschanged = loadVoices;
-loadVoices();
+function getSavedSpeechVoice() {
+  const saved = getReadingPreferences().speechVoice;
+  if (!saved || typeof saved !== "object" || !saved.name || !saved.lang) return null;
+
+  return {
+    name: String(saved.name),
+    lang: String(saved.lang),
+    voiceURI: String(saved.voiceURI || "")
+  };
+}
+
+function getSpeechRate() {
+  return normalizeSpeechRate(getReadingPreferences().speechRate);
+}
+
+function getVoiceStableId(voice) {
+  return encodeURIComponent(JSON.stringify([
+    voice?.name || "",
+    voice?.lang || "",
+    voice?.voiceURI || ""
+  ]));
+}
+
+function getVoicePreference(voice) {
+  return voice ? {
+    name: voice.name || "",
+    lang: voice.lang || "",
+    voiceURI: voice.voiceURI || ""
+  } : null;
+}
+
+function resolvePreferredVoice(preference, availableVoices = voices) {
+  const list = Array.from(availableVoices || []);
+  const englishVoices = list.filter(voice =>
+    String(voice.lang || "").toLowerCase().startsWith("en")
+  );
+
+  if (preference) {
+    const savedLang = preference.lang.toLowerCase();
+    const exactVoice = preference.voiceURI && list.find(voice =>
+      voice.name === preference.name &&
+      String(voice.lang || "").toLowerCase() === savedLang &&
+      voice.voiceURI === preference.voiceURI
+    );
+    if (exactVoice) return exactVoice;
+
+    const nameAndLanguage = list.find(voice =>
+      voice.name === preference.name &&
+      String(voice.lang || "").toLowerCase() === savedLang
+    );
+    if (nameAndLanguage) return nameAndLanguage;
+
+    const sameLanguage = list.find(voice =>
+      String(voice.lang || "").toLowerCase() === savedLang
+    );
+    if (sameLanguage) return sameLanguage;
+
+    if (englishVoices.length) return englishVoices[0];
+    return null;
+  }
+
+  return englishVoices.find(voice => voice.lang === "en-US" && voice.localService) ||
+    englishVoices.find(voice => voice.localService) ||
+    englishVoices.find(voice => voice.lang === "en-US") ||
+    englishVoices[0] ||
+    null;
+}
+
+function populateVoiceSelect(select, selectedVoice) {
+  if (!select) return;
+
+  select.innerHTML = '<option value="">自动选择</option>';
+
+  voices.forEach(voice => {
+    if (!String(voice.lang || "").toLowerCase().startsWith("en")) return;
+
+    const option = document.createElement("option");
+    option.value = getVoiceStableId(voice);
+    option.textContent = `${voice.name} (${voice.lang})`;
+    select.appendChild(option);
+  });
+
+  const selectedValue = selectedVoice ? getVoiceStableId(selectedVoice) : "";
+  select.value = Array.from(select.options).some(option => option.value === selectedValue)
+    ? selectedValue
+    : "";
+}
+
+function syncSpeechPreferenceControls() {
+  const rate = getSpeechRate();
+  ["speed", "settingsSpeechRate"].forEach(id => {
+    const select = document.getElementById(id);
+    if (select) select.value = rate;
+  });
+
+  const savedVoice = getSavedSpeechVoice();
+  const selectedVoice = savedVoice ? resolvePreferredVoice(savedVoice) : null;
+  populateVoiceSelect(document.getElementById("voiceSelect"), selectedVoice);
+  populateVoiceSelect(document.getElementById("settingsVoiceSelect"), selectedVoice);
+}
+
+function saveSpeechPreferences(patch) {
+  const preferences = {
+    ...getReadingPreferences(),
+    ...patch
+  };
+  localStorage.setItem(READING_PREFS_KEY, JSON.stringify(preferences));
+  syncSpeechPreferenceControls();
+}
+
+function handleSpeechVoiceChange(value) {
+  const selectedVoice = value
+    ? voices.find(voice => getVoiceStableId(voice) === value) || null
+    : null;
+  saveSpeechPreferences({ speechVoice: getVoicePreference(selectedVoice) });
+}
+
+function handleSpeechRateChange(value) {
+  saveSpeechPreferences({ speechRate: normalizeSpeechRate(value) });
+}
+
+function applyAvailableVoices(availableVoices) {
+  voices = Array.from(availableVoices || []);
+  syncSpeechPreferenceControls();
+}
+
+function loadVoices() {
+  applyAvailableVoices(speechSynthesis.getVoices());
+}
+
+function initializeSpeechPreferences() {
+  speechSynthesis.onvoiceschanged = loadVoices;
+  loadVoices();
+}
 
 function buildUtterance(word) {
   const utterance = new SpeechSynthesisUtterance(word);
-  utterance.rate = parseFloat(document.getElementById("speed").value);
-  utterance.lang = "en-US";
+  const selectedVoice = resolvePreferredVoice(getSavedSpeechVoice());
 
-  const voiceSelect = document.getElementById("voiceSelect");
-
-  if (voiceSelect.value !== "") {
-    const selectedVoice = voices[parseInt(voiceSelect.value)];
-    if (selectedVoice) utterance.voice = selectedVoice;
-  } else {
-    const englishVoice =
-      voices.find(v => v.lang === "en-US" && v.localService) ||
-      voices.find(v => v.lang.toLowerCase().startsWith("en") && v.localService) ||
-      voices.find(v => v.lang === "en-US") ||
-      voices.find(v => v.lang.toLowerCase().startsWith("en"));
-
-    if (englishVoice) utterance.voice = englishVoice;
-  }
+  utterance.rate = Number(getSpeechRate());
+  utterance.lang = selectedVoice?.lang || "en-US";
+  if (selectedVoice) utterance.voice = selectedVoice;
 
   return utterance;
+}
+
+function previewSpeechSettings(button) {
+  try {
+    speakWord("Hello, welcome to LingoFlow.");
+    flashSpeechButton(button, true);
+  } catch (error) {
+    console.error("Speech preview error:", error);
+    flashSpeechButton(button, false);
+  }
 }
 
 function flashSpeechButton(button, success = true) {
@@ -3318,6 +3431,8 @@ function applyReadingPreferences() {
     fontSize: "21",
     lineHeight: "2",
     appearance: "system",
+    speechRate: "1",
+    speechVoice: null,
     ...getReadingPreferences()
   };
 
@@ -3339,6 +3454,8 @@ function applyReadingPreferences() {
     const el = document.getElementById(id);
     if (el) el.value = prefs.appearance;
   });
+
+  syncSpeechPreferenceControls();
 }
 
 function saveReadingPreferences() {
@@ -3860,6 +3977,7 @@ function formatBytes(bytes) {
 
 async function openSettings() {
   applyReadingPreferences();
+  loadVoices();
   document.getElementById("settingsModal").classList.add("show");
 
   const ready = await getECDICTMeta("ready");
@@ -4060,7 +4178,7 @@ async function exportLearningBackup() {
     historyBaselines: getHistoryBaselines(),
     queryEvents: getQueryEvents(),
     preferences: {
-      speed: document.getElementById("speed")?.value || "1",
+      speed: getSpeechRate(),
       reading: getReadingPreferences()
     }
   };
@@ -4136,7 +4254,7 @@ async function exportFullBackup() {
     parts.push(JSON.stringify({
       type: "preferences",
       data: {
-        speed: document.getElementById("speed")?.value || "1",
+        speed: getSpeechRate(),
         reading: getReadingPreferences()
       }
     }) + "\n");
@@ -4219,14 +4337,14 @@ async function importBackupFile(file, expectedType = "auto") {
       rebuildVocabFromMergeData();
     }
 
-    if (data.preferences?.speed && document.getElementById("speed")) {
-      document.getElementById("speed").value = data.preferences.speed;
-    }
-
-    if (data.preferences?.reading) {
+    if (data.preferences?.reading || data.preferences?.speed) {
+      const importedReading = { ...(data.preferences?.reading || {}) };
+      if (!importedReading.speechRate && data.preferences?.speed) {
+        importedReading.speechRate = normalizeSpeechRate(data.preferences.speed);
+      }
       localStorage.setItem(READING_PREFS_KEY, JSON.stringify({
         ...getReadingPreferences(),
-        ...data.preferences.reading
+        ...importedReading
       }));
       applyReadingPreferences();
     }
@@ -4381,11 +4499,12 @@ async function importBackupFile(file, expectedType = "auto") {
     ensureHistoryMigration();
   }
 
-  if (importedPreferences?.speed && document.getElementById("speed")) {
-    document.getElementById("speed").value = importedPreferences.speed;
-  }
-  if (importedPreferences?.reading) {
-    localStorage.setItem(READING_PREFS_KEY, JSON.stringify(importedPreferences.reading));
+  if (importedPreferences?.reading || importedPreferences?.speed) {
+    const restoredReading = { ...(importedPreferences?.reading || {}) };
+    if (!restoredReading.speechRate && importedPreferences?.speed) {
+      restoredReading.speechRate = normalizeSpeechRate(importedPreferences.speed);
+    }
+    localStorage.setItem(READING_PREFS_KEY, JSON.stringify(restoredReading));
     applyReadingPreferences();
   }
 
@@ -4728,6 +4847,7 @@ ensureHistoryMigration();
 initializeDictionaryOnStartup();
 updateVocabBadges();
 applyReadingPreferences();
+initializeSpeechPreferences();
 setupTextDropZone();
 setupPhraseSelection();
 checkBackupReminder();
