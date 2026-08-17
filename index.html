@@ -214,6 +214,15 @@ I felt nervous when I asked my friends for advice, but their suggestions helped 
     </aside>
   </main>
 
+  <div id="phraseSelectionToolbar" class="phraseSelectionToolbar"
+       role="toolbar" aria-label="词组选区操作" aria-hidden="true">
+    <button id="phraseFavoriteButton" type="button">⭐ 收藏词组</button>
+    <button id="phraseSpeakButton" type="button">🔊 朗读</button>
+  </div>
+
+  <div id="phraseSelectionFeedback" class="phraseSelectionFeedback"
+       role="status" aria-live="polite"></div>
+
 
   <div id="readingProgress"></div>
   <button id="backToTop" onclick="window.scrollTo({top:0, behavior:'smooth'})" title="回到顶部">↑</button>
@@ -264,7 +273,7 @@ I felt nervous when I asked my friends for advice, but their suggestions helped 
       <div class="modalHeader">
         <div>
           <div class="modalTitle">⭐ 我的收藏</div>
-          <div class="modalSub">只有你主动点“收藏”的单词才会进入这里。上下文句子和个人备注都可以自己修改。</div>
+          <div class="modalSub">主动收藏的单词和词组都会进入这里。上下文句子、释义和个人备注都可以自己修改。</div>
         </div>
         <button class="iconClose" onclick="closeModal('favoritesModal')">×</button>
       </div>

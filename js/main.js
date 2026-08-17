@@ -2140,6 +2140,37 @@ function mergeUniqueMaps(current, incoming) {
   return { ...(current || {}), ...(incoming || {}) };
 }
 
+function getFavoriteType(item) {
+  return item?.type === "phrase" ? "phrase" : "word";
+}
+
+function normalizePhraseText(text) {
+  return String(text || "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/^[^A-Za-z]+|[^A-Za-z]+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function getPhraseIdentity(text) {
+  return normalizePhraseText(text)
+    .toLowerCase()
+    .replace(/’/g, "'");
+}
+
+function getPhraseFavoriteKey(text) {
+  const identity = getPhraseIdentity(text);
+  return identity ? `phrase:${identity}` : "";
+}
+
+function getCanonicalFavoriteMapKey(fallbackKey, item) {
+  if (getFavoriteType(item) !== "phrase") return fallbackKey;
+
+  const text = item?.word || item?.displayWord || String(fallbackKey || "").replace(/^phrase:/, "");
+  return getPhraseFavoriteKey(text) || fallbackKey;
+}
+
 function mergeFavoriteRecords(a, b) {
   if (!a) return b;
   if (!b) return a;
@@ -2158,10 +2189,14 @@ function mergeFavoriteRecords(a, b) {
   }
 
   const tags = [...new Set([...(a.tags || []), ...(b.tags || [])])];
+  const mergedType = a.type === "phrase" || b.type === "phrase"
+    ? "phrase"
+    : (newer.type || older.type || "");
 
   return {
     ...older,
     ...newer,
+    ...(mergedType ? { type: mergedType } : {}),
     tags,
     mastered: Boolean(a.mastered || b.mastered),
     note,
@@ -2176,10 +2211,15 @@ function mergeFavoriteRecords(a, b) {
 }
 
 function mergeFavoritesMaps(current, incoming) {
-  const result = { ...(current || {}) };
-  for (const [key, value] of Object.entries(incoming || {})) {
-    result[key] = mergeFavoriteRecords(result[key], value);
+  const result = {};
+
+  for (const source of [current || {}, incoming || {}]) {
+    for (const [key, value] of Object.entries(source)) {
+      const targetKey = getCanonicalFavoriteMapKey(key, value);
+      result[targetKey] = mergeFavoriteRecords(result[targetKey], value);
+    }
   }
+
   return result;
 }
 
@@ -2492,7 +2532,13 @@ function escapeHtml(text) {
 function escapeJs(text) {
   return String(text ?? "")
     .replace(/\\/g, "\\\\")
-    .replace(/'/g, "\\'");
+    .replace(/'/g, "\\'")
+    .replace(/\r/g, "\\r")
+    .replace(/\n/g, "\\n")
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
 }
 
 /* =========================
@@ -2541,6 +2587,7 @@ function saveCurrentFavorite() {
   const existing = favorites[key];
 
   favorites[key] = {
+    type: existing?.type || "word",
     word: key,
     displayWord: word,
     phonetic: result?.phonetic || existing?.phonetic || "",
@@ -2557,6 +2604,57 @@ function saveCurrentFavorite() {
   };
 
   setFavoritesData(favorites);
+}
+
+function findPhraseFavorite(favorites, text) {
+  const identity = getPhraseIdentity(text);
+  if (!identity) return null;
+
+  const canonicalKey = getPhraseFavoriteKey(identity);
+  if (favorites[canonicalKey] && getFavoriteType(favorites[canonicalKey]) === "phrase") {
+    return { key: canonicalKey, item: favorites[canonicalKey] };
+  }
+
+  for (const [key, item] of Object.entries(favorites)) {
+    if (getFavoriteType(item) !== "phrase") continue;
+    if (getPhraseIdentity(item.word || item.displayWord || "") === identity) {
+      return { key, item };
+    }
+  }
+
+  return null;
+}
+
+function savePhraseFavorite(snapshot) {
+  const text = normalizePhraseText(snapshot?.text || "");
+  const canonicalKey = getPhraseFavoriteKey(text);
+  if (!text || !canonicalKey) return { saved: false, existed: false, text: "" };
+
+  const favorites = getFavoritesData();
+  const match = findPhraseFavorite(favorites, text);
+  const key = match?.key || canonicalKey;
+  const existing = match?.item;
+  const now = new Date().toISOString();
+
+  favorites[key] = {
+    ...existing,
+    type: "phrase",
+    word: text,
+    displayWord: text,
+    phonetic: existing?.phonetic || "",
+    pos: existing?.pos || "",
+    meaning: existing?.meaning || "",
+    sentence: snapshot?.context || existing?.sentence || "",
+    note: existing?.note || "",
+    tags: existing?.tags || [],
+    mastered: Boolean(existing?.mastered),
+    source: "article-selection",
+    createdAt: existing?.createdAt || now,
+    updatedAt: now
+  };
+
+  setFavoritesData(favorites);
+  return { saved: true, existed: Boolean(existing), text };
 }
 
 function toggleCurrentFavorite() {
@@ -2589,21 +2687,23 @@ function renderFavorites() {
 
   const masterFilter = document.getElementById("favoriteMasterFilter")?.value || "all";
 
-  let items = Object.values(getFavoritesData()).filter(item => {
-    const matchesText = !filter ||
-      (item.word || "").toLowerCase().includes(filter) ||
-      (item.meaning || "").toLowerCase().includes(filter) ||
-      (item.sentence || "").toLowerCase().includes(filter) ||
-      (item.note || "").toLowerCase().includes(filter) ||
-      (item.tags || []).some(tag => String(tag).toLowerCase().includes(filter));
+  let items = Object.entries(getFavoritesData())
+    .map(([favoriteKey, item]) => ({ ...item, __favoriteKey: favoriteKey }))
+    .filter(item => {
+      const matchesText = !filter ||
+        (item.word || "").toLowerCase().includes(filter) ||
+        (item.meaning || "").toLowerCase().includes(filter) ||
+        (item.sentence || "").toLowerCase().includes(filter) ||
+        (item.note || "").toLowerCase().includes(filter) ||
+        (item.tags || []).some(tag => String(tag).toLowerCase().includes(filter));
 
-    const matchesMaster =
-      masterFilter === "all" ||
-      (masterFilter === "mastered" && item.mastered) ||
-      (masterFilter === "learning" && !item.mastered);
+      const matchesMaster =
+        masterFilter === "all" ||
+        (masterFilter === "mastered" && item.mastered) ||
+        (masterFilter === "learning" && !item.mastered);
 
-    return matchesText && matchesMaster;
-  });
+      return matchesText && matchesMaster;
+    });
 
   if (sortMode === "az") {
     items.sort((a, b) => String(a.word || "").localeCompare(String(b.word || "")));
@@ -2619,19 +2719,22 @@ function renderFavorites() {
 
   if (!items.length) {
     box.innerHTML =
-      '<div class="searchEmpty">还没有收藏。阅读时点开单词，再点右侧卡片里的“☆ 收藏”。</div>';
+      '<div class="searchEmpty">还没有收藏。点开单词可以收藏单词；划选多个英文单词可以收藏词组。</div>';
     return;
   }
 
   box.innerHTML = items.map(item => {
     const sentence = item.sentence || "";
     const note = item.note || "";
+    const favoriteType = getFavoriteType(item);
+    const favoriteKey = item.__favoriteKey || item.word || "";
 
     return `
-      <div class="favoriteItem" data-favorite-key="${escapeHtml(item.word || "")}">
+      <div class="favoriteItem" data-favorite-key="${escapeHtml(favoriteKey)}">
         <div class="favoriteTop">
           <div>
             <div class="favoriteWord">
+              <span class="favoriteTypeBadge ${favoriteType}">${favoriteType === "phrase" ? "PHRASE" : "WORD"}</span>
               ${escapeHtml(item.word || "")}
               <span class="favoritePhonetic">${escapeHtml(item.phonetic || "")}</span>
             </div>
@@ -2645,7 +2748,7 @@ function renderFavorites() {
                 ? escapeHtml(item.pos)
                 : '<span style="color:#aaa">词性 / 说明未填写</span>'}
             </div>
-            ${item.dictionaryFound === false
+            ${favoriteType === "word" && item.dictionaryFound === false
               ? '<div class="querySourceMeta">个人词卡 · 本地词库未收录</div>'
               : ''}
 
@@ -2665,7 +2768,7 @@ function renderFavorites() {
             </button>
 
             <button class="secondary compactButton editFavoriteButton"
-                    onclick="editFavorite('${escapeJs(item.word || "")}', this)">
+                    onclick="editFavorite('${escapeJs(favoriteKey)}', this)">
               ✏️ 编辑
             </button>
 
@@ -2675,7 +2778,7 @@ function renderFavorites() {
             </button>
 
             <button class="removeTiny"
-                    onclick="removeFavorite('${escapeJs(item.word || "")}')">
+                    onclick="removeFavorite('${escapeJs(favoriteKey)}')">
               取消收藏
             </button>
           </div>
@@ -2748,7 +2851,7 @@ function renderFavorites() {
             <div class="favoriteDate">收藏：${formatLearningDate(item.createdAt)}</div>
             <div>
               <button class="secondary compactButton"
-                      onclick="saveFavoriteEdit('${escapeJs(item.word || "")}', this)">
+                      onclick="saveFavoriteEdit('${escapeJs(favoriteKey)}', this)">
                 保存修改
               </button>
               <span class="favoriteSavedHint"></span>
@@ -2817,9 +2920,10 @@ function saveFavoriteEdit(key, button) {
 }
 
 function removeFavorite(key) {
-  if (!confirm(`确定取消收藏 “${key}” 吗？`)) return;
-
   const favorites = getFavoritesData();
+  const label = favorites[key]?.word || key;
+  if (!confirm(`确定取消收藏 “${label}” 吗？`)) return;
+
   delete favorites[key];
   setFavoritesData(favorites);
   renderFavorites();
@@ -2834,11 +2938,12 @@ function exportFavoritesCSV() {
   }
 
   const rows = [
-    ["word", "phonetic", "pos", "meaning", "tags", "mastered", "context_sentence", "note", "created_at", "updated_at"]
+    ["type", "word", "phonetic", "pos", "meaning", "tags", "mastered", "context_sentence", "note", "created_at", "updated_at"]
   ];
 
   for (const item of items) {
     rows.push([
+      getFavoriteType(item).toUpperCase(),
       item.word || "",
       item.phonetic || "",
       item.pos || "",
@@ -2864,6 +2969,41 @@ function exportFavoritesCSV() {
    句子上下文提取
    ========================= */
 
+const PHRASE_MIN_WORDS = 2;
+const PHRASE_MAX_WORDS = 20;
+const SENTENCE_ABBREVIATIONS = new Set([
+  "mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st", "vs", "e.g", "i.e"
+]);
+let currentArticleText = "";
+let phraseSelectionSnapshot = null;
+let phraseSelectionTimer = null;
+let phraseSelectionFeedbackTimer = null;
+let phraseSelectionFeedbackFrame = null;
+let phraseSelectionPointerActive = false;
+let suppressArticleWordClickUntil = 0;
+
+function isSentenceEndingPeriod(text, index) {
+  if (text[index] !== ".") return true;
+
+  const previous = text.slice(Math.max(0, index - 18), index);
+  const token = previous.match(/([A-Za-z]+(?:\.[A-Za-z]+)*)$/)?.[1]?.toLowerCase() || "";
+
+  if (SENTENCE_ABBREVIATIONS.has(token)) return false;
+  if (token && token.split(".").every(part => part.length === 1)) return false;
+  if (/\d/.test(text[index - 1] || "") && /\d/.test(text[index + 1] || "")) return false;
+
+  const nextLetter = text.slice(index + 1).match(/^\s*["“'‘(\[]*([A-Za-z])/i)?.[1];
+  if (nextLetter && nextLetter === nextLetter.toLowerCase()) return false;
+
+  return true;
+}
+
+function isSentenceBoundary(text, index) {
+  const ch = text[index];
+  if (ch === "\n" || "!?。！？".includes(ch)) return true;
+  return ch === "." && isSentenceEndingPeriod(text, index);
+}
+
 function extractSentenceAt(text, wordIndex) {
   if (!text) return "";
 
@@ -2887,6 +3027,269 @@ function extractSentenceAt(text, wordIndex) {
   }
 
   return text.slice(start, end).replace(/\s+/g, " ").trim();
+}
+
+function extractPhraseSentenceAt(text, wordIndex, rangeEnd) {
+  if (!text) return "";
+
+  let start = 0;
+
+  for (let i = wordIndex - 1; i >= 0; i--) {
+    if (isSentenceBoundary(text, i)) {
+      start = i + 1;
+      while (start < text.length && /["”'’\)\]]/.test(text[start])) start++;
+      break;
+    }
+  }
+
+  let end = text.length;
+
+  for (let i = Math.max(wordIndex, rangeEnd - 1); i < text.length; i++) {
+    if (isSentenceBoundary(text, i)) {
+      end = i + 1;
+      while (end < text.length && /["”'’\)\]]/.test(text[end])) end++;
+      break;
+    }
+  }
+
+  return text.slice(start, end).replace(/\s+/g, " ").trim();
+}
+
+function isNodeInsideArticle(article, node) {
+  const element = node?.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement;
+  return Boolean(element && (element === article || article.contains(element)));
+}
+
+function getArticleRangeOffsets(article, range) {
+  const beforeStart = document.createRange();
+  beforeStart.selectNodeContents(article);
+  beforeStart.setEnd(range.startContainer, range.startOffset);
+
+  const beforeEnd = document.createRange();
+  beforeEnd.selectNodeContents(article);
+  beforeEnd.setEnd(range.endContainer, range.endOffset);
+
+  return {
+    start: beforeStart.toString().length,
+    end: beforeEnd.toString().length
+  };
+}
+
+function getArticleParagraphIndex(text, offset) {
+  return (text.slice(0, Math.max(0, offset)).match(/\n/g) || []).length;
+}
+
+function getValidPhraseSelectionSnapshot() {
+  const article = document.getElementById("article");
+  const selection = window.getSelection?.();
+
+  if (!article || !selection || selection.rangeCount !== 1 || selection.isCollapsed) return null;
+
+  const range = selection.getRangeAt(0);
+  if (!isNodeInsideArticle(article, range.startContainer) ||
+      !isNodeInsideArticle(article, range.endContainer)) {
+    return null;
+  }
+
+  const rawText = selection.toString();
+  const text = normalizePhraseText(rawText);
+  const words = text.match(/[A-Za-z]+(?:['’][A-Za-z]+)*/g) || [];
+  if (words.length < PHRASE_MIN_WORDS || words.length > PHRASE_MAX_WORDS) return null;
+
+  const offsets = getArticleRangeOffsets(article, range);
+  const sourceText = currentArticleText || article.textContent || "";
+  const leadingWhitespace = rawText.match(/^\s*/)?.[0].length || 0;
+  const trailingWhitespace = rawText.match(/\s*$/)?.[0].length || 0;
+  const selectionStart = offsets.start + leadingWhitespace;
+  const selectionEnd = Math.max(selectionStart, offsets.end - trailingWhitespace);
+  const endOffset = Math.max(selectionStart, selectionEnd - 1);
+
+  if (getArticleParagraphIndex(sourceText, selectionStart) !==
+      getArticleParagraphIndex(sourceText, endOffset)) {
+    return null;
+  }
+
+  return {
+    text,
+    context: extractPhraseSentenceAt(sourceText, selectionStart, selectionEnd),
+    wordCount: words.length,
+    range: range.cloneRange()
+  };
+}
+
+function positionPhraseSelectionToolbar() {
+  const toolbar = document.getElementById("phraseSelectionToolbar");
+  if (!toolbar?.classList.contains("show") || !phraseSelectionSnapshot?.range) return;
+
+  const selectionRect = phraseSelectionSnapshot.range.getBoundingClientRect();
+  if (!selectionRect.width && !selectionRect.height) return;
+
+  const toolbarRect = toolbar.getBoundingClientRect();
+  const viewportPadding = 8;
+  const selectionGap = 10;
+  let left = selectionRect.left + selectionRect.width / 2 - toolbarRect.width / 2;
+  let top = selectionRect.top - toolbarRect.height - selectionGap;
+
+  left = Math.max(
+    viewportPadding,
+    Math.min(window.innerWidth - toolbarRect.width - viewportPadding, left)
+  );
+
+  if (top < viewportPadding) top = selectionRect.bottom + selectionGap;
+  if (top + toolbarRect.height > window.innerHeight - viewportPadding) {
+    top = Math.max(viewportPadding, selectionRect.top - toolbarRect.height - selectionGap);
+  }
+
+  toolbar.style.left = `${Math.round(left)}px`;
+  toolbar.style.top = `${Math.round(top)}px`;
+}
+
+function hidePhraseSelectionToolbar(clearSelection = false) {
+  const toolbar = document.getElementById("phraseSelectionToolbar");
+  toolbar?.classList.remove("show");
+  toolbar?.setAttribute("aria-hidden", "true");
+  phraseSelectionSnapshot = null;
+
+  if (clearSelection) {
+    try { window.getSelection?.().removeAllRanges(); } catch {}
+  }
+}
+
+function showPhraseSelectionToolbar(snapshot) {
+  const toolbar = document.getElementById("phraseSelectionToolbar");
+  if (!toolbar) return;
+
+  phraseSelectionSnapshot = snapshot;
+  suppressArticleWordClickUntil = Date.now() + 600;
+  toolbar.classList.add("show");
+  toolbar.setAttribute("aria-hidden", "false");
+  positionPhraseSelectionToolbar();
+}
+
+function refreshPhraseSelectionToolbar() {
+  if (phraseSelectionPointerActive) return;
+
+  const snapshot = getValidPhraseSelectionSnapshot();
+  if (snapshot) showPhraseSelectionToolbar(snapshot);
+  else hidePhraseSelectionToolbar(false);
+}
+
+function schedulePhraseSelectionRefresh(delay = 70) {
+  clearTimeout(phraseSelectionTimer);
+  phraseSelectionTimer = setTimeout(refreshPhraseSelectionToolbar, delay);
+}
+
+function showPhraseSelectionFeedback(message) {
+  const feedback = document.getElementById("phraseSelectionFeedback");
+  if (!feedback) return;
+
+  clearTimeout(phraseSelectionFeedbackTimer);
+  if (phraseSelectionFeedbackFrame !== null) {
+    cancelAnimationFrame(phraseSelectionFeedbackFrame);
+  }
+
+  feedback.classList.remove("show");
+  feedback.textContent = message;
+  void feedback.offsetWidth;
+
+  phraseSelectionFeedbackFrame = requestAnimationFrame(() => {
+    phraseSelectionFeedbackFrame = null;
+    feedback.classList.add("show");
+    phraseSelectionFeedbackTimer = setTimeout(() => {
+      feedback.classList.remove("show");
+    }, 1800);
+  });
+}
+
+function favoriteSelectedPhrase() {
+  const snapshot = phraseSelectionSnapshot;
+  if (!snapshot) return;
+
+  const result = savePhraseFavorite(snapshot);
+  hidePhraseSelectionToolbar(true);
+
+  if (result.saved) {
+    const message = result.existed
+      ? `✓ 已收藏过：${result.text}`
+      : `✓ 已收藏：${result.text}`;
+    showPhraseSelectionFeedback(message);
+  }
+}
+
+function speakSelectedPhrase(button) {
+  const text = phraseSelectionSnapshot?.text;
+  if (!text) return;
+
+  try {
+    speakWord(text);
+    flashSpeechButton(button, true);
+  } catch (error) {
+    console.error("Phrase speech error:", error);
+    flashSpeechButton(button, false);
+  }
+}
+
+function consumePhraseSelectionWordClick() {
+  const hasValidSelection = Boolean(getValidPhraseSelectionSnapshot());
+  if (Date.now() < suppressArticleWordClickUntil || hasValidSelection) {
+    suppressArticleWordClickUntil = 0;
+    return true;
+  }
+  return false;
+}
+
+function setupPhraseSelection() {
+  const article = document.getElementById("article");
+  const toolbar = document.getElementById("phraseSelectionToolbar");
+  const favoriteButton = document.getElementById("phraseFavoriteButton");
+  const speakButton = document.getElementById("phraseSpeakButton");
+  if (!article || !toolbar || !favoriteButton || !speakButton) return;
+
+  toolbar.addEventListener("pointerdown", event => {
+    event.preventDefault();
+    event.stopPropagation();
+  });
+
+  favoriteButton.addEventListener("click", event => {
+    event.stopPropagation();
+    favoriteSelectedPhrase();
+  });
+
+  speakButton.addEventListener("click", event => {
+    event.stopPropagation();
+    speakSelectedPhrase(speakButton);
+  });
+
+  document.addEventListener("selectionchange", () => {
+    if (!phraseSelectionPointerActive) schedulePhraseSelectionRefresh();
+  });
+
+  document.addEventListener("pointerdown", event => {
+    if (toolbar.contains(event.target)) return;
+
+    suppressArticleWordClickUntil = 0;
+    phraseSelectionPointerActive = article.contains(event.target);
+    hidePhraseSelectionToolbar(false);
+  }, true);
+
+  document.addEventListener("pointerup", () => {
+    const wasSelectingArticle = phraseSelectionPointerActive;
+    phraseSelectionPointerActive = false;
+    if (wasSelectingArticle) refreshPhraseSelectionToolbar();
+  }, true);
+
+  document.addEventListener("pointercancel", () => {
+    phraseSelectionPointerActive = false;
+    schedulePhraseSelectionRefresh();
+  }, true);
+
+  document.addEventListener("touchend", () => {
+    phraseSelectionPointerActive = false;
+    schedulePhraseSelectionRefresh(120);
+  }, { passive: true });
+
+  window.addEventListener("resize", positionPhraseSelectionToolbar);
+  window.addEventListener("scroll", positionPhraseSelectionToolbar, { passive: true });
 }
 
 
@@ -4234,6 +4637,8 @@ function generateArticle() {
     return;
   }
 
+  hidePhraseSelectionToolbar(true);
+  currentArticleText = text;
   article.innerHTML = "";
   articleMatches = [];
   articleMatchIndex = -1;
@@ -4262,7 +4667,13 @@ function generateArticle() {
     span.textContent = piece;
     span.dataset.sentence = extractSentenceAt(text, match.index);
 
-    span.addEventListener("click", function() {
+    span.addEventListener("click", function(event) {
+      if (consumePhraseSelectionWordClick()) {
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+
       document.querySelectorAll(".word").forEach(item => {
         item.classList.remove("active");
       });
@@ -4291,6 +4702,7 @@ function generateArticle() {
 
 function editArticle() {
   speechSynthesis.cancel();
+  hidePhraseSelectionToolbar(true);
   closeWordCard();
 
   document.getElementById("inputPanel").style.display = "block";
@@ -4307,6 +4719,7 @@ function editArticle() {
 /* Esc 键关闭释义卡 */
 document.addEventListener("keydown", function(event) {
   if (event.key === "Escape") {
+    hidePhraseSelectionToolbar(true);
     closeWordCard();
   }
 });
@@ -4316,6 +4729,7 @@ initializeDictionaryOnStartup();
 updateVocabBadges();
 applyReadingPreferences();
 setupTextDropZone();
+setupPhraseSelection();
 checkBackupReminder();
 updateReadingProgress();
 
