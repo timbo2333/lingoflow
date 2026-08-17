@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>英语点读阅读器 V0.5.2 Stable Patch 2</title>
+<title>英语点读阅读器 V0.5.5</title>
 
 
  <link rel="stylesheet" href="css/style.css">
@@ -16,11 +16,11 @@
 
   <h1>英语点读阅读器</h1>
   <div class="description">
-    V0.5.2 Stable Patch 2：稳定版：智能合并备份、阅读显示设置、快捷键、收藏标签/掌握状态、拖拽导入与帮助中心。
+    V0.5.5 · 稳定版：发音偏好、词组收藏、离线词库引导与体验优化。
   </div>
 
   <div class="topActions">
-    <span class="versionBadge">V0.5.2 Stable Patch 2</span>
+    <span class="versionBadge">V0.5.5</span>
     <button class="secondary compactButton" onclick="openChangelog()">📝 更新日志</button>
     <span class="shortcutHint">⌘/Ctrl + K 快速查词</span>
   </div>
@@ -29,18 +29,18 @@
 
     <div class="dictionaryPanel">
       <div class="dictionaryRow">
-        <button class="secondary" type="button"
-                onclick="document.getElementById('dictFileInput').click()">
+        <button id="manualECDICTButton" class="secondary" type="button"
+                onclick="requestManualDictionaryFile('ecdict')">
           📚 导入 / 更新 ECDICT
         </button>
 
-        <button class="secondary" type="button"
-                onclick="document.getElementById('lemmaFileInput').click()">
+        <button id="manualLemmaButton" class="secondary" type="button"
+                onclick="requestManualDictionaryFile('lemma')">
           🔤 导入词形库 lemma
         </button>
 
         <button class="secondary" type="button" onclick="openSettings()">
-          ⚙️ 词库设置
+          ⚙️ 设置
         </button>
 
         <button class="secondary" type="button" onclick="openVocabBook()">
@@ -63,10 +63,24 @@
            role="status" aria-live="polite">
         <div id="dictionarySetupTitle" class="dictionarySetupTitle">正在检查离线词典…</div>
         <div id="dictionarySetupDetail" class="dictionarySetupDetail">页面可以正常使用，检查会在后台完成。</div>
-        <button id="dictionaryRetryButton" class="secondary compactButton dictionaryRetryButton"
-                type="button" onclick="retryAutomaticDictionarySetup()">
-          重试自动恢复
-        </button>
+        <div class="dictionarySetupActions">
+          <button id="dictionaryRetryButton" class="secondary compactButton dictionarySetupAction"
+                  type="button" onclick="retryAutomaticDictionarySetup()">
+            重试
+          </button>
+          <button id="dictionaryCancelButton" class="secondary compactButton dictionarySetupAction"
+                  type="button" onclick="cancelAutomaticDictionarySetup()">
+            取消加载
+          </button>
+          <button id="dictionaryManualButton" class="secondary compactButton dictionarySetupAction"
+                  type="button" onclick="showDictionaryManualChoices()">
+            手动导入
+          </button>
+          <button id="dictionaryPrepareButton" class="secondary compactButton dictionarySetupAction"
+                  type="button" onclick="openDictionaryGuide()">
+            准备词库
+          </button>
+        </div>
       </div>
 
       <div class="dictStatusGrid">
@@ -81,8 +95,8 @@
       </div>
 
       <div class="dictHint">
-        首次使用需要下载约 68 MB，完成后会保存在本机，日常查询无需联网。
-        如果自动恢复失败，仍可使用上方按钮手动导入 ECDICT 和 lemma。
+        首次使用可选择自动加载约 68 MB、手动导入或稍后再说。
+        完成后词库会保存在本机，日常查询无需联网。
       </div>
     </div>
 
@@ -129,6 +143,53 @@ I felt nervous when I asked my friends for advice, but their suggestions helped 
     </div>
   </section>
 
+  <div id="dictionaryGuideModal" class="modalOverlay" role="dialog"
+       aria-modal="true" aria-labelledby="dictionaryGuideTitle">
+    <div class="modalCard dictionaryGuideCard">
+      <div class="modalHeader">
+        <div>
+          <div id="dictionaryGuideTitle" class="modalTitle">准备离线词库</div>
+          <div class="modalSub">
+            LingoFlow 使用保存在本机的离线词库快速查词。自动加载首次约需下载 68 MB，完成后日常查词无需联网。
+          </div>
+        </div>
+      </div>
+
+      <div class="dictionaryGuideOptions">
+        <button class="dictionaryGuideOption recommended" type="button"
+                onclick="startAutomaticDictionarySetup()">
+          <span class="dictionaryGuideBadge">推荐</span>
+          <strong>自动加载词库</strong>
+          <span>首次下载约 68 MB</span>
+          <span>完成后可离线查词</span>
+        </button>
+
+        <button class="dictionaryGuideOption" type="button"
+                onclick="showDictionaryManualChoices()">
+          <strong>手动导入</strong>
+          <span>适合网络较慢，或已经拥有 ECDICT / Lemma 文件的用户</span>
+        </button>
+
+        <button class="dictionaryGuideOption" type="button"
+                onclick="deferDictionarySetup()">
+          <strong>稍后再说</strong>
+          <span>先进入阅读器，以后可随时准备词典</span>
+        </button>
+      </div>
+
+      <div id="dictionaryGuideManualActions" class="dictionaryGuideManualActions">
+        <div class="dictionaryGuideManualHint">
+          可直接选择以前使用的完整 ECDICT CSV，无需自行拆分。ECDICT 和 Lemma 都导入后，离线词库才会显示为完整就绪。
+        </div>
+        <div class="dictionaryGuideManualButtons">
+          <button type="button" onclick="requestManualDictionaryFile('ecdict')">选择 ECDICT CSV</button>
+          <button class="secondary" type="button" onclick="requestManualDictionaryFile('lemma')">选择 Lemma 文件</button>
+          <button class="secondary" type="button" onclick="deferDictionarySetup()">稍后再说</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div id="readingToolbar" class="readingToolbar">
     <div class="toolbarGroup">
       <button class="secondary" onclick="editArticle()">← 重新编辑文章</button>
@@ -149,7 +210,7 @@ I felt nervous when I asked my friends for advice, but their suggestions helped 
     <div class="toolbarGroup">
       <label>
         语速：
-        <select id="speed">
+        <select id="speed" onchange="handleSpeechRateChange(this.value)">
           <option value="0.7">慢</option>
           <option value="0.85">稍慢</option>
           <option value="1" selected>正常</option>
@@ -159,7 +220,7 @@ I felt nervous when I asked my friends for advice, but their suggestions helped 
 
       <label>
         英语声音：
-        <select id="voiceSelect">
+        <select id="voiceSelect" onchange="handleSpeechVoiceChange(this.value)">
           <option value="">自动选择</option>
         </select>
       </label>
@@ -306,8 +367,8 @@ I felt nervous when I asked my friends for advice, but their suggestions helped 
     <div class="modalCard">
       <div class="modalHeader">
         <div>
-          <div class="modalTitle">⚙️ 词库与存储设置</div>
-          <div class="modalSub">查看本地词库状态、占用空间，或删除重新导入。</div>
+          <div class="modalTitle">⚙️ 设置</div>
+          <div class="modalSub">管理发音、阅读显示、词库状态与数据备份。</div>
         </div>
         <button class="iconClose" onclick="closeModal('settingsModal')">×</button>
       </div>
@@ -315,7 +376,7 @@ I felt nervous when I asked my friends for advice, but their suggestions helped 
       <div class="settingsGrid">
         <div class="settingItem">
           <div class="settingLabel">当前版本</div>
-          <div class="settingValue">V0.5.2 Stable Patch 2</div>
+          <div class="settingValue">V0.5.5</div>
         </div>
 
         <div class="settingItem">
@@ -363,6 +424,34 @@ I felt nervous when I asked my friends for advice, but their suggestions helped 
         </div>
       </div>
 
+      <div class="settingsSectionTitle">发音设置</div>
+      <div class="settingsGrid">
+        <div class="settingItem">
+          <label class="settingLabel" for="settingsVoiceSelect">默认英语声音</label>
+          <select id="settingsVoiceSelect" class="settingsSelect"
+                  onchange="handleSpeechVoiceChange(this.value)">
+            <option value="">自动选择</option>
+          </select>
+        </div>
+
+        <div class="settingItem">
+          <label class="settingLabel" for="settingsSpeechRate">默认语速</label>
+          <select id="settingsSpeechRate" class="settingsSelect"
+                  onchange="handleSpeechRateChange(this.value)">
+            <option value="0.7">慢</option>
+            <option value="0.85">稍慢</option>
+            <option value="1" selected>正常</option>
+            <option value="1.15">稍快</option>
+          </select>
+        </div>
+
+        <div class="settingItem">
+          <div class="settingLabel">试听</div>
+          <button class="secondary compactButton" onclick="previewSpeechSettings(this)">🔊 试听</button>
+          <div class="settingSubValue">Hello, welcome to LingoFlow.</div>
+        </div>
+      </div>
+
       <div class="settingsSectionTitle">阅读显示</div>
       <div class="settingsGrid">
         <div class="settingItem">
@@ -406,11 +495,11 @@ I felt nervous when I asked my friends for advice, but their suggestions helped 
       <div class="settingsSectionTitle">数据迁移与备份</div>
       <div class="backupPanel backupPanelFinal">
         <div class="backupGroup">
-          <div class="backupGroupTitle">学习数据</div>
-          <div class="backupGroupHint">包含查询记录、我的收藏（含自定义释义与备注）和少量偏好设置，文件很小。</div>
+          <div class="backupGroupTitle">推荐 · 学习数据备份</div>
+          <div class="backupGroupHint">保存收藏、词组、查询记录、释义与备注，以及阅读、显示和发音偏好等个人设置。文件很小，适合日常迁移与恢复。</div>
           <div class="backupButtonRow">
-            <button class="secondary" onclick="exportLearningBackup()">导出学习数据</button>
-            <button class="secondary" onclick="document.getElementById('learningBackupFileInput').click()">导入学习数据</button>
+            <button class="secondary" onclick="exportLearningBackup()">导出学习数据备份</button>
+            <button class="secondary" onclick="document.getElementById('learningBackupFileInput').click()">导入学习数据备份</button>
 
             <select id="learningImportMode" class="settingsSelect compactSelect">
               <option value="merge" selected>导入方式：智能合并（推荐）</option>
@@ -425,8 +514,8 @@ I felt nervous when I asked my friends for advice, but their suggestions helped 
         </div>
 
         <div class="backupGroup">
-          <div class="backupGroupTitle">完整备份</div>
-          <div class="backupGroupHint">包含 ECDICT、Lemma、查询记录和我的收藏，适合整套迁移或灾难恢复。注意：导入完整备份属于“整套恢复”，会覆盖当前数据，不做智能合并。</div>
+          <div class="backupGroupTitle">高级 · 完整备份</div>
+          <div class="backupGroupHint">同时包含本地词典和学习数据，文件较大，适合完整迁移或故障恢复。导入时会整体覆盖当前数据，不做智能合并；日常迁移请优先使用学习数据备份。</div>
           <div class="backupButtonRow">
             <button class="secondary" onclick="exportFullBackup()">导出完整备份</button>
             <button class="secondary" onclick="document.getElementById('fullBackupFileInput').click()">导入完整备份</button>
@@ -437,19 +526,24 @@ I felt nervous when I asked my friends for advice, but their suggestions helped 
         <input id="fullBackupFileInput" type="file" accept=".erbackup,.txt" hidden>
 
         <div id="backupStatus" class="backupStatus">
-          日常跨电脑同步优先用“学习数据 → 智能合并”；只有要连离线词库一起恢复时，才使用会整体覆盖的“完整备份”。
+          日常迁移优先使用“学习数据备份 → 智能合并”。本地词典丢失后，可以重新自动加载或手动导入，无需随日常备份一起保存。
         </div>
       </div>
 
-      <div class="settingsSectionTitle">词库管理</div>
+      <div class="settingsSectionTitle">离线词库管理</div>
       <div class="settingsButtons">
         <button class="secondary"
-                onclick="closeModal('settingsModal'); document.getElementById('dictFileInput').click();">
+                onclick="closeModal('settingsModal'); openDictionaryGuide();">
+          准备离线词库
+        </button>
+
+        <button class="secondary"
+                onclick="requestManualDictionaryFile('ecdict', true)">
           重新导入 ECDICT
         </button>
 
         <button class="secondary"
-                onclick="closeModal('settingsModal'); document.getElementById('lemmaFileInput').click();">
+                onclick="requestManualDictionaryFile('lemma', true)">
           重新导入 Lemma
         </button>
 
@@ -459,7 +553,7 @@ I felt nervous when I asked my friends for advice, but their suggestions helped 
       </div>
 
       <div class="settingsNote">
-        删除词库不会删除 HTML 文件。跨电脑迁移时，“学习数据”和“完整备份”请使用各自对应的导出/导入按钮。
+        离线词库丢失后可重新自动加载或手动导入。ECDICT、Lemma 和 CSV 等技术选项仅用于高级管理，不影响收藏、词组和查询记录。
       </div>
     </div>
   </div>
@@ -508,18 +602,18 @@ I felt nervous when I asked my friends for advice, but their suggestions helped 
       <div class="modalHeader">
         <div>
           <div class="modalTitle">❓ 一分钟上手</div>
-          <div class="modalSub">English Reader V0.5.2 Stable Patch 2</div>
+          <div class="modalSub">LingoFlow V0.5.5</div>
         </div>
         <button class="iconClose" onclick="closeModal('helpModal')">×</button>
       </div>
 
       <div class="helpSteps">
-        <div class="helpStep"><b>1. 首次准备</b><span>网页会自动准备离线词典；完成后保存在本机，日常查询无需联网。</span></div>
+        <div class="helpStep"><b>1. 首次准备</b><span>首次进入可选择“自动加载词库”“手动导入”或“稍后再说”；完成后词库保存在本机，日常查询无需联网。</span></div>
         <div class="helpStep"><b>2. 开始阅读</b><span>粘贴英文或拖入 TXT → 生成文章 → 点击不会的词。</span></div>
-        <div class="helpStep"><b>3. 查询 ≠ 收藏</b><span>点词只进入“查询记录”；真正想学的词再手动点“☆ 收藏”。</span></div>
-        <div class="helpStep"><b>4. 收藏可自定义</b><span>词库没有也能收藏；释义、词性、标签、上下文和备注都能自己改。</span></div>
-        <div class="helpStep"><b>5. 换电脑</b><span>导出“学习数据”，另一台电脑选择“智能合并”。V0.5.2 起产生的同一查询事件不会重复累计。</span></div>
-        <div class="helpStep"><b>6. 听发音</b><span>阅读释义卡、我的收藏和查询记录都可以直接点击“🔊”朗读单词。</span></div>
+        <div class="helpStep"><b>3. 查询 ≠ 收藏</b><span>点词只进入“查询记录”；想重点学习的单词可以收藏，也可以划选 2–20 个英文词收藏为词组。</span></div>
+        <div class="helpStep"><b>4. 收藏可自定义</b><span>单词和词组都可编辑释义、上下文和备注；词库未收录的表达也能收藏。</span></div>
+        <div class="helpStep"><b>5. 换电脑</b><span>优先导出“学习数据备份”，在另一台电脑选择“智能合并”；离线词库可以重新准备。</span></div>
+        <div class="helpStep"><b>6. 听发音</b><span>可在“设置”中提前选择默认英语声音和语速，选择会自动保存，并统一用于单词、词组和收藏朗读。</span></div>
         <div class="helpStep"><b>7. 导入 TXT</b><span>把 TXT 拖进大区域，或者直接点击该区域选择文件；载入后再生成文章。</span></div>
       </div>
 
@@ -541,6 +635,42 @@ I felt nervous when I asked my friends for advice, but their suggestions helped 
           <div class="modalSub">记录每个版本真正改了什么，方便以后继续迭代。</div>
         </div>
         <button class="iconClose" onclick="closeModal('changelogModal')">×</button>
+      </div>
+
+      <div class="changeVersion">
+        <div class="changeVersionTitle">V0.5.5</div>
+        <div class="changeDate">2026-08-17</div>
+        <ul>
+          <li>默认英语声音与语速现在会自动保存，刷新或重新打开网站后继续使用。</li>
+          <li>正文单词、查词卡片、词组、收藏和查询记录等朗读入口统一使用同一套发音设置。</li>
+          <li>设置中无需先生成文章，即可选择默认声音、语速并试听。</li>
+          <li>新用户首次进入不再自动下载词库，可选择“自动加载 / 手动导入 / 稍后再说”。</li>
+          <li>自动加载支持安全取消、失败重试和断点续传，并与手动导入互斥，避免同时写入本地词典。</li>
+          <li>无词典时仍可阅读；查询会提示准备词库，不会偷偷下载。</li>
+          <li>老用户仍可直接导入完整未拆分的 ECDICT CSV 和原 Lemma 文件。</li>
+        </ul>
+      </div>
+
+      <div class="changeVersion">
+        <div class="changeVersionTitle">V0.5.4</div>
+        <div class="changeDate">2026-08-17</div>
+        <ul>
+          <li>阅读正文可划选 2–20 个英文词，收藏词组或朗读整个选区。</li>
+          <li>收藏词组时自动保存所在原句，并新增 WORD / PHRASE 类型标签。</li>
+          <li>词组支持编辑释义、备注、朗读和删除；相同词组会自动去重。</li>
+          <li>学习数据备份和恢复兼容词组收藏，不影响原有单击查词。</li>
+        </ul>
+      </div>
+
+      <div class="changeVersion">
+        <div class="changeVersionTitle">V0.5.3</div>
+        <div class="changeDate">2026-08-17</div>
+        <ul>
+          <li>Web 版支持自动准备 ECDICT 和 Lemma，并保存到浏览器 IndexedDB。</li>
+          <li>ECDICT 拆分为多个 Web 分片分发，最终包含 770,611 条记录。</li>
+          <li>Lemma 按实际唯一键记录 182,670 条映射。</li>
+          <li>支持 ECDICT 分片断点恢复，中断后可从已完成进度继续；完成后日常查询无需重复下载词库。</li>
+        </ul>
       </div>
 
       <div class="changeVersion">

@@ -302,54 +302,167 @@ let voices = [];
 let currentSpokenWord = "";
 let speechTimer = null;
 let speechRequestId = 0;
+const SPEECH_RATE_VALUES = new Set(["0.7", "0.85", "1", "1.15"]);
 
-function loadVoices() {
-  voices = speechSynthesis.getVoices();
-
-  const voiceSelect = document.getElementById("voiceSelect");
-  const previousValue = voiceSelect.value;
-
-  voiceSelect.innerHTML = '<option value="">自动选择</option>';
-
-  voices.forEach((voice, index) => {
-    if (voice.lang.toLowerCase().startsWith("en")) {
-      const option = document.createElement("option");
-      option.value = index;
-      option.textContent = `${voice.name} (${voice.lang})`;
-      voiceSelect.appendChild(option);
-    }
-  });
-
-  // 如果刷新 voices 列表，尽量保留用户当前选择
-  if (previousValue !== "" && voiceSelect.querySelector(`option[value="${previousValue}"]`)) {
-    voiceSelect.value = previousValue;
-  }
+function normalizeSpeechRate(value) {
+  const normalized = String(value ?? "1");
+  return SPEECH_RATE_VALUES.has(normalized) ? normalized : "1";
 }
 
-speechSynthesis.onvoiceschanged = loadVoices;
-loadVoices();
+function getSavedSpeechVoice() {
+  const saved = getReadingPreferences().speechVoice;
+  if (!saved || typeof saved !== "object" || !saved.name || !saved.lang) return null;
+
+  return {
+    name: String(saved.name),
+    lang: String(saved.lang),
+    voiceURI: String(saved.voiceURI || "")
+  };
+}
+
+function getSpeechRate() {
+  return normalizeSpeechRate(getReadingPreferences().speechRate);
+}
+
+function getVoiceStableId(voice) {
+  return encodeURIComponent(JSON.stringify([
+    voice?.name || "",
+    voice?.lang || "",
+    voice?.voiceURI || ""
+  ]));
+}
+
+function getVoicePreference(voice) {
+  return voice ? {
+    name: voice.name || "",
+    lang: voice.lang || "",
+    voiceURI: voice.voiceURI || ""
+  } : null;
+}
+
+function resolvePreferredVoice(preference, availableVoices = voices) {
+  const list = Array.from(availableVoices || []);
+  const englishVoices = list.filter(voice =>
+    String(voice.lang || "").toLowerCase().startsWith("en")
+  );
+
+  if (preference) {
+    const savedLang = preference.lang.toLowerCase();
+    const exactVoice = preference.voiceURI && list.find(voice =>
+      voice.name === preference.name &&
+      String(voice.lang || "").toLowerCase() === savedLang &&
+      voice.voiceURI === preference.voiceURI
+    );
+    if (exactVoice) return exactVoice;
+
+    const nameAndLanguage = list.find(voice =>
+      voice.name === preference.name &&
+      String(voice.lang || "").toLowerCase() === savedLang
+    );
+    if (nameAndLanguage) return nameAndLanguage;
+
+    const sameLanguage = list.find(voice =>
+      String(voice.lang || "").toLowerCase() === savedLang
+    );
+    if (sameLanguage) return sameLanguage;
+
+    if (englishVoices.length) return englishVoices[0];
+    return null;
+  }
+
+  return englishVoices.find(voice => voice.lang === "en-US" && voice.localService) ||
+    englishVoices.find(voice => voice.localService) ||
+    englishVoices.find(voice => voice.lang === "en-US") ||
+    englishVoices[0] ||
+    null;
+}
+
+function populateVoiceSelect(select, selectedVoice) {
+  if (!select) return;
+
+  select.innerHTML = '<option value="">自动选择</option>';
+
+  voices.forEach(voice => {
+    if (!String(voice.lang || "").toLowerCase().startsWith("en")) return;
+
+    const option = document.createElement("option");
+    option.value = getVoiceStableId(voice);
+    option.textContent = `${voice.name} (${voice.lang})`;
+    select.appendChild(option);
+  });
+
+  const selectedValue = selectedVoice ? getVoiceStableId(selectedVoice) : "";
+  select.value = Array.from(select.options).some(option => option.value === selectedValue)
+    ? selectedValue
+    : "";
+}
+
+function syncSpeechPreferenceControls() {
+  const rate = getSpeechRate();
+  ["speed", "settingsSpeechRate"].forEach(id => {
+    const select = document.getElementById(id);
+    if (select) select.value = rate;
+  });
+
+  const savedVoice = getSavedSpeechVoice();
+  const selectedVoice = savedVoice ? resolvePreferredVoice(savedVoice) : null;
+  populateVoiceSelect(document.getElementById("voiceSelect"), selectedVoice);
+  populateVoiceSelect(document.getElementById("settingsVoiceSelect"), selectedVoice);
+}
+
+function saveSpeechPreferences(patch) {
+  const preferences = {
+    ...getReadingPreferences(),
+    ...patch
+  };
+  localStorage.setItem(READING_PREFS_KEY, JSON.stringify(preferences));
+  syncSpeechPreferenceControls();
+}
+
+function handleSpeechVoiceChange(value) {
+  const selectedVoice = value
+    ? voices.find(voice => getVoiceStableId(voice) === value) || null
+    : null;
+  saveSpeechPreferences({ speechVoice: getVoicePreference(selectedVoice) });
+}
+
+function handleSpeechRateChange(value) {
+  saveSpeechPreferences({ speechRate: normalizeSpeechRate(value) });
+}
+
+function applyAvailableVoices(availableVoices) {
+  voices = Array.from(availableVoices || []);
+  syncSpeechPreferenceControls();
+}
+
+function loadVoices() {
+  applyAvailableVoices(speechSynthesis.getVoices());
+}
+
+function initializeSpeechPreferences() {
+  speechSynthesis.onvoiceschanged = loadVoices;
+  loadVoices();
+}
 
 function buildUtterance(word) {
   const utterance = new SpeechSynthesisUtterance(word);
-  utterance.rate = parseFloat(document.getElementById("speed").value);
-  utterance.lang = "en-US";
+  const selectedVoice = resolvePreferredVoice(getSavedSpeechVoice());
 
-  const voiceSelect = document.getElementById("voiceSelect");
-
-  if (voiceSelect.value !== "") {
-    const selectedVoice = voices[parseInt(voiceSelect.value)];
-    if (selectedVoice) utterance.voice = selectedVoice;
-  } else {
-    const englishVoice =
-      voices.find(v => v.lang === "en-US" && v.localService) ||
-      voices.find(v => v.lang.toLowerCase().startsWith("en") && v.localService) ||
-      voices.find(v => v.lang === "en-US") ||
-      voices.find(v => v.lang.toLowerCase().startsWith("en"));
-
-    if (englishVoice) utterance.voice = englishVoice;
-  }
+  utterance.rate = Number(getSpeechRate());
+  utterance.lang = selectedVoice?.lang || "en-US";
+  if (selectedVoice) utterance.voice = selectedVoice;
 
   return utterance;
+}
+
+function previewSpeechSettings(button) {
+  try {
+    speakWord("Hello, welcome to LingoFlow.");
+    flashSpeechButton(button, true);
+  } catch (error) {
+    console.error("Speech preview error:", error);
+    flashSpeechButton(button, false);
+  }
 }
 
 function flashSpeechButton(button, success = true) {
@@ -443,8 +556,32 @@ const ECDICT_AUTO_CHECKPOINT_KEYS = [
   ECDICT_AUTO_CHUNKS_META,
   ECDICT_AUTO_RECORDS_META
 ];
+const DICTIONARY_GUIDE_DEFERRED_KEY = "EnglishReaderDictionaryGuideDeferred";
+const DICTIONARY_WAS_READY_KEY = "EnglishReaderDictionaryWasReady";
 let ecdictDbPromise = null;
 let dictionaryInitializationPromise = null;
+let dictionaryStartupCheckPromise = null;
+let dictionaryAutoAbortController = null;
+let dictionaryTaskState = "idle";
+let dictionaryIntegritySnapshot = null;
+
+function createDictionaryAbortError(message = "词库加载已暂停。") {
+  try {
+    return new DOMException(message, "AbortError");
+  } catch {
+    const error = new Error(message);
+    error.name = "AbortError";
+    return error;
+  }
+}
+
+function isDictionaryAbortError(error) {
+  return error?.name === "AbortError";
+}
+
+function throwIfDictionaryTaskAborted(signal) {
+  if (signal?.aborted) throw createDictionaryAbortError();
+}
 
 function openECDICTDatabase() {
   if (ecdictDbPromise) return ecdictDbPromise;
@@ -972,18 +1109,145 @@ function setDictionaryProgress(percent, visible = true) {
 function setDictionarySetupState(state, title, detail, options = {}) {
   const setup = document.getElementById("dictionarySetupStatus");
   const retryButton = document.getElementById("dictionaryRetryButton");
+  const cancelButton = document.getElementById("dictionaryCancelButton");
+  const manualButton = document.getElementById("dictionaryManualButton");
+  const prepareButton = document.getElementById("dictionaryPrepareButton");
+  const autoLoading = dictionaryTaskState === "auto-loading";
 
   setup.dataset.state = state;
   document.getElementById("dictionarySetupTitle").textContent = title;
   document.getElementById("dictionarySetupDetail").textContent = detail;
   retryButton.classList.toggle("show", Boolean(options.showRetry));
-  retryButton.disabled = state === "checking" || state === "initializing";
+  cancelButton.classList.toggle(
+    "show",
+    options.showCancel ?? autoLoading
+  );
+  manualButton.classList.toggle(
+    "show",
+    options.showManual ?? autoLoading
+  );
+  prepareButton.classList.toggle("show", Boolean(options.showPrepare));
+  retryButton.disabled = dictionaryTaskState !== "idle";
+  cancelButton.disabled = !autoLoading || Boolean(dictionaryAutoAbortController?.signal.aborted);
 
   if (typeof options.progress === "number") {
     setDictionaryProgress(options.progress, true);
   } else if (options.hideProgress) {
     setDictionaryProgress(0, false);
   }
+}
+
+function setDictionaryGuideVisible(visible, manual = false) {
+  const modal = document.getElementById("dictionaryGuideModal");
+  const manualActions = document.getElementById("dictionaryGuideManualActions");
+  if (!modal || !manualActions) return;
+
+  modal.classList.toggle("show", visible);
+  manualActions.classList.toggle("show", visible && manual);
+}
+
+function markDictionaryReadyLocally() {
+  localStorage.setItem(DICTIONARY_WAS_READY_KEY, "1");
+  localStorage.removeItem(DICTIONARY_GUIDE_DEFERRED_KEY);
+  setDictionaryGuideVisible(false);
+}
+
+function getMissingDictionaryParts(integrity) {
+  const missing = [];
+  if (!integrity?.ecdict?.complete) missing.push("ECDICT");
+  if (!integrity?.lemma?.complete) missing.push("Lemma");
+  return missing;
+}
+
+function showDictionaryNeedsPreparation(integrity, options = {}) {
+  const missing = getMissingDictionaryParts(integrity);
+  const missingText = missing.length ? `${missing.join(" 和 ")} 尚未准备好。` : "离线词库尚未准备好。";
+  const wasReady = localStorage.getItem(DICTIONARY_WAS_READY_KEY) === "1";
+  const deferred = localStorage.getItem(DICTIONARY_GUIDE_DEFERRED_KEY) === "1";
+  const forceGuide = Boolean(options.forceGuide || wasReady);
+
+  if (wasReady) {
+    localStorage.removeItem(DICTIONARY_GUIDE_DEFERRED_KEY);
+    localStorage.removeItem(DICTIONARY_WAS_READY_KEY);
+  }
+
+  setDictionarySetupState(
+    "needs-choice",
+    "词库尚未加载",
+    `${missingText} 你仍可阅读文章，需要查词时再准备词库。`,
+    {
+      showManual: true,
+      showPrepare: !forceGuide && deferred,
+      hideProgress: true
+    }
+  );
+
+  if (forceGuide || !deferred) {
+    setDictionaryGuideVisible(true, Boolean(options.manual));
+  } else {
+    setDictionaryGuideVisible(false);
+  }
+}
+
+function openDictionaryGuide() {
+  if (dictionaryIntegritySnapshot?.ecdict.complete && dictionaryIntegritySnapshot?.lemma.complete) {
+    setDictionaryGuideVisible(false);
+    return;
+  }
+  setDictionaryGuideVisible(true, false);
+}
+
+function deferDictionarySetup() {
+  localStorage.setItem(DICTIONARY_GUIDE_DEFERRED_KEY, "1");
+  setDictionaryGuideVisible(false);
+  setDictionarySetupState(
+    "needs-choice",
+    "词库尚未加载",
+    "可以继续阅读文章；需要查词时，点击“准备词库”即可继续。",
+    { showManual: true, showPrepare: true, hideProgress: true }
+  );
+}
+
+async function showDictionaryManualChoices() {
+  if (dictionaryTaskState === "auto-loading") {
+    await cancelAutomaticDictionarySetup();
+  }
+
+  if (dictionaryTaskState === "manual-importing") {
+    setDictionarySetupState(
+      "initializing",
+      "正在手动导入词库…",
+      "请等待当前文件导入完成。",
+      { progress: Number(document.getElementById("dictProgressWrap")?.getAttribute("aria-valuenow") || 0) }
+    );
+    return;
+  }
+
+  setDictionaryGuideVisible(true, true);
+}
+
+async function requestManualDictionaryFile(kind, closeSettingsFirst = false) {
+  if (closeSettingsFirst) closeModal("settingsModal");
+
+  if (dictionaryTaskState === "auto-loading") {
+    await cancelAutomaticDictionarySetup();
+    setDictionaryGuideVisible(true, true);
+    return;
+  }
+
+  if (dictionaryTaskState !== "idle") {
+    setDictionarySetupState(
+      "initializing",
+      "词库任务正在进行…",
+      "请等待当前词库任务安全结束后再选择文件。",
+      { hideProgress: true }
+    );
+    return;
+  }
+
+  const input = document.getElementById(kind === "lemma" ? "lemmaFileInput" : "dictFileInput");
+  setDictionaryGuideVisible(false);
+  input?.click();
 }
 
 function normalizeCSVHeader(row) {
@@ -1044,11 +1308,13 @@ async function importECDICTReadableStream(readable, options = {}) {
 
   const flushBatch = async () => {
     if (!batch.length) return;
+    throwIfDictionaryTaskAborted(options.signal);
     const pending = batch;
     batch = [];
     if (!options.validateOnly) {
       await (options.batchWriter || writeECDICTBatch)(pending);
     }
+    throwIfDictionaryTaskAborted(options.signal);
     imported += pending.length;
     await new Promise(resolve => setTimeout(resolve, 0));
   };
@@ -1075,7 +1341,9 @@ async function importECDICTReadableStream(readable, options = {}) {
 
   try {
     while (true) {
+      throwIfDictionaryTaskAborted(options.signal);
       const { value, done } = await reader.read();
+      throwIfDictionaryTaskAborted(options.signal);
 
       if (done) {
         await consumeRows(parser.feed(decoder.decode(), true));
@@ -1144,7 +1412,7 @@ async function importECDICTCsv(file) {
     source: "manual",
     filename: file.name,
     source_file_size: file.size
-  });
+  }, ECDICT_AUTO_CHECKPOINT_KEYS);
 
   setDictionaryProgress(100, true);
   status.textContent =
@@ -1167,9 +1435,11 @@ async function importLemmaReadableStream(readable, options = {}) {
 
   const flushBatch = async () => {
     if (!batch.length) return;
+    throwIfDictionaryTaskAborted(options.signal);
     const pending = batch;
     batch = [];
     await writeLemmaBatch(pending);
+    throwIfDictionaryTaskAborted(options.signal);
     imported += pending.length;
     await new Promise(resolve => setTimeout(resolve, 0));
   };
@@ -1206,7 +1476,9 @@ async function importLemmaReadableStream(readable, options = {}) {
 
   try {
     while (true) {
+      throwIfDictionaryTaskAborted(options.signal);
       const { value, done } = await reader.read();
+      throwIfDictionaryTaskAborted(options.signal);
       if (done) break;
 
       bytesRead += value.byteLength;
@@ -1359,7 +1631,7 @@ function renderDictionaryIntegrity(integrity) {
     : `Lemma 需要恢复（本地实际 ${integrity.lemma.actualCount.toLocaleString()} 条映射）`;
 }
 
-async function refreshDictionaryStatus() {
+async function refreshDictionaryStatus(options = {}) {
   const status = document.getElementById("dictImportStatus");
   const lemmaStatus = document.getElementById("lemmaImportStatus");
 
@@ -1371,22 +1643,23 @@ async function refreshDictionaryStatus() {
 
   try {
     const integrity = await inspectDictionaryIntegrity();
+    dictionaryIntegritySnapshot = integrity;
     renderDictionaryIntegrity(integrity);
 
     if (integrity.ecdict.complete && integrity.lemma.complete) {
+      markDictionaryReadyLocally();
       setDictionarySetupState(
         "ready",
         "离线词典已就绪",
-        "词典已保存在本机，日常查询无需联网。",
-        { hideProgress: true }
+        `ECDICT ${integrity.ecdict.actualCount.toLocaleString()} 条 · ` +
+          `Lemma ${integrity.lemma.actualCount.toLocaleString()} 条映射。日常查询无需联网。`,
+        { showCancel: false, showManual: false, hideProgress: true }
       );
     } else {
-      setDictionarySetupState(
-        "error",
-        "离线词典需要恢复",
-        "可以重试自动恢复，也可以使用上方按钮手动导入。",
-        { showRetry: true, hideProgress: true }
-      );
+      showDictionaryNeedsPreparation(integrity, {
+        forceGuide: Boolean(options.forceGuide),
+        manual: Boolean(options.manual)
+      });
     }
   } catch (error) {
     console.error(error);
@@ -1396,7 +1669,7 @@ async function refreshDictionaryStatus() {
       "error",
       "无法检查离线词典",
       error.message || "本地数据库读取失败。",
-      { showRetry: true, hideProgress: true }
+      { showManual: true, showPrepare: true, hideProgress: true }
     );
   }
 
@@ -1456,13 +1729,16 @@ function validateDictionaryManifest(manifest) {
   return manifest;
 }
 
-async function fetchDictionaryManifest() {
+async function fetchDictionaryManifest(signal) {
   const requestedUrl = new URL(DICTIONARY_MANIFEST_PATH, document.baseURI);
   let response;
 
   try {
-    response = await fetch(requestedUrl, { cache: "no-store" });
+    response = await fetch(requestedUrl, { cache: "no-store", signal });
   } catch (error) {
+    if (signal?.aborted || isDictionaryAbortError(error)) {
+      throw createDictionaryAbortError();
+    }
     throw new Error(`资源清单下载失败：${error.message || "网络连接中断"}`);
   }
 
@@ -1470,12 +1746,17 @@ async function fetchDictionaryManifest() {
     throw new Error(`资源清单下载失败（HTTP ${response.status}）。`);
   }
 
+  throwIfDictionaryTaskAborted(signal);
   let manifest;
   try {
     manifest = await response.json();
   } catch (error) {
+    if (signal?.aborted || isDictionaryAbortError(error)) {
+      throw createDictionaryAbortError();
+    }
     throw new Error(`资源清单解析失败：${error.message || "不是有效的 JSON"}`);
   }
+  throwIfDictionaryTaskAborted(signal);
 
   return {
     manifest: validateDictionaryManifest(manifest),
@@ -1483,12 +1764,15 @@ async function fetchDictionaryManifest() {
   };
 }
 
-async function fetchDictionaryResource(url, label) {
+async function fetchDictionaryResource(url, label, signal) {
   let response;
 
   try {
-    response = await fetch(url);
+    response = await fetch(url, { signal });
   } catch (error) {
+    if (signal?.aborted || isDictionaryAbortError(error)) {
+      throw createDictionaryAbortError();
+    }
     throw new Error(`${label}下载失败：${error.message || "网络连接中断"}`);
   }
 
@@ -1502,14 +1786,16 @@ async function fetchDictionaryResource(url, label) {
   return response;
 }
 
-async function downloadDictionaryChunkBlob(response, chunk, onProgress) {
+async function downloadDictionaryChunkBlob(response, chunk, onProgress, signal) {
   const reader = response.body.getReader();
   const parts = [];
   let bytesRead = 0;
 
   try {
     while (true) {
+      throwIfDictionaryTaskAborted(signal);
       const { value, done } = await reader.read();
+      throwIfDictionaryTaskAborted(signal);
       if (done) break;
 
       parts.push(value);
@@ -1518,6 +1804,9 @@ async function downloadDictionaryChunkBlob(response, chunk, onProgress) {
     }
   } catch (error) {
     try { await reader.cancel(); } catch {}
+    if (signal?.aborted || isDictionaryAbortError(error)) {
+      throw createDictionaryAbortError();
+    }
     throw new Error(`${chunk.filename} 下载中断：${error.message || "网络连接中断"}`);
   }
 
@@ -1576,7 +1865,7 @@ function finishAutomaticProgressResource(progress, sizeBytes) {
   );
 }
 
-async function importAutomaticECDICT(manifest, resourceBaseUrl, progress) {
+async function importAutomaticECDICT(manifest, resourceBaseUrl, progress, signal) {
   const status = document.getElementById("dictImportStatus");
   const chunks = manifest.ecdict.chunks;
   const sourceSize = chunks.reduce((sum, chunk) => sum + chunk.sizeBytes, 0);
@@ -1621,6 +1910,7 @@ async function importAutomaticECDICT(manifest, resourceBaseUrl, progress) {
         `ECDICT：已恢复前 ${startIndex} 个分片，共 ${importedTotal.toLocaleString()} 条`;
     }
   } else {
+    throwIfDictionaryTaskAborted(signal);
     await clearECDICTEntries();
     await setECDICTMetaValues({
       ready: false,
@@ -1632,6 +1922,7 @@ async function importAutomaticECDICT(manifest, resourceBaseUrl, progress) {
   }
 
   for (let index = startIndex; index < chunks.length; index++) {
+    throwIfDictionaryTaskAborted(signal);
     const chunk = chunks[index];
     const label = `第 ${index + 1} / ${chunks.length} 个词典分片`;
     status.textContent = `ECDICT：正在处理 ${label}`;
@@ -1639,7 +1930,8 @@ async function importAutomaticECDICT(manifest, resourceBaseUrl, progress) {
 
     const response = await fetchDictionaryResource(
       new URL(chunk.filename, resourceBaseUrl),
-      `词典分片 ${index + 1} / ${chunks.length} `
+      `词典分片 ${index + 1} / ${chunks.length} `,
+      signal
     );
 
     const chunkBlob = await downloadDictionaryChunkBlob(response, chunk, bytesRead => {
@@ -1650,13 +1942,14 @@ async function importAutomaticECDICT(manifest, resourceBaseUrl, progress) {
         label,
         "正在下载"
       );
-    });
+    }, signal);
 
     status.textContent = `ECDICT：${label} · 正在校验`;
     const validation = await importECDICTReadableStream(chunkBlob.stream(), {
       expectedHeader,
       expectedRecordCount: chunk.recordCount,
-      validateOnly: true
+      validateOnly: true,
+      signal
     });
 
     if (validation.bytesRead !== chunk.sizeBytes) {
@@ -1676,11 +1969,17 @@ async function importAutomaticECDICT(manifest, resourceBaseUrl, progress) {
     if (!expectedHeader) expectedHeader = validation.headers;
 
     const nextImportedTotal = importedTotal + validation.imported;
+    let currentChunkWriteStarted = false;
 
     try {
       const result = await importECDICTReadableStream(chunkBlob.stream(), {
         expectedHeader,
         expectedRecordCount: chunk.recordCount,
+        signal,
+        batchWriter: async batch => {
+          currentChunkWriteStarted = true;
+          await writeECDICTBatch(batch);
+        },
         onProgress: ({ imported }) => {
           status.textContent =
             `ECDICT：${label} · 已写入 ${imported.toLocaleString()} 条`;
@@ -1711,6 +2010,13 @@ async function importAutomaticECDICT(manifest, resourceBaseUrl, progress) {
         [ECDICT_AUTO_RECORDS_META]: nextImportedTotal
       });
     } catch (error) {
+      if (!currentChunkWriteStarted) {
+        if (isDictionaryAbortError(error) || signal?.aborted) {
+          throw createDictionaryAbortError();
+        }
+        throw error;
+      }
+
       try {
         await rollbackAutomaticECDICTChunk(
           chunkBlob,
@@ -1732,6 +2038,10 @@ async function importAutomaticECDICT(manifest, resourceBaseUrl, progress) {
         );
       }
 
+      if (isDictionaryAbortError(error) || signal?.aborted) {
+        throw createDictionaryAbortError();
+      }
+
       throw new Error(
         `${chunk.filename} 写入 IndexedDB 失败：${error.message || "写入事务失败"} ` +
         "当前分片已移除，之前完成的分片仍然保留。"
@@ -1741,6 +2051,8 @@ async function importAutomaticECDICT(manifest, resourceBaseUrl, progress) {
     importedTotal = nextImportedTotal;
     finishAutomaticProgressResource(progress, chunk.sizeBytes);
   }
+
+  throwIfDictionaryTaskAborted(signal);
 
   if (importedTotal !== manifest.ecdict.totalRecords) {
     throw new Error(
@@ -1773,10 +2085,11 @@ async function importAutomaticECDICT(manifest, resourceBaseUrl, progress) {
   status.textContent = `✅ ECDICT 已就绪：${actualCount.toLocaleString()} 条`;
 }
 
-async function importAutomaticLemma(manifest, resourceBaseUrl, progress) {
+async function importAutomaticLemma(manifest, resourceBaseUrl, progress, signal) {
   const status = document.getElementById("lemmaImportStatus");
   const label = "正在下载并导入 Lemma";
 
+  throwIfDictionaryTaskAborted(signal);
   await setECDICTMetaValues({ lemma_ready: false, lemma_count: 0 });
   await clearLemmaEntries();
   status.textContent = "Lemma：正在自动恢复";
@@ -1784,9 +2097,11 @@ async function importAutomaticLemma(manifest, resourceBaseUrl, progress) {
 
   const response = await fetchDictionaryResource(
     new URL(manifest.lemma.filename, resourceBaseUrl),
-    "Lemma "
+    "Lemma ",
+    signal
   );
   const result = await importLemmaReadableStream(response.body, {
+    signal,
     onProgress: ({ bytesRead, imported }) => {
       status.textContent = `Lemma：正在导入（约 ${imported.toLocaleString()} 条映射）`;
       updateAutomaticProgress(
@@ -1797,6 +2112,8 @@ async function importAutomaticLemma(manifest, resourceBaseUrl, progress) {
       );
     }
   });
+
+  throwIfDictionaryTaskAborted(signal);
 
   if (result.bytesRead !== manifest.lemma.sizeBytes) {
     throw new Error(
@@ -1847,32 +2164,29 @@ function describeDictionarySetupError(error) {
   return error?.message || "发生未知错误。";
 }
 
-async function runAutomaticDictionarySetup() {
+async function runAutomaticDictionarySetup(signal) {
   if (!("indexedDB" in window)) {
     throw new Error("当前浏览器不支持 IndexedDB，无法保存离线词典。");
   }
 
-  setDictionarySetupState(
-    "checking",
-    "正在检查离线词典…",
-    "页面可以正常使用，检查会在后台完成。",
-    { hideProgress: true }
-  );
-
+  throwIfDictionaryTaskAborted(signal);
   const initialIntegrity = await inspectDictionaryIntegrity();
+  dictionaryIntegritySnapshot = initialIntegrity;
   renderDictionaryIntegrity(initialIntegrity);
 
   if (initialIntegrity.ecdict.complete && initialIntegrity.lemma.complete) {
+    markDictionaryReadyLocally();
     setDictionarySetupState(
       "ready",
       "离线词典已就绪",
       "已检测到完整的本地词典，本次没有下载任何词典资源。",
-      { hideProgress: true }
+      { showCancel: false, showManual: false, hideProgress: true }
     );
     await requestPersistentStorageBestEffort();
     return initialIntegrity;
   }
 
+  throwIfDictionaryTaskAborted(signal);
   setDictionarySetupState(
     "initializing",
     "正在准备离线词典…",
@@ -1880,63 +2194,189 @@ async function runAutomaticDictionarySetup() {
     { progress: 0 }
   );
 
-  const { manifest, resourceBaseUrl } = await fetchDictionaryManifest();
+  const { manifest, resourceBaseUrl } = await fetchDictionaryManifest(signal);
   const needsECDICT = !initialIntegrity.ecdict.complete;
   const needsLemma = !initialIntegrity.lemma.complete;
   const progress = createAutomaticProgress(manifest, needsECDICT, needsLemma);
 
   if (needsECDICT) {
-    await importAutomaticECDICT(manifest, resourceBaseUrl, progress);
+    await importAutomaticECDICT(manifest, resourceBaseUrl, progress, signal);
   }
   if (needsLemma) {
-    await importAutomaticLemma(manifest, resourceBaseUrl, progress);
+    await importAutomaticLemma(manifest, resourceBaseUrl, progress, signal);
   }
 
+  throwIfDictionaryTaskAborted(signal);
   const finalIntegrity = await inspectDictionaryIntegrity();
+  dictionaryIntegritySnapshot = finalIntegrity;
   renderDictionaryIntegrity(finalIntegrity);
   if (!finalIntegrity.ecdict.complete || !finalIntegrity.lemma.complete) {
     throw new Error("自动恢复结束后，本地词典完整性校验没有通过。");
   }
 
+  markDictionaryReadyLocally();
   setDictionarySetupState(
     "ready",
     "离线词典已就绪",
-    `ECDICT ${finalIntegrity.ecdict.actualCount.toLocaleString()} 条，` +
+    `ECDICT ${finalIntegrity.ecdict.actualCount.toLocaleString()} 条 · ` +
       `Lemma ${finalIntegrity.lemma.actualCount.toLocaleString()} 条映射。日常查询无需联网。`,
-    { progress: 100 }
+    { progress: 100, showCancel: false, showManual: false }
   );
   await requestPersistentStorageBestEffort();
   return finalIntegrity;
 }
 
 function initializeDictionaryOnStartup() {
-  if (dictionaryInitializationPromise) return dictionaryInitializationPromise;
+  if (dictionaryStartupCheckPromise) return dictionaryStartupCheckPromise;
 
-  dictionaryInitializationPromise = runAutomaticDictionarySetup()
+  setDictionarySetupState(
+    "checking",
+    "正在检查离线词典…",
+    "页面可以正常使用，检查会在后台完成。",
+    { showCancel: false, showManual: false, hideProgress: true }
+  );
+
+  dictionaryStartupCheckPromise = inspectDictionaryIntegrity()
+    .then(async integrity => {
+      dictionaryIntegritySnapshot = integrity;
+      renderDictionaryIntegrity(integrity);
+
+      if (dictionaryTaskState !== "idle") return integrity;
+
+      if (integrity.ecdict.complete && integrity.lemma.complete) {
+        markDictionaryReadyLocally();
+        setDictionarySetupState(
+          "ready",
+          "离线词典已就绪",
+          `ECDICT ${integrity.ecdict.actualCount.toLocaleString()} 条 · ` +
+            `Lemma ${integrity.lemma.actualCount.toLocaleString()} 条映射。日常查询无需联网。`,
+          { showCancel: false, showManual: false, hideProgress: true }
+        );
+        await requestPersistentStorageBestEffort();
+      } else {
+        showDictionaryNeedsPreparation(integrity);
+      }
+
+      return integrity;
+    })
+    .catch(error => {
+      console.error("Dictionary startup check failed:", error);
+      setDictionarySetupState(
+        "error",
+        "无法检查离线词典",
+        describeDictionarySetupError(error),
+        { showManual: true, showPrepare: true, hideProgress: true }
+      );
+    })
+    .finally(() => {
+      dictionaryStartupCheckPromise = null;
+    });
+
+  return dictionaryStartupCheckPromise;
+}
+
+function startAutomaticDictionarySetup() {
+  if (dictionaryTaskState === "auto-loading" && dictionaryInitializationPromise) {
+    return dictionaryInitializationPromise;
+  }
+
+  if (dictionaryTaskState !== "idle") {
+    setDictionarySetupState(
+      "initializing",
+      "词库任务正在进行…",
+      "请等待当前手动导入安全结束后再开始自动加载。",
+      { showCancel: false, showManual: false, hideProgress: true }
+    );
+    return Promise.resolve(null);
+  }
+
+  setDictionaryGuideVisible(false);
+  dictionaryTaskState = "auto-loading";
+  dictionaryAutoAbortController = new AbortController();
+  const signal = dictionaryAutoAbortController.signal;
+
+  dictionaryInitializationPromise = runAutomaticDictionarySetup(signal)
     .catch(async error => {
-      console.error("Automatic dictionary setup failed:", error);
       try {
-        renderDictionaryIntegrity(await inspectDictionaryIntegrity());
+        const integrity = await inspectDictionaryIntegrity();
+        dictionaryIntegritySnapshot = integrity;
+        renderDictionaryIntegrity(integrity);
       } catch {}
+
+      if (isDictionaryAbortError(error)) {
+        setDictionarySetupState(
+          "paused",
+          "加载已暂停，可稍后继续",
+          "已经完整完成的词典分片仍保存在本机；再次自动加载会从 checkpoint 继续。",
+          {
+            showRetry: true,
+            showCancel: false,
+            showManual: true,
+            hideProgress: true
+          }
+        );
+        return null;
+      }
+
+      console.error("Automatic dictionary setup failed:", error);
       setDictionarySetupState(
         "error",
         "离线词典准备失败",
-        `${describeDictionarySetupError(error)} 可以重试自动恢复，或使用上方按钮手动导入。`,
-        { showRetry: true, hideProgress: true }
+        `${describeDictionarySetupError(error)} 已完成的分片仍会保留。`,
+        {
+          showRetry: true,
+          showCancel: false,
+          showManual: true,
+          hideProgress: true
+        }
       );
-      throw error;
+      return null;
     })
     .finally(() => {
+      dictionaryTaskState = "idle";
+      dictionaryAutoAbortController = null;
       dictionaryInitializationPromise = null;
+      const retryButton = document.getElementById("dictionaryRetryButton");
+      const cancelButton = document.getElementById("dictionaryCancelButton");
+      if (retryButton) retryButton.disabled = false;
+      if (cancelButton) cancelButton.disabled = true;
     });
 
-  // 启动流程在后台运行；错误已在界面中呈现，避免产生未处理的 Promise 拒绝。
-  dictionaryInitializationPromise.catch(() => {});
   return dictionaryInitializationPromise;
 }
 
+async function cancelAutomaticDictionarySetup() {
+  if (dictionaryTaskState !== "auto-loading" || !dictionaryInitializationPromise) return;
+
+  dictionaryAutoAbortController?.abort();
+  setDictionarySetupState(
+    "initializing",
+    "正在安全暂停词库加载…",
+    "正在结束当前请求或回滚尚未完成的分片，请稍候。",
+    { showCancel: false, showManual: false, hideProgress: true }
+  );
+  await dictionaryInitializationPromise;
+}
+
 function retryAutomaticDictionarySetup() {
-  return initializeDictionaryOnStartup();
+  return startAutomaticDictionarySetup();
+}
+
+async function runManualDictionaryTask(task) {
+  if (dictionaryTaskState === "auto-loading") {
+    await cancelAutomaticDictionarySetup();
+  }
+
+  if (dictionaryTaskState !== "idle") {
+    throw new Error("另一个词库任务正在进行，请稍后再试。");
+  }
+
+  dictionaryTaskState = "manual-importing";
+  try {
+    return await task();
+  } finally {
+    dictionaryTaskState = "idle";
+  }
 }
 
 document.getElementById("dictFileInput").addEventListener(
@@ -1945,16 +2385,9 @@ document.getElementById("dictFileInput").addEventListener(
     const file = event.target.files[0];
     if (!file) return;
 
-    if (dictionaryInitializationPromise) {
-      document.getElementById("dictImportStatus").textContent =
-        "自动恢复正在进行，请完成后再手动导入。";
-      event.target.value = "";
-      return;
-    }
-
     try {
-      await importECDICTCsv(file);
-      await refreshDictionaryStatus();
+      await runManualDictionaryTask(() => importECDICTCsv(file));
+      await refreshDictionaryStatus({ forceGuide: true, manual: true });
     } catch (error) {
       console.error(error);
       document.getElementById("dictImportStatus").textContent =
@@ -1963,7 +2396,7 @@ document.getElementById("dictFileInput").addEventListener(
         "error",
         "ECDICT 手动导入失败",
         error.message || "未知错误",
-        { showRetry: true, hideProgress: true }
+        { showRetry: true, showManual: true, hideProgress: true }
       );
     } finally {
       event.target.value = "";
@@ -3318,6 +3751,8 @@ function applyReadingPreferences() {
     fontSize: "21",
     lineHeight: "2",
     appearance: "system",
+    speechRate: "1",
+    speechVoice: null,
     ...getReadingPreferences()
   };
 
@@ -3339,6 +3774,8 @@ function applyReadingPreferences() {
     const el = document.getElementById(id);
     if (el) el.value = prefs.appearance;
   });
+
+  syncSpeechPreferenceControls();
 }
 
 function saveReadingPreferences() {
@@ -3543,6 +3980,31 @@ let suggestionItems = [];
 let suggestionIndex = -1;
 let suggestionTimer = null;
 
+async function isECDICTReadyForLookup() {
+  if (dictionaryIntegritySnapshot?.ecdict.complete) return true;
+  if (dictionaryTaskState === "auto-loading") return false;
+
+  try {
+    const integrity = await inspectDictionaryIntegrity();
+    dictionaryIntegritySnapshot = integrity;
+    return integrity.ecdict.complete;
+  } catch {
+    return false;
+  }
+}
+
+function getDictionaryUnavailableMessage() {
+  return dictionaryTaskState === "auto-loading"
+    ? "离线词库正在准备中，完成后即可查词。"
+    : "离线词库尚未加载。你可以继续阅读，需要时再准备词库。";
+}
+
+function getDictionaryPrepareButtonHtml() {
+  return dictionaryTaskState === "auto-loading"
+    ? ""
+    : '<button class="secondary" onclick="openDictionaryGuide()">准备词库</button>';
+}
+
 async function directSearch(explicitWord = "") {
   const input = document.getElementById("directSearchInput");
   const word = (explicitWord || input.value).trim();
@@ -3559,6 +4021,17 @@ async function directSearch(explicitWord = "") {
   resultBox.innerHTML = '<div class="searchEmpty">正在查询本地词库…</div>';
 
   speakWord(word);
+  if (!await isECDICTReadyForLookup()) {
+    resultBox.innerHTML = `
+      <div class="searchResultCard">
+        <div class="searchResultWord">${escapeHtml(word)}</div>
+        <div class="searchResultMeaning">${getDictionaryUnavailableMessage()}</div>
+        <div style="margin-top:10px">${getDictionaryPrepareButtonHtml()}</div>
+      </div>
+    `;
+    return;
+  }
+
   const result = await lookupWord(word);
 
   if (!result) {
@@ -3860,6 +4333,7 @@ function formatBytes(bytes) {
 
 async function openSettings() {
   applyReadingPreferences();
+  loadVoices();
   document.getElementById("settingsModal").classList.add("show");
 
   const ready = await getECDICTMeta("ready");
@@ -4060,7 +4534,7 @@ async function exportLearningBackup() {
     historyBaselines: getHistoryBaselines(),
     queryEvents: getQueryEvents(),
     preferences: {
-      speed: document.getElementById("speed")?.value || "1",
+      speed: getSpeechRate(),
       reading: getReadingPreferences()
     }
   };
@@ -4136,7 +4610,7 @@ async function exportFullBackup() {
     parts.push(JSON.stringify({
       type: "preferences",
       data: {
-        speed: document.getElementById("speed")?.value || "1",
+        speed: getSpeechRate(),
         reading: getReadingPreferences()
       }
     }) + "\n");
@@ -4219,14 +4693,14 @@ async function importBackupFile(file, expectedType = "auto") {
       rebuildVocabFromMergeData();
     }
 
-    if (data.preferences?.speed && document.getElementById("speed")) {
-      document.getElementById("speed").value = data.preferences.speed;
-    }
-
-    if (data.preferences?.reading) {
+    if (data.preferences?.reading || data.preferences?.speed) {
+      const importedReading = { ...(data.preferences?.reading || {}) };
+      if (!importedReading.speechRate && data.preferences?.speed) {
+        importedReading.speechRate = normalizeSpeechRate(data.preferences.speed);
+      }
       localStorage.setItem(READING_PREFS_KEY, JSON.stringify({
         ...getReadingPreferences(),
-        ...data.preferences.reading
+        ...importedReading
       }));
       applyReadingPreferences();
     }
@@ -4381,11 +4855,12 @@ async function importBackupFile(file, expectedType = "auto") {
     ensureHistoryMigration();
   }
 
-  if (importedPreferences?.speed && document.getElementById("speed")) {
-    document.getElementById("speed").value = importedPreferences.speed;
-  }
-  if (importedPreferences?.reading) {
-    localStorage.setItem(READING_PREFS_KEY, JSON.stringify(importedPreferences.reading));
+  if (importedPreferences?.reading || importedPreferences?.speed) {
+    const restoredReading = { ...(importedPreferences?.reading || {}) };
+    if (!restoredReading.speechRate && importedPreferences?.speed) {
+      restoredReading.speechRate = normalizeSpeechRate(importedPreferences.speed);
+    }
+    localStorage.setItem(READING_PREFS_KEY, JSON.stringify(restoredReading));
     applyReadingPreferences();
   }
 
@@ -4415,7 +4890,7 @@ document.getElementById("fullBackupFileInput").addEventListener("change", async 
 
   try {
     document.getElementById("backupStatus").textContent = "正在读取完整备份…";
-    await importBackupFile(file, "full");
+    await runManualDictionaryTask(() => importBackupFile(file, "full"));
   } catch (error) {
     console.error(error);
     document.getElementById("backupStatus").textContent =
@@ -4432,10 +4907,12 @@ function openChangelog() {
 async function deleteECDICTOnly() {
   if (!confirm("确定删除本地 ECDICT 词库吗？")) return;
 
-  await clearECDICTEntries();
-  await setECDICTMeta("ready", false);
-  await setECDICTMeta("count", 0);
-  await setECDICTMeta("scan_entries_bytes", 0);
+  await runManualDictionaryTask(async () => {
+    await clearECDICTEntries();
+    await setECDICTMeta("ready", false);
+    await setECDICTMeta("count", 0);
+    await setECDICTMeta("scan_entries_bytes", 0);
+  });
 
   await refreshDictionaryStatus();
   await openSettings();
@@ -4444,10 +4921,12 @@ async function deleteECDICTOnly() {
 async function deleteLemmaOnly() {
   if (!confirm("确定删除本地 Lemma 词形库吗？")) return;
 
-  await clearLemmaEntries();
-  await setECDICTMeta("lemma_ready", false);
-  await setECDICTMeta("lemma_count", 0);
-  await setECDICTMeta("scan_lemmas_bytes", 0);
+  await runManualDictionaryTask(async () => {
+    await clearLemmaEntries();
+    await setECDICTMeta("lemma_ready", false);
+    await setECDICTMeta("lemma_count", 0);
+    await setECDICTMeta("scan_lemmas_bytes", 0);
+  });
 
   await refreshDictionaryStatus();
   await openSettings();
@@ -4456,15 +4935,17 @@ async function deleteLemmaOnly() {
 async function deleteAllLocalDictionary() {
   if (!confirm("确定删除 ECDICT 和 Lemma 两个本地词库吗？查询记录和收藏都会保留。")) return;
 
-  await clearECDICTEntries();
-  await clearLemmaEntries();
+  await runManualDictionaryTask(async () => {
+    await clearECDICTEntries();
+    await clearLemmaEntries();
 
-  await setECDICTMeta("ready", false);
-  await setECDICTMeta("count", 0);
-  await setECDICTMeta("lemma_ready", false);
-  await setECDICTMeta("lemma_count", 0);
-  await setECDICTMeta("scan_entries_bytes", 0);
-  await setECDICTMeta("scan_lemmas_bytes", 0);
+    await setECDICTMeta("ready", false);
+    await setECDICTMeta("count", 0);
+    await setECDICTMeta("lemma_ready", false);
+    await setECDICTMeta("lemma_count", 0);
+    await setECDICTMeta("scan_entries_bytes", 0);
+    await setECDICTMeta("scan_lemmas_bytes", 0);
+  });
 
   await refreshDictionaryStatus();
   await openSettings();
@@ -4477,16 +4958,9 @@ document.getElementById("lemmaFileInput").addEventListener(
     const file = event.target.files[0];
     if (!file) return;
 
-    if (dictionaryInitializationPromise) {
-      document.getElementById("lemmaImportStatus").textContent =
-        "自动恢复正在进行，请完成后再手动导入。";
-      event.target.value = "";
-      return;
-    }
-
     try {
-      await importLemmaFile(file);
-      await refreshDictionaryStatus();
+      await runManualDictionaryTask(() => importLemmaFile(file));
+      await refreshDictionaryStatus({ forceGuide: true, manual: true });
     } catch (error) {
       console.error(error);
       document.getElementById("lemmaImportStatus").textContent =
@@ -4495,7 +4969,7 @@ document.getElementById("lemmaFileInput").addEventListener(
         "error",
         "Lemma 手动导入失败",
         error.message || "未知错误",
-        { showRetry: true, hideProgress: true }
+        { showRetry: true, showManual: true, hideProgress: true }
       );
     } finally {
       event.target.value = "";
@@ -4531,6 +5005,13 @@ async function showWordCard(word, contextSentence = "", sourceType = "article") 
 
   emptySide.style.display = "none";
   card.classList.add("show");
+
+  if (!await isECDICTReadyForLookup()) {
+    document.getElementById("partOfSpeech").textContent = "词库未准备";
+    document.getElementById("meaning").textContent = getDictionaryUnavailableMessage();
+    document.getElementById("dictionaryStatus").innerHTML = getDictionaryPrepareButtonHtml();
+    return;
+  }
 
   const result = await lookupWord(word);
 
@@ -4728,6 +5209,7 @@ ensureHistoryMigration();
 initializeDictionaryOnStartup();
 updateVocabBadges();
 applyReadingPreferences();
+initializeSpeechPreferences();
 setupTextDropZone();
 setupPhraseSelection();
 checkBackupReminder();
