@@ -3413,6 +3413,7 @@ let currentArticle = null;
 let articleDraftMode = "new";
 let draftSource = { sourceType: "paste" };
 let articleSavePromise = null;
+let myArticlesRenderVersion = 0;
 let phraseSelectionSnapshot = null;
 let phraseSelectionTimer = null;
 let phraseSelectionFeedbackTimer = null;
@@ -3971,6 +3972,7 @@ document.addEventListener("keydown", event => {
     closeModal("settingsModal");
     closeModal("favoritesModal");
     closeModal("vocabModal");
+    closeModal("myArticlesModal");
     const input = document.getElementById("directSearchInput");
     input?.focus();
     input?.select();
@@ -5160,6 +5162,261 @@ function getArticleSource(article) {
   });
 }
 
+function getArticleSourceLabel(article) {
+  if (article?.sourceType === "txt") {
+    const filename = String(article.sourceTitle || "").trim();
+    return filename ? `TXT 导入 · ${filename}` : "TXT 导入";
+  }
+  if (article?.sourceType === "library") return "内置文章";
+  return "粘贴文本";
+}
+
+function hasUnsavedArticleDraft() {
+  const inputPanel = document.getElementById("inputPanel");
+  const input = document.getElementById("inputText");
+  if (!inputPanel || !input || inputPanel.style.display === "none") return false;
+
+  if (articleDraftMode === "new") return Boolean(input.value.trim());
+  if (articleDraftMode === "editing" && currentArticle) {
+    return input.value !== currentArticle.content;
+  }
+  return false;
+}
+
+function confirmReplacingUnsavedDraft() {
+  if (!hasUnsavedArticleDraft()) return true;
+  return confirm("当前草稿还没有保存。继续后会放弃这些修改，是否继续？");
+}
+
+function setMyArticlesMessage(message, state, allowRetry = false) {
+  const box = document.getElementById("myArticlesList");
+  if (!box) return;
+
+  box.dataset.state = state;
+  const content = document.createElement("div");
+  content.className = "searchEmpty";
+  content.textContent = message;
+
+  if (allowRetry) {
+    const retry = document.createElement("button");
+    retry.className = "secondary compactButton";
+    retry.type = "button";
+    retry.textContent = "重试";
+    retry.addEventListener("click", () => void renderMyArticles());
+    content.append(document.createElement("br"), retry);
+  }
+
+  box.replaceChildren(content);
+}
+
+function setMyArticleEditing(item, editing) {
+  item.classList.toggle("editing", editing);
+  const input = item.querySelector(".myArticleTitleInput");
+  if (!editing || !input) return;
+
+  input.setCustomValidity("");
+  input.focus();
+  input.select();
+}
+
+async function saveMyArticleTitle(articleId, item) {
+  const input = item.querySelector(".myArticleTitleInput");
+  if (!input) return;
+
+  const title = input.value.trim();
+  if (!title) {
+    input.setCustomValidity("标题不能为空。");
+    input.reportValidity();
+    return;
+  }
+
+  const editorButtons = item.querySelectorAll(".myArticleTitleEditor button");
+  editorButtons.forEach(button => { button.disabled = true; });
+  input.disabled = true;
+
+  try {
+    const library = window.LingoFlowArticleLibrary;
+    if (!library) throw new Error("文章数据层未加载，请刷新页面后重试。");
+
+    const updatedArticle = await library.updateArticle(articleId, { title });
+    if (activeArticleId === updatedArticle.id) {
+      currentArticle = updatedArticle;
+    }
+    await renderMyArticles();
+  } catch (error) {
+    input.disabled = false;
+    editorButtons.forEach(button => { button.disabled = false; });
+    input.setCustomValidity(error.message || "标题保存失败，请稍后重试。");
+    input.reportValidity();
+  }
+}
+
+function createMyArticleListItem(article) {
+  const item = document.createElement("div");
+  item.className = "myArticleItem";
+  item.dataset.articleId = article.id;
+
+  const main = document.createElement("div");
+  main.className = "myArticleMain";
+
+  const summary = document.createElement("div");
+  summary.className = "myArticleSummary";
+
+  const title = document.createElement("div");
+  title.className = "myArticleTitle";
+  title.textContent = article.title || "未命名文章";
+
+  const meta = document.createElement("div");
+  meta.className = "myArticleMeta";
+  meta.textContent = `${getArticleSourceLabel(article)} · 最近阅读：${formatLearningDate(article.lastReadAt)}`;
+  summary.append(title, meta);
+
+  const editor = document.createElement("div");
+  editor.className = "myArticleTitleEditor";
+
+  const input = document.createElement("input");
+  input.className = "myArticleTitleInput";
+  input.type = "text";
+  input.value = article.title || "未命名文章";
+  input.setAttribute("aria-label", `编辑标题：${article.title || "未命名文章"}`);
+  input.addEventListener("input", () => input.setCustomValidity(""));
+
+  const saveButton = document.createElement("button");
+  saveButton.className = "compactButton";
+  saveButton.type = "button";
+  saveButton.textContent = "保存";
+  saveButton.addEventListener("click", () => void saveMyArticleTitle(article.id, item));
+
+  const cancelButton = document.createElement("button");
+  cancelButton.className = "secondary compactButton";
+  cancelButton.type = "button";
+  cancelButton.textContent = "取消";
+  cancelButton.addEventListener("click", () => {
+    input.value = article.title || "未命名文章";
+    setMyArticleEditing(item, false);
+  });
+
+  input.addEventListener("keydown", event => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      void saveMyArticleTitle(article.id, item);
+    } else if (event.key === "Escape") {
+      event.stopPropagation();
+      input.value = article.title || "未命名文章";
+      setMyArticleEditing(item, false);
+    }
+  });
+
+  editor.append(input, saveButton, cancelButton);
+  main.append(summary, editor);
+
+  const actions = document.createElement("div");
+  actions.className = "myArticleButtons";
+
+  const openButton = document.createElement("button");
+  openButton.className = "secondary compactButton";
+  openButton.type = "button";
+  openButton.textContent = "打开";
+  openButton.setAttribute("aria-label", `打开文章：${article.title || "未命名文章"}`);
+  openButton.addEventListener("click", async () => {
+    openButton.disabled = true;
+    const opened = await openSavedArticle(article.id);
+    if (!opened) openButton.disabled = false;
+  });
+
+  const editButton = document.createElement("button");
+  editButton.className = "secondary compactButton";
+  editButton.type = "button";
+  editButton.textContent = "编辑标题";
+  editButton.setAttribute("aria-label", `编辑文章标题：${article.title || "未命名文章"}`);
+  editButton.addEventListener("click", () => setMyArticleEditing(item, true));
+
+  actions.append(openButton, editButton);
+  item.append(main, actions);
+  return item;
+}
+
+async function renderMyArticles() {
+  const box = document.getElementById("myArticlesList");
+  if (!box) return;
+
+  const renderVersion = ++myArticlesRenderVersion;
+  setMyArticlesMessage("正在读取文章…", "loading");
+
+  try {
+    const library = window.LingoFlowArticleLibrary;
+    if (!library) throw new Error("文章数据层未加载，请刷新页面后重试。");
+
+    const articles = await library.listArticles();
+    if (renderVersion !== myArticlesRenderVersion) return;
+
+    if (!articles.length) {
+      setMyArticlesMessage(
+        "还没有文章。粘贴或导入 TXT 后，点击“生成可点击文章”会自动保存到这里。",
+        "empty"
+      );
+      return;
+    }
+
+    const fragment = document.createDocumentFragment();
+    articles.forEach(article => fragment.appendChild(createMyArticleListItem(article)));
+    box.dataset.state = "ready";
+    box.replaceChildren(fragment);
+  } catch (error) {
+    if (renderVersion !== myArticlesRenderVersion) return;
+    setMyArticlesMessage(
+      `文章读取失败：${error.message || "未知错误"}`,
+      "error",
+      true
+    );
+  }
+}
+
+function openMyArticles() {
+  document.getElementById("myArticlesModal")?.classList.add("show");
+  return renderMyArticles();
+}
+
+async function openSavedArticle(articleId) {
+  if (!confirmReplacingUnsavedDraft()) return false;
+
+  try {
+    const library = window.LingoFlowArticleLibrary;
+    if (!library) throw new Error("文章数据层未加载，请刷新页面后重试。");
+
+    const article = await library.getArticle(articleId);
+    if (!article || article.deletedAt) throw new Error("这篇文章已经不存在。");
+
+    const openedArticle = await library.updateArticleReading(article.id, {
+      lastReadAt: new Date().toISOString()
+    });
+
+    speechSynthesis.cancel();
+    hidePhraseSelectionToolbar(true);
+    closeWordCard();
+    resetTxtImportUI();
+
+    activeArticleId = openedArticle.id;
+    currentArticle = openedArticle;
+    articleDraftMode = "active";
+    draftSource = getArticleSource(openedArticle);
+
+    closeModal("myArticlesModal");
+    renderArticleText(openedArticle.content);
+    return true;
+  } catch (error) {
+    alert(`无法打开文章：${error.message || "未知错误"}`);
+    return false;
+  }
+}
+
+function startNewDraftFromMyArticles() {
+  if (!confirmReplacingUnsavedDraft()) return false;
+  closeModal("myArticlesModal");
+  startNewArticleDraft();
+  return true;
+}
+
 function deriveArticleTitle(text, source) {
   if (source.sourceType === "txt" && source.sourceTitle) {
     const filenameTitle = source.sourceTitle.replace(/\.txt$/i, "").trim();
@@ -5400,6 +5657,7 @@ document.addEventListener("keydown", function(event) {
     closeModal("readingSettingsModal");
     closeModal("helpModal");
     closeModal("changelogModal");
+    closeModal("myArticlesModal");
     hideSearchSuggestions();
   }
 
