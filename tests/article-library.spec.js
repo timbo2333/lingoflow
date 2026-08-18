@@ -48,6 +48,9 @@ async function fillDraft(page, text) {
 async function startReading(page) {
   await page.getByRole("button", { name: "生成可点击文章" }).click();
   await expect(page.locator("#readerLayout")).toHaveClass(/show/);
+  await expect.poll(async () => (
+    page.evaluate(() => Boolean(calculateArticleReadingSnapshot()))
+  )).toBe(true);
 }
 
 async function openMyArticles(page) {
@@ -58,6 +61,27 @@ async function openMyArticles(page) {
 
 function getMyArticleItem(page, title) {
   return page.locator(".myArticleItem").filter({ hasText: title });
+}
+
+function makeLongArticle(title, paragraphCount = 48) {
+  const paragraphs = Array.from({ length: paragraphCount }, (_, index) => (
+    `Paragraph ${index + 1} contains enough English words to create a stable reading ` +
+    `position across several wrapped lines in the article reader. ` +
+    `The reader should remember this paragraph after the page is reopened.`
+  ));
+  return [title, ...paragraphs].join("\n");
+}
+
+async function scrollArticleToProgress(page, progress) {
+  await page.evaluate(value => {
+    const metrics = getArticleReadingMetrics();
+    if (!metrics) throw new Error("Article reading metrics are unavailable.");
+    window.scrollTo({
+      top: metrics.startY + metrics.scrollRange * value,
+      behavior: "auto"
+    });
+  }, progress);
+  await page.waitForTimeout(50);
 }
 
 async function uploadTxt(page, filename, content) {
@@ -459,4 +483,394 @@ test("刷新页面后仍可从我的文章重新打开旧文章", async ({ page 
   const articles = await getArticles(page);
   expect(articles).toHaveLength(1);
   expect(articles[0].id).toBe(before.id);
+});
+
+test("滚动后自动保存正文范围 progress、paragraphIndex 和 reading.updatedAt", async ({ page }) => {
+  const content = makeLongArticle("Automatic reading progress");
+  await fillDraft(page, content);
+  await startReading(page);
+
+  const [before] = await getArticles(page);
+  await scrollArticleToProgress(page, 0.46);
+
+  await expect.poll(async () => {
+    const [article] = await getArticles(page);
+    return article.reading.updatedAt;
+  }, { timeout: 2500 }).not.toBeNull();
+
+  const [after] = await getArticles(page);
+  expect(after.reading.progress).toBeGreaterThan(0.35);
+  expect(after.reading.progress).toBeLessThan(0.57);
+  expect(after.reading.progress).toBeGreaterThanOrEqual(0);
+  expect(after.reading.progress).toBeLessThanOrEqual(1);
+  expect(after.reading.paragraphIndex).toBeGreaterThan(0);
+  expect(after.lastReadAt).toBe(before.lastReadAt);
+  expect(after.updatedAt).toBe(before.updatedAt);
+  expect(after.title).toBe(before.title);
+  expect(after.content).toBe(before.content);
+
+  const paragraphMarkers = await page.locator("#article .word").evaluateAll(words => ({
+    total: words.length,
+    marked: words.filter(word => word.hasAttribute("data-paragraph-index")).length
+  }));
+  expect(paragraphMarkers.marked).toBe(paragraphMarkers.total);
+});
+
+test("正文外页面高度变化不会改变文章 progress", async ({ page }) => {
+  await fillDraft(page, makeLongArticle("Article-only progress"));
+  await startReading(page);
+  await scrollArticleToProgress(page, 0.41);
+
+  const before = await page.evaluate(() => calculateArticleReadingSnapshot().progress);
+  const documentHeightBefore = await page.evaluate(() => document.documentElement.scrollHeight);
+
+  await page.evaluate(() => {
+    const extra = document.createElement("div");
+    extra.id = "testOutsideArticleHeight";
+    extra.style.height = "4000px";
+    document.body.appendChild(extra);
+  });
+
+  const documentHeightAfter = await page.evaluate(() => document.documentElement.scrollHeight);
+  const after = await page.evaluate(() => calculateArticleReadingSnapshot().progress);
+  expect(documentHeightAfter).toBeGreaterThan(documentHeightBefore + 3000);
+  expect(after).toBeCloseTo(before, 5);
+});
+
+test("连续滚动由 700ms trailing debounce 合并为一次进度写入", async ({ page }) => {
+  await fillDraft(page, makeLongArticle("Debounced progress"));
+  await startReading(page);
+
+  await page.evaluate(() => {
+    const original = window.LingoFlowArticleLibrary;
+    window.__readingProgressWrites = [];
+    window.LingoFlowArticleLibrary = Object.freeze({
+      ...original,
+      updateArticleReading: async (id, changes) => {
+        if (Object.prototype.hasOwnProperty.call(changes, "progress")) {
+          window.__readingProgressWrites.push({ id, changes: { ...changes } });
+        }
+        return await original.updateArticleReading(id, changes);
+      }
+    });
+  });
+
+  await scrollArticleToProgress(page, 0.18);
+  await page.waitForTimeout(120);
+  await scrollArticleToProgress(page, 0.31);
+  await page.waitForTimeout(120);
+  await scrollArticleToProgress(page, 0.44);
+
+  await expect.poll(() => page.evaluate(() => window.__readingProgressWrites.length), {
+    timeout: 2500
+  }).toBe(1);
+  await page.waitForTimeout(250);
+  expect(await page.evaluate(() => window.__readingProgressWrites.length)).toBe(1);
+
+  const [article] = await getArticles(page);
+  expect(article.reading.progress).toBeGreaterThan(0.35);
+});
+
+test("debounce 未结束时重新编辑和新草稿都会强制 flush", async ({ page }) => {
+  await fillDraft(page, makeLongArticle("Flush before transitions"));
+  await startReading(page);
+  const [created] = await getArticles(page);
+
+  await scrollArticleToProgress(page, 0.29);
+  await page.evaluate(() => window.scrollTo({ top: 0, behavior: "auto" }));
+  await page.waitForTimeout(100);
+  await page.getByRole("button", { name: /重新编辑文章/ }).click();
+  await expect(page.locator("#inputText")).toBeVisible();
+
+  await expect.poll(async () => {
+    const articles = await getArticles(page);
+    return articles.find(article => article.id === created.id).reading.progress;
+  }).toBeGreaterThan(0.2);
+
+  await startReading(page);
+  await scrollArticleToProgress(page, 0.54);
+  await page.evaluate(() => window.scrollTo({ top: 0, behavior: "auto" }));
+  await page.waitForTimeout(100);
+  await page.getByRole("button", { name: /新草稿/ }).click();
+  await expect(page.locator("#inputText")).toBeVisible();
+  await expect(page.locator("#inputText")).toHaveValue("");
+
+  await expect.poll(async () => {
+    const articles = await getArticles(page);
+    return articles.find(article => article.id === created.id).reading.progress;
+  }).toBeGreaterThan(0.45);
+});
+
+test("打开我的文章和切换文章前会 flush 当前阅读进度", async ({ page }) => {
+  await fillDraft(page, makeLongArticle("Current article to flush"));
+  await startReading(page);
+  const [current] = await getArticles(page);
+
+  await page.evaluate(async () => {
+    await window.LingoFlowArticleLibrary.createArticle({
+      title: "Target saved article",
+      content: "Target saved article content.",
+      sourceType: "paste"
+    });
+  });
+
+  await scrollArticleToProgress(page, 0.48);
+  await page.evaluate(() => window.scrollTo({ top: 0, behavior: "auto" }));
+  await page.waitForTimeout(100);
+  await openMyArticles(page);
+
+  await expect(getMyArticleItem(page, "Current article to flush").locator(".myArticleMeta"))
+    .toContainText(/阅读 [1-9][0-9]?%/);
+
+  await getMyArticleItem(page, "Target saved article")
+    .getByRole("button", { name: "打开文章：Target saved article" })
+    .click();
+  await expect(page.locator("#myArticlesModal")).not.toHaveClass(/show/);
+  await expect(page.locator("#article")).toContainText("Target saved article content.");
+
+  const articles = await getArticles(page);
+  const flushed = articles.find(article => article.id === current.id);
+  expect(flushed.reading.updatedAt).not.toBeNull();
+  expect(flushed.reading.progress).toBeGreaterThan(0.4);
+});
+
+test("回到顶部超过 debounce 后通过真实 UI 重开仍恢复最远进度", async ({ page }) => {
+  await fillDraft(page, makeLongArticle("Keep farthest progress after toolbar navigation", 70));
+  await startReading(page);
+  const [created] = await getArticles(page);
+
+  await scrollArticleToProgress(page, 0.6);
+  await expect.poll(async () => {
+    const articles = await getArticles(page);
+    return articles.find(article => article.id === created.id).reading.progress;
+  }, { timeout: 2500 }).toBeGreaterThan(0.55);
+
+  await page.evaluate(() => window.scrollTo({ top: 0, behavior: "auto" }));
+  await page.waitForTimeout(850);
+
+  const [afterTop] = await getArticles(page);
+  expect(afterTop.reading.progress).toBeGreaterThan(0.55);
+
+  await openMyArticles(page);
+  await getMyArticleItem(page, "Keep farthest progress after toolbar navigation")
+    .getByRole("button", {
+      name: "打开文章：Keep farthest progress after toolbar navigation"
+    })
+    .click();
+  await expect(page.locator("#myArticlesModal")).not.toHaveClass(/show/);
+
+  await expect.poll(() => page.evaluate(() => (
+    calculateArticleReadingSnapshot()?.progress || 0
+  ))).toBeGreaterThan(0.5);
+
+  const [reopened] = await getArticles(page);
+  expect(reopened.reading.progress).toBeGreaterThan(0.55);
+});
+
+test("持久化进度只前进，视觉进度仍可随向上回读下降", async ({ page }) => {
+  await fillDraft(page, makeLongArticle("Farthest progress and live UI", 70));
+  await startReading(page);
+
+  await scrollArticleToProgress(page, 0.6);
+  await expect.poll(async () => (await getArticles(page))[0].reading.progress, {
+    timeout: 2500
+  }).toBeGreaterThan(0.55);
+
+  await scrollArticleToProgress(page, 0.8);
+  await expect.poll(async () => (await getArticles(page))[0].reading.progress, {
+    timeout: 2500
+  }).toBeGreaterThan(0.75);
+  const [atEighty] = await getArticles(page);
+
+  await scrollArticleToProgress(page, 0.3);
+  await page.waitForTimeout(850);
+
+  const currentView = await page.evaluate(() => ({
+    progress: calculateArticleReadingSnapshot().progress,
+    progressBarPercent: Number.parseFloat(
+      document.getElementById("readingProgress").style.width
+    )
+  }));
+  const [afterReadingBack] = await getArticles(page);
+
+  expect(currentView.progress).toBeGreaterThan(0.25);
+  expect(currentView.progress).toBeLessThan(0.35);
+  expect(currentView.progressBarPercent).toBeGreaterThan(25);
+  expect(currentView.progressBarPercent).toBeLessThan(35);
+  expect(afterReadingBack.reading.progress).toBe(atEighty.reading.progress);
+  expect(afterReadingBack.reading.paragraphIndex).toBe(atEighty.reading.paragraphIndex);
+});
+
+test("刷新后从我的文章打开会恢复保存的 paragraphIndex", async ({ page }) => {
+  await fillDraft(page, makeLongArticle("Restore saved paragraph", 60));
+  await startReading(page);
+  await scrollArticleToProgress(page, 0.52);
+
+  await expect.poll(async () => {
+    const [article] = await getArticles(page);
+    return article.reading.updatedAt;
+  }, { timeout: 2500 }).not.toBeNull();
+  const [saved] = await getArticles(page);
+  expect(saved.reading.paragraphIndex).toBeGreaterThan(0);
+
+  await page.reload();
+  await expect(page.locator("#inputText")).toBeVisible();
+  await openMyArticles(page);
+  await getMyArticleItem(page, "Restore saved paragraph")
+    .getByRole("button", { name: "打开文章：Restore saved paragraph" })
+    .click();
+  await expect(page.locator("#myArticlesModal")).not.toHaveClass(/show/);
+  await expect.poll(() => page.evaluate(() => Boolean(calculateArticleReadingSnapshot())))
+    .toBe(true);
+
+  const restored = await page.evaluate(paragraphIndex => {
+    const word = document.querySelector(
+      `.word[data-paragraph-index="${paragraphIndex}"]`
+    );
+    return {
+      distanceFromAnchor: word
+        ? Math.abs(word.getBoundingClientRect().top - getReadingAnchorOffset())
+        : null,
+      readingUpdatedAt: currentArticle?.reading?.updatedAt || null
+    };
+  }, saved.reading.paragraphIndex);
+
+  expect(restored.distanceFromAnchor).not.toBeNull();
+  expect(restored.distanceFromAnchor).toBeLessThan(50);
+  expect(restored.readingUpdatedAt).toBe(saved.reading.updatedAt);
+
+  const [afterOpen] = await getArticles(page);
+  expect(afterOpen.reading.updatedAt).toBe(saved.reading.updatedAt);
+});
+
+test("paragraphIndex 无效时在不同 viewport 和字体下使用 progress 恢复", async ({ page }) => {
+  await fillDraft(page, makeLongArticle("Progress fallback after layout change", 60));
+  await startReading(page);
+  const [created] = await getArticles(page);
+
+  await page.evaluate(async id => {
+    await window.LingoFlowArticleLibrary.updateArticleReading(id, {
+      progress: 0.63,
+      paragraphIndex: 9999,
+      updatedAt: "2026-08-18T04:00:00.000Z"
+    });
+    const prefs = JSON.parse(
+      localStorage.getItem("EnglishReaderV052ReadingPrefs") || "{}"
+    );
+    localStorage.setItem("EnglishReaderV052ReadingPrefs", JSON.stringify({
+      ...prefs,
+      fontSize: "26",
+      lineHeight: "2.2"
+    }));
+  }, created.id);
+
+  await page.setViewportSize({ width: 620, height: 760 });
+  await page.reload();
+  await openMyArticles(page);
+  await getMyArticleItem(page, "Progress fallback after layout change")
+    .getByRole("button", { name: "打开文章：Progress fallback after layout change" })
+    .click();
+  await expect.poll(() => page.evaluate(() => Boolean(calculateArticleReadingSnapshot())))
+    .toBe(true);
+
+  const restoredProgress = await page.evaluate(() => (
+    calculateArticleReadingSnapshot().progress
+  ));
+  expect(restoredProgress).toBeGreaterThan(0.57);
+  expect(restoredProgress).toBeLessThan(0.69);
+});
+
+test("我的文章显示未开始和实际阅读百分比", async ({ page }) => {
+  await page.evaluate(async () => {
+    const library = window.LingoFlowArticleLibrary;
+    await library.createArticle({
+      title: "Never started article",
+      content: "Never started content.",
+      sourceType: "paste"
+    });
+    const inProgress = await library.createArticle({
+      title: "Forty two percent article",
+      content: "Forty two percent content.",
+      sourceType: "paste"
+    });
+    const nearEnd = await library.createArticle({
+      title: "Near end article",
+      content: "Near end content.",
+      sourceType: "paste"
+    });
+    await library.updateArticleReading(inProgress.id, {
+      progress: 0.42,
+      paragraphIndex: 1,
+      updatedAt: "2026-08-18T05:00:00.000Z"
+    });
+    await library.updateArticleReading(nearEnd.id, {
+      progress: 0.97,
+      paragraphIndex: 2,
+      updatedAt: "2026-08-18T05:10:00.000Z"
+    });
+  });
+
+  await openMyArticles(page);
+  await expect(getMyArticleItem(page, "Never started article").locator(".myArticleMeta"))
+    .toContainText("未开始");
+  await expect(getMyArticleItem(page, "Forty two percent article").locator(".myArticleMeta"))
+    .toContainText("阅读 42%");
+  await expect(getMyArticleItem(page, "Near end article").locator(".myArticleMeta"))
+    .toContainText("阅读 97%");
+  await expect(page.locator("#myArticlesList")).not.toContainText("已完成");
+});
+
+test("标题更新与排队中的阅读进度写入会同时保留", async ({ page }) => {
+  await fillDraft(page, makeLongArticle("Concurrent title and progress"));
+  await startReading(page);
+  const [created] = await getArticles(page);
+  await scrollArticleToProgress(page, 0.43);
+
+  await page.evaluate(async id => {
+    const progressSave = flushReadingProgress();
+    const titleSave = window.LingoFlowArticleLibrary.updateArticle(id, {
+      title: "Title preserved with progress"
+    });
+    await Promise.all([progressSave, titleSave]);
+  }, created.id);
+
+  const [updated] = await getArticles(page);
+  expect(updated.id).toBe(created.id);
+  expect(updated.title).toBe("Title preserved with progress");
+  expect(updated.content).toBe(created.content);
+  expect(updated.reading.updatedAt).not.toBeNull();
+  expect(updated.reading.progress).toBeGreaterThan(0.35);
+});
+
+test("visibilitychange hidden 和 pagehide 会 best-effort flush", async ({ page }) => {
+  await fillDraft(page, makeLongArticle("Lifecycle flush"));
+  await startReading(page);
+  const [created] = await getArticles(page);
+
+  await scrollArticleToProgress(page, 0.27);
+  await page.evaluate(() => {
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => "hidden"
+    });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+
+  await expect.poll(async () => {
+    const articles = await getArticles(page);
+    return articles[0]?.reading?.progress || 0;
+  }).toBeGreaterThan(0.2);
+
+  const [afterVisibility] = await getArticles(page);
+  await scrollArticleToProgress(page, 0.56);
+  await page.evaluate(() => window.dispatchEvent(new Event("pagehide")));
+
+  await expect.poll(async () => {
+    const [article] = await getArticles(page);
+    return article.reading.progress;
+  }).toBeGreaterThan(afterVisibility.reading.progress + 0.15);
+
+  const [afterPageHide] = await getArticles(page);
+  expect(afterPageHide.id).toBe(created.id);
+  expect(afterPageHide.reading.progress).toBeLessThanOrEqual(1);
 });

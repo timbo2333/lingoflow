@@ -3407,6 +3407,7 @@ const PHRASE_MAX_WORDS = 20;
 const SENTENCE_ABBREVIATIONS = new Set([
   "mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st", "vs", "e.g", "i.e"
 ]);
+const READING_PROGRESS_DEBOUNCE_MS = 700;
 let currentArticleText = "";
 let activeArticleId = null;
 let currentArticle = null;
@@ -3414,6 +3415,12 @@ let articleDraftMode = "new";
 let draftSource = { sourceType: "paste" };
 let articleSavePromise = null;
 let myArticlesRenderVersion = 0;
+let readingProgressSaveTimer = null;
+let readingProgressUIFrame = null;
+let readingProgressWriteQueue = Promise.resolve(null);
+let readingPositionRenderToken = 0;
+let suppressReadingProgressSave = false;
+let readingProgressSession = null;
 let phraseSelectionSnapshot = null;
 let phraseSelectionTimer = null;
 let phraseSelectionFeedbackTimer = null;
@@ -3839,7 +3846,7 @@ async function loadTxtFile(file) {
   }
 
   const text = await file.text();
-  startNewArticleDraft({
+  await startNewArticleDraft({
     sourceType: "txt",
     sourceTitle: file.name
   });
@@ -3926,22 +3933,217 @@ function setupTextDropZone() {
   });
 }
 
+function clampReadingProgress(value) {
+  const progress = Number(value);
+  if (!Number.isFinite(progress)) return 0;
+  return Math.min(1, Math.max(0, progress));
+}
+
+function getReadingAnchorOffset() {
+  return Math.min(240, Math.max(96, window.innerHeight * 0.28));
+}
+
+function getArticleReadingMetrics() {
+  const layout = document.getElementById("readerLayout");
+  const article = document.getElementById("article");
+  if (!layout?.classList.contains("show") || !article) return null;
+
+  const rect = article.getBoundingClientRect();
+  if (!Number.isFinite(rect.height) || rect.height <= 0) return null;
+
+  const articleTop = window.scrollY + rect.top;
+  const articleBottom = articleTop + rect.height;
+  const anchorOffset = getReadingAnchorOffset();
+  const startY = articleTop - anchorOffset;
+  const endY = Math.max(startY, articleBottom - window.innerHeight);
+  const scrollRange = Math.max(1, endY - startY);
+
+  return {
+    article,
+    articleTop,
+    articleBottom,
+    anchorOffset,
+    startY,
+    endY,
+    scrollRange,
+    progress: clampReadingProgress((window.scrollY - startY) / scrollRange)
+  };
+}
+
+function getParagraphIndexAtReadingAnchor(article, anchorOffset) {
+  const words = article.querySelectorAll(".word[data-paragraph-index]");
+  if (!words.length) return 0;
+
+  let closestIndex = 0;
+  let closestDistance = Infinity;
+
+  for (const word of words) {
+    const rect = word.getBoundingClientRect();
+    let distance = 0;
+    if (anchorOffset < rect.top) distance = rect.top - anchorOffset;
+    else if (anchorOffset > rect.bottom) distance = anchorOffset - rect.bottom;
+
+    if (distance < closestDistance) {
+      closestDistance = distance;
+      closestIndex = Number(word.dataset.paragraphIndex) || 0;
+      if (distance === 0) break;
+    }
+  }
+
+  return Math.max(0, Math.trunc(closestIndex));
+}
+
+function calculateArticleReadingSnapshot() {
+  const metrics = getArticleReadingMetrics();
+  if (!metrics || !activeArticleId || suppressReadingProgressSave) return null;
+
+  return {
+    articleId: activeArticleId,
+    progress: Number(metrics.progress.toFixed(6)),
+    paragraphIndex: getParagraphIndexAtReadingAnchor(
+      metrics.article,
+      metrics.anchorOffset
+    )
+  };
+}
+
 function updateReadingProgress() {
   const layout = document.getElementById("readerLayout");
-  const progress = document.getElementById("readingProgress");
+  const progressBar = document.getElementById("readingProgress");
   const topButton = document.getElementById("backToTop");
 
   if (!layout?.classList.contains("show")) {
-    if (progress) progress.style.width = "0%";
+    if (progressBar) progressBar.style.width = "0%";
     if (topButton) topButton.classList.remove("show");
     return;
   }
 
-  const maxScroll = Math.max(1, document.documentElement.scrollHeight - window.innerHeight);
-  const percent = Math.min(100, Math.max(0, window.scrollY / maxScroll * 100));
+  const metrics = getArticleReadingMetrics();
+  const percent = (metrics?.progress || 0) * 100;
 
-  if (progress) progress.style.width = `${percent}%`;
+  if (progressBar) progressBar.style.width = `${percent}%`;
   if (topButton) topButton.classList.toggle("show", window.scrollY > 500);
+}
+
+function requestReadingProgressUIUpdate() {
+  if (readingProgressUIFrame !== null) return;
+  readingProgressUIFrame = requestAnimationFrame(() => {
+    readingProgressUIFrame = null;
+    updateReadingProgress();
+  });
+}
+
+function cancelScheduledReadingSave() {
+  clearTimeout(readingProgressSaveTimer);
+  readingProgressSaveTimer = null;
+}
+
+function initializeReadingProgressSession(article) {
+  cancelScheduledReadingSave();
+
+  if (!article?.id) {
+    readingProgressSession = null;
+    return;
+  }
+
+  const progress = clampReadingProgress(article.reading?.progress);
+  readingProgressSession = {
+    articleId: article.id,
+    farthest: {
+      articleId: article.id,
+      progress,
+      paragraphIndex: Math.max(
+        0,
+        Math.trunc(Number(article.reading?.paragraphIndex) || 0)
+      )
+    },
+    enqueuedProgress: progress,
+    dirty: false
+  };
+}
+
+function clearReadingProgressSession() {
+  cancelScheduledReadingSave();
+  readingProgressSession = null;
+}
+
+function captureFarthestReadingSnapshot(candidate) {
+  const session = readingProgressSession;
+  if (!candidate || !session || candidate.articleId !== session.articleId) return false;
+  if (candidate.progress <= session.farthest.progress) return false;
+
+  session.farthest = { ...candidate };
+  session.dirty = true;
+  return true;
+}
+
+function queueReadingProgressWrite(snapshot) {
+  const reading = {
+    progress: clampReadingProgress(snapshot.progress),
+    paragraphIndex: Math.max(0, Math.trunc(snapshot.paragraphIndex)),
+    updatedAt: new Date().toISOString()
+  };
+
+  readingProgressWriteQueue = readingProgressWriteQueue
+    .then(async () => {
+      const library = window.LingoFlowArticleLibrary;
+      if (!library) throw new Error("文章数据层未加载，阅读进度无法保存。");
+
+      const updatedArticle = await library.updateArticleReading(snapshot.articleId, reading);
+      if (activeArticleId === updatedArticle.id && currentArticle?.id === updatedArticle.id) {
+        currentArticle = {
+          ...currentArticle,
+          reading: updatedArticle.reading
+        };
+      }
+      return updatedArticle;
+    })
+    .catch(error => {
+      const session = readingProgressSession;
+      if (session?.articleId === snapshot.articleId &&
+          session.enqueuedProgress === snapshot.progress) {
+        session.enqueuedProgress = clampReadingProgress(currentArticle?.reading?.progress);
+        session.dirty = session.farthest.progress > session.enqueuedProgress;
+      }
+      console.error("Reading progress save error:", error);
+      return null;
+    });
+
+  return readingProgressWriteQueue;
+}
+
+function flushReadingProgress() {
+  cancelScheduledReadingSave();
+
+  const session = readingProgressSession;
+  if (!session?.dirty) return readingProgressWriteQueue;
+
+  const snapshot = { ...session.farthest };
+  if (snapshot.progress <= session.enqueuedProgress) {
+    session.dirty = false;
+    return readingProgressWriteQueue;
+  }
+
+  session.enqueuedProgress = snapshot.progress;
+  session.dirty = false;
+  return queueReadingProgressWrite(snapshot);
+}
+
+function scheduleReadingProgressSave() {
+  if (suppressReadingProgressSave || !readingProgressSession?.dirty) return;
+
+  cancelScheduledReadingSave();
+  readingProgressSaveTimer = setTimeout(() => {
+    readingProgressSaveTimer = null;
+    void flushReadingProgress();
+  }, READING_PROGRESS_DEBOUNCE_MS);
+}
+
+function handleReadingScroll() {
+  requestReadingProgressUIUpdate();
+  const candidate = calculateArticleReadingSnapshot();
+  captureFarthestReadingSnapshot(candidate);
+  scheduleReadingProgressSave();
 }
 
 function checkBackupReminder() {
@@ -3989,7 +4191,15 @@ document.addEventListener("keydown", event => {
   }
 });
 
-window.addEventListener("scroll", updateReadingProgress, { passive: true });
+window.addEventListener("scroll", handleReadingScroll, { passive: true });
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") void flushReadingProgress();
+});
+
+window.addEventListener("pagehide", () => {
+  void flushReadingProgress();
+});
 
 if (window.matchMedia) {
   window.matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change", () => {
@@ -5171,6 +5381,50 @@ function getArticleSourceLabel(article) {
   return "粘贴文本";
 }
 
+function getArticleReadingLabel(article) {
+  if (!article?.reading?.updatedAt) return "未开始";
+  const percent = Math.round(clampReadingProgress(article.reading.progress) * 100);
+  return `阅读 ${percent}%`;
+}
+
+function waitForReadingLayout() {
+  return new Promise(resolve => {
+    requestAnimationFrame(() => requestAnimationFrame(resolve));
+  });
+}
+
+async function restoreArticleReadingPosition(reading, renderToken) {
+  await waitForReadingLayout();
+  if (renderToken !== readingPositionRenderToken) return;
+
+  const metrics = getArticleReadingMetrics();
+  if (!metrics) {
+    suppressReadingProgressSave = false;
+    return;
+  }
+
+  const progress = clampReadingProgress(reading?.progress);
+  let targetY = metrics.startY + progress * metrics.scrollRange;
+  const paragraphIndex = Math.max(
+    0,
+    Math.trunc(Number(reading?.paragraphIndex) || 0)
+  );
+  const paragraphWord = reading?.updatedAt
+    ? metrics.article.querySelector(`.word[data-paragraph-index="${paragraphIndex}"]`)
+    : null;
+
+  if (paragraphWord) {
+    targetY = window.scrollY + paragraphWord.getBoundingClientRect().top - metrics.anchorOffset;
+  }
+
+  window.scrollTo({ top: Math.max(0, targetY), behavior: "auto" });
+  await waitForReadingLayout();
+  if (renderToken !== readingPositionRenderToken) return;
+
+  updateReadingProgress();
+  suppressReadingProgressSave = false;
+}
+
 function hasUnsavedArticleDraft() {
   const inputPanel = document.getElementById("inputPanel");
   const input = document.getElementById("inputText");
@@ -5268,7 +5522,9 @@ function createMyArticleListItem(article) {
 
   const meta = document.createElement("div");
   meta.className = "myArticleMeta";
-  meta.textContent = `${getArticleSourceLabel(article)} · 最近阅读：${formatLearningDate(article.lastReadAt)}`;
+  meta.textContent =
+    `${getArticleSourceLabel(article)} · ${getArticleReadingLabel(article)} · ` +
+    `最近阅读：${formatLearningDate(article.lastReadAt)}`;
   summary.append(title, meta);
 
   const editor = document.createElement("div");
@@ -5372,8 +5628,10 @@ async function renderMyArticles() {
   }
 }
 
-function openMyArticles() {
+async function openMyArticles() {
   document.getElementById("myArticlesModal")?.classList.add("show");
+  setMyArticlesMessage("正在读取文章…", "loading");
+  await flushReadingProgress();
   return renderMyArticles();
 }
 
@@ -5381,6 +5639,8 @@ async function openSavedArticle(articleId) {
   if (!confirmReplacingUnsavedDraft()) return false;
 
   try {
+    await flushReadingProgress();
+
     const library = window.LingoFlowArticleLibrary;
     if (!library) throw new Error("文章数据层未加载，请刷新页面后重试。");
 
@@ -5400,9 +5660,12 @@ async function openSavedArticle(articleId) {
     currentArticle = openedArticle;
     articleDraftMode = "active";
     draftSource = getArticleSource(openedArticle);
+    initializeReadingProgressSession(openedArticle);
 
     closeModal("myArticlesModal");
-    renderArticleText(openedArticle.content);
+    await renderArticleText(openedArticle.content, {
+      restoreReading: openedArticle.reading
+    });
     return true;
   } catch (error) {
     alert(`无法打开文章：${error.message || "未知错误"}`);
@@ -5410,10 +5673,10 @@ async function openSavedArticle(articleId) {
   }
 }
 
-function startNewDraftFromMyArticles() {
+async function startNewDraftFromMyArticles() {
   if (!confirmReplacingUnsavedDraft()) return false;
+  await startNewArticleDraft();
   closeModal("myArticlesModal");
-  startNewArticleDraft();
   return true;
 }
 
@@ -5474,9 +5737,12 @@ async function persistArticleDraft(text) {
   return await library.createArticle(getDraftArticlePayload(text));
 }
 
-function renderArticleText(text) {
+async function renderArticleText(text, options = {}) {
   const article = document.getElementById("article");
+  const renderToken = ++readingPositionRenderToken;
 
+  suppressReadingProgressSave = true;
+  cancelScheduledReadingSave();
   hidePhraseSelectionToolbar(true);
   currentArticleText = text;
   article.innerHTML = "";
@@ -5506,6 +5772,7 @@ function renderArticleText(text) {
     span.className = "word";
     span.textContent = piece;
     span.dataset.sentence = extractSentenceAt(text, match.index);
+    span.dataset.paragraphIndex = String(getArticleParagraphIndex(text, match.index));
 
     span.addEventListener("click", function(event) {
       if (consumePhraseSelectionWordClick()) {
@@ -5537,12 +5804,26 @@ function renderArticleText(text) {
   document.getElementById("readingToolbar").classList.add("show");
   document.getElementById("readerLayout").classList.add("show");
 
-  window.scrollTo({ top: 0, behavior: "smooth" });
+  if (options.restoreReading?.updatedAt) {
+    await restoreArticleReadingPosition(options.restoreReading, renderToken);
+    return;
+  }
+
+  window.scrollTo({ top: 0, behavior: "auto" });
+  await waitForReadingLayout();
+  if (renderToken !== readingPositionRenderToken) return;
+  updateReadingProgress();
+  suppressReadingProgressSave = false;
 }
 
 function generateArticle() {
   const input = document.getElementById("inputText");
   const text = input.value;
+  const restoreExistingReading = Boolean(
+    activeArticleId &&
+    currentArticle?.id === activeArticleId &&
+    articleDraftMode === "editing"
+  );
 
   if (!text.trim()) {
     alert("请先粘贴英文文章。");
@@ -5562,7 +5843,10 @@ function generateArticle() {
       currentArticle = savedArticle;
       articleDraftMode = "active";
       draftSource = getArticleSource(savedArticle);
-      renderArticleText(savedArticle.content);
+      initializeReadingProgressSession(savedArticle);
+      await renderArticleText(savedArticle.content, {
+        restoreReading: restoreExistingReading ? savedArticle.reading : null
+      });
       void requestPersistentStorageBestEffort();
       return savedArticle;
     } catch (error) {
@@ -5585,7 +5869,10 @@ function generateArticle() {
   return savePromise;
 }
 
-function editArticle() {
+async function editArticle() {
+  await flushReadingProgress();
+  readingPositionRenderToken += 1;
+  suppressReadingProgressSave = false;
   speechSynthesis.cancel();
   hidePhraseSelectionToolbar(true);
   closeWordCard();
@@ -5603,7 +5890,11 @@ function editArticle() {
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
-function startNewArticleDraft(source = { sourceType: "paste" }) {
+async function startNewArticleDraft(source = { sourceType: "paste" }) {
+  await flushReadingProgress();
+  clearReadingProgressSession();
+  readingPositionRenderToken += 1;
+  suppressReadingProgressSave = false;
   speechSynthesis.cancel();
   hidePhraseSelectionToolbar(true);
   closeWordCard();
@@ -5664,13 +5955,13 @@ document.addEventListener("keydown", function(event) {
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
     event.preventDefault();
     const search = document.getElementById("directSearchInput");
-    if (document.getElementById("inputPanel").style.display === "none") {
-      editArticle();
-    }
-    setTimeout(() => {
+    void (async () => {
+      if (document.getElementById("inputPanel").style.display === "none") {
+        await editArticle();
+      }
       search.focus();
       search.select();
       search.scrollIntoView({ behavior: "smooth", block: "center" });
-    }, 80);
+    })();
   }
 });
