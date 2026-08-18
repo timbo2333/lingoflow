@@ -675,6 +675,14 @@
     margin-bottom: 14px;
   }
 
+  .myArticlesSummary {
+    margin: -4px 0 14px;
+    color: #77777c;
+    font-size: 13px;
+    line-height: 1.6;
+    overflow-wrap: anywhere;
+  }
+
   .myArticlesList {
     display: grid;
     gap: 9px;
@@ -1505,6 +1513,7 @@
   body.darkMode .vocabMeta,
   body.darkMode .querySourceMeta,
   body.darkMode .favoriteDate,
+  body.darkMode .myArticlesSummary,
   body.darkMode .myArticleMeta {
     color: var(--app-muted);
   }

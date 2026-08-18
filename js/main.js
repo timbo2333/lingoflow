@@ -3408,6 +3408,8 @@ const SENTENCE_ABBREVIATIONS = new Set([
   "mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st", "vs", "e.g", "i.e"
 ]);
 const READING_PROGRESS_DEBOUNCE_MS = 700;
+const ARTICLE_NEAR_COMPLETE_PROGRESS = 0.80;
+const ARTICLE_COMPLETED_PROGRESS = 0.95;
 let currentArticleText = "";
 let activeArticleId = null;
 let currentArticle = null;
@@ -5383,10 +5385,63 @@ function getArticleSourceLabel(article) {
   return "粘贴文本";
 }
 
+function getArticleReadingStatus(article) {
+  const progress = clampReadingProgress(article?.reading?.progress);
+  const percent = Math.round(progress * 100);
+
+  if (progress === 0 && !article?.reading?.updatedAt) {
+    return { key: "not-started", label: "未开始", progress, percent };
+  }
+  if (progress >= ARTICLE_COMPLETED_PROGRESS) {
+    return { key: "completed", label: "已读完", progress, percent };
+  }
+  if (progress >= ARTICLE_NEAR_COMPLETE_PROGRESS) {
+    return { key: "near-complete", label: "接近读完", progress, percent };
+  }
+  return { key: "reading", label: "阅读中", progress, percent };
+}
+
 function getArticleReadingLabel(article) {
-  if (!article?.reading?.updatedAt) return "未开始";
-  const percent = Math.round(clampReadingProgress(article.reading.progress) * 100);
-  return `阅读 ${percent}%`;
+  const status = getArticleReadingStatus(article);
+  return status.key === "not-started"
+    ? status.label
+    : `${status.label} · ${status.percent}%`;
+}
+
+function calculateArticleReadingSummary(articles) {
+  const counts = {
+    "not-started": 0,
+    reading: 0,
+    "near-complete": 0,
+    completed: 0
+  };
+  const activeArticles = Array.isArray(articles)
+    ? articles.filter(article => !article?.deletedAt)
+    : [];
+
+  activeArticles.forEach(article => {
+    counts[getArticleReadingStatus(article).key] += 1;
+  });
+
+  return { total: activeArticles.length, counts };
+}
+
+function updateMyArticlesSummary(articles, deletedView = false) {
+  const summaryElement = document.getElementById("myArticlesSummary");
+  if (!summaryElement) return;
+
+  if (deletedView || !Array.isArray(articles)) {
+    summaryElement.hidden = true;
+    summaryElement.textContent = "";
+    return;
+  }
+
+  const summary = calculateArticleReadingSummary(articles);
+  summaryElement.textContent =
+    `共 ${summary.total} 篇 · 未开始 ${summary.counts["not-started"]} · ` +
+    `阅读中 ${summary.counts.reading} · 接近读完 ${summary.counts["near-complete"]} · ` +
+    `已读完 ${summary.counts.completed}`;
+  summaryElement.hidden = false;
 }
 
 function waitForReadingLayout() {
@@ -5459,6 +5514,7 @@ function updateMyArticlesViewUI() {
   }
   if (viewButton) viewButton.textContent = deletedView ? "← 我的文章" : "最近删除";
   if (newDraftButton) newDraftButton.hidden = deletedView;
+  if (deletedView) updateMyArticlesSummary(null, true);
 }
 
 function toggleMyArticlesView() {
@@ -5598,6 +5654,7 @@ function createMyArticleListItem(article, options = {}) {
   const item = document.createElement("div");
   item.className = "myArticleItem";
   item.dataset.articleId = article.id;
+  item.dataset.readingStatus = getArticleReadingStatus(article).key;
 
   const main = document.createElement("div");
   main.className = "myArticleMain";
@@ -5718,6 +5775,7 @@ async function renderMyArticles() {
   const renderVersion = ++myArticlesRenderVersion;
   const renderView = myArticlesView;
   const deletedView = renderView === "deleted";
+  updateMyArticlesSummary(null, deletedView);
   setMyArticlesMessage("正在读取文章…", "loading");
   box.dataset.view = renderView;
 
@@ -5727,6 +5785,8 @@ async function renderMyArticles() {
 
     const articles = await library.listArticles(deletedView ? { deletedOnly: true } : {});
     if (renderVersion !== myArticlesRenderVersion || renderView !== myArticlesView) return;
+
+    updateMyArticlesSummary(articles, deletedView);
 
     if (!articles.length) {
       setMyArticlesMessage(

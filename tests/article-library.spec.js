@@ -315,6 +315,9 @@ test("我的文章空状态可以创建新草稿且不会提前落库", async ({
 
   await expect(page.locator("#myArticlesList")).toHaveAttribute("data-state", "empty");
   await expect(page.locator("#myArticlesList")).toContainText("还没有文章");
+  await expect(page.locator("#myArticlesSummary")).toHaveText(
+    "共 0 篇 · 未开始 0 · 阅读中 0 · 接近读完 0 · 已读完 0"
+  );
 
   await page.locator("#newDraftFromArticlesButton").click();
   await expect(page.locator("#myArticlesModal")).not.toHaveClass(/show/);
@@ -627,7 +630,7 @@ test("打开我的文章和切换文章前会 flush 当前阅读进度", async (
   await openMyArticles(page);
 
   await expect(getMyArticleItem(page, "Current article to flush").locator(".myArticleMeta"))
-    .toContainText(/阅读 [1-9][0-9]?%/);
+    .toContainText(/阅读中 · [1-9][0-9]?%/);
 
   await getMyArticleItem(page, "Target saved article")
     .getByRole("button", { name: "打开文章：Target saved article" })
@@ -787,7 +790,7 @@ test("paragraphIndex 无效时在不同 viewport 和字体下使用 progress 恢
   expect(restoredProgress).toBeLessThan(0.69);
 });
 
-test("我的文章显示未开始和实际阅读百分比", async ({ page }) => {
+test("我的文章显示统一阅读状态和实际百分比", async ({ page }) => {
   await page.evaluate(async () => {
     const library = window.LingoFlowArticleLibrary;
     await library.createArticle({
@@ -800,6 +803,11 @@ test("我的文章显示未开始和实际阅读百分比", async ({ page }) => 
       content: "Forty two percent content.",
       sourceType: "paste"
     });
+    const almostFinished = await library.createArticle({
+      title: "Eighty eight percent article",
+      content: "Eighty eight percent content.",
+      sourceType: "paste"
+    });
     const nearEnd = await library.createArticle({
       title: "Near end article",
       content: "Near end content.",
@@ -810,21 +818,36 @@ test("我的文章显示未开始和实际阅读百分比", async ({ page }) => 
       paragraphIndex: 1,
       updatedAt: "2026-08-18T05:00:00.000Z"
     });
+    await library.updateArticleReading(almostFinished.id, {
+      progress: 0.88,
+      paragraphIndex: 2,
+      updatedAt: "2026-08-18T05:05:00.000Z"
+    });
     await library.updateArticleReading(nearEnd.id, {
       progress: 0.97,
-      paragraphIndex: 2,
+      paragraphIndex: 3,
       updatedAt: "2026-08-18T05:10:00.000Z"
     });
   });
 
   await openMyArticles(page);
-  await expect(getMyArticleItem(page, "Never started article").locator(".myArticleMeta"))
+  const notStarted = getMyArticleItem(page, "Never started article");
+  const reading = getMyArticleItem(page, "Forty two percent article");
+  const nearComplete = getMyArticleItem(page, "Eighty eight percent article");
+  const completed = getMyArticleItem(page, "Near end article");
+
+  await expect(notStarted.locator(".myArticleMeta"))
     .toContainText("未开始");
-  await expect(getMyArticleItem(page, "Forty two percent article").locator(".myArticleMeta"))
-    .toContainText("阅读 42%");
-  await expect(getMyArticleItem(page, "Near end article").locator(".myArticleMeta"))
-    .toContainText("阅读 97%");
-  await expect(page.locator("#myArticlesList")).not.toContainText("已完成");
+  await expect(reading.locator(".myArticleMeta"))
+    .toContainText("阅读中 · 42%");
+  await expect(nearComplete.locator(".myArticleMeta"))
+    .toContainText("接近读完 · 88%");
+  await expect(completed.locator(".myArticleMeta"))
+    .toContainText("已读完 · 97%");
+  await expect(notStarted).toHaveAttribute("data-reading-status", "not-started");
+  await expect(reading).toHaveAttribute("data-reading-status", "reading");
+  await expect(nearComplete).toHaveAttribute("data-reading-status", "near-complete");
+  await expect(completed).toHaveAttribute("data-reading-status", "completed");
 });
 
 test("标题更新与排队中的阅读进度写入会同时保留", async ({ page }) => {
@@ -1193,4 +1216,219 @@ test("标题编辑与软删除并发时两项局部更新都保留", async ({ pa
   expect(article.deletedAt).toBe("2026-08-18T08:00:00.000Z");
   expect(article.content).toBe("Concurrent updates must preserve article data.");
   expect((await getArticles(page))).toHaveLength(1);
+});
+
+test("阅读状态公共函数统一处理阈值、clamp 和旧数据", async ({ page }) => {
+  const statuses = await page.evaluate(() => {
+    const read = reading => getArticleReadingStatus({ reading });
+    return {
+      negative: read({ progress: -0.5, updatedAt: null }),
+      notStarted: read({ progress: 0, updatedAt: null }),
+      zeroStarted: read({ progress: 0, updatedAt: "2026-08-18T09:00:00.000Z" }),
+      legacyStarted: read({ progress: 0.42, updatedAt: null }),
+      beforeNear: read({ progress: 0.7999, updatedAt: "2026-08-18T09:00:00.000Z" }),
+      nearBoundary: read({ progress: 0.80, updatedAt: "2026-08-18T09:00:00.000Z" }),
+      completeBoundary: read({ progress: 0.95, updatedAt: "2026-08-18T09:00:00.000Z" }),
+      aboveOne: read({ progress: 1.5, updatedAt: "2026-08-18T09:00:00.000Z" })
+    };
+  });
+
+  expect(statuses.negative).toMatchObject({
+    key: "not-started", progress: 0, percent: 0
+  });
+  expect(statuses.notStarted.key).toBe("not-started");
+  expect(statuses.zeroStarted.key).toBe("reading");
+  expect(statuses.legacyStarted.key).toBe("reading");
+  expect(statuses.beforeNear.key).toBe("reading");
+  expect(statuses.nearBoundary.key).toBe("near-complete");
+  expect(statuses.completeBoundary.key).toBe("completed");
+  expect(statuses.aboveOne).toMatchObject({
+    key: "completed", progress: 1, percent: 100
+  });
+});
+
+test("阅读统计与列表状态一致且纯展示不会修改文章数据", async ({ page }) => {
+  const before = await page.evaluate(async () => {
+    const library = window.LingoFlowArticleLibrary;
+    const notStarted = await library.createArticle({
+      title: "Summary not started",
+      content: "Summary not started content.",
+      sourceType: "paste"
+    });
+    const reading = await library.createArticle({
+      title: "Summary reading",
+      content: "Summary reading content.",
+      sourceType: "paste"
+    });
+    const nearComplete = await library.createArticle({
+      title: "Summary near complete",
+      content: "Summary near complete content.",
+      sourceType: "paste"
+    });
+    const completed = await library.createArticle({
+      title: "Summary completed",
+      content: "Summary completed content.",
+      sourceType: "paste"
+    });
+    const deleted = await library.createArticle({
+      title: "Deleted summary article",
+      content: "Deleted articles must not be counted.",
+      sourceType: "paste"
+    });
+
+    await library.updateArticleReading(reading.id, {
+      progress: 0.42,
+      paragraphIndex: 1,
+      updatedAt: "2026-08-18T09:10:00.000Z"
+    });
+    await library.updateArticleReading(nearComplete.id, {
+      progress: 0.88,
+      paragraphIndex: 2,
+      updatedAt: "2026-08-18T09:20:00.000Z"
+    });
+    await library.updateArticleReading(completed.id, {
+      progress: 0.97,
+      paragraphIndex: 3,
+      updatedAt: "2026-08-18T09:30:00.000Z"
+    });
+    await library.updateArticleReading(deleted.id, {
+      progress: 1,
+      paragraphIndex: 4,
+      updatedAt: "2026-08-18T09:40:00.000Z"
+    });
+    await library.updateArticle(deleted.id, {
+      deletedAt: "2026-08-18T09:50:00.000Z"
+    });
+
+    const articles = await library.listArticles({ includeDeleted: true });
+    return Object.fromEntries(articles.map(article => [article.id, {
+      lastReadAt: article.lastReadAt,
+      updatedAt: article.updatedAt,
+      readingUpdatedAt: article.reading.updatedAt
+    }]));
+  });
+
+  await openMyArticles(page);
+  await expect(page.locator("#myArticlesSummary")).toHaveText(
+    "共 4 篇 · 未开始 1 · 阅读中 1 · 接近读完 1 · 已读完 1"
+  );
+
+  const summary = await page.evaluate(async () => {
+    const articles = await window.LingoFlowArticleLibrary.listArticles({
+      includeDeleted: true
+    });
+    return calculateArticleReadingSummary(articles);
+  });
+  expect(summary).toEqual({
+    total: 4,
+    counts: {
+      "not-started": 1,
+      reading: 1,
+      "near-complete": 1,
+      completed: 1
+    }
+  });
+
+  const after = await page.evaluate(async () => {
+    const articles = await window.LingoFlowArticleLibrary.listArticles({
+      includeDeleted: true
+    });
+    return Object.fromEntries(articles.map(article => [article.id, {
+      lastReadAt: article.lastReadAt,
+      updatedAt: article.updatedAt,
+      readingUpdatedAt: article.reading.updatedAt
+    }]));
+  });
+  expect(after).toEqual(before);
+});
+
+test("删除和恢复会即时更新统计，最近删除不显示摘要", async ({ page }) => {
+  await page.evaluate(async () => {
+    const library = window.LingoFlowArticleLibrary;
+    await library.createArticle({
+      title: "Statistics remaining article",
+      content: "This article remains active.",
+      sourceType: "paste"
+    });
+    const completed = await library.createArticle({
+      title: "Statistics completed article",
+      content: "This completed article will be restored.",
+      sourceType: "paste"
+    });
+    await library.updateArticleReading(completed.id, {
+      progress: 0.96,
+      paragraphIndex: 2,
+      updatedAt: "2026-08-18T10:00:00.000Z"
+    });
+  });
+
+  await openMyArticles(page);
+  const summary = page.locator("#myArticlesSummary");
+  await expect(summary).toHaveText(
+    "共 2 篇 · 未开始 1 · 阅读中 0 · 接近读完 0 · 已读完 1"
+  );
+
+  await getMyArticleItem(page, "Statistics completed article")
+    .getByRole("button", { name: "删除文章：Statistics completed article" })
+    .click();
+  await expect(summary).toHaveText(
+    "共 1 篇 · 未开始 1 · 阅读中 0 · 接近读完 0 · 已读完 0"
+  );
+
+  await openRecentlyDeleted(page);
+  await expect(summary).toBeHidden();
+  await getMyArticleItem(page, "Statistics completed article")
+    .getByRole("button", { name: "恢复文章：Statistics completed article" })
+    .click();
+  await page.locator("#myArticlesViewButton").click();
+  await expect(page.locator("#myArticlesList")).toHaveAttribute("data-view", "active");
+  await expect(summary).toHaveText(
+    "共 2 篇 · 未开始 1 · 阅读中 0 · 接近读完 0 · 已读完 1"
+  );
+});
+
+test("向上回读不降低用于状态和统计的最远阅读进度", async ({ page }) => {
+  await fillDraft(page, makeLongArticle("Reading status uses farthest progress", 70));
+  await startReading(page);
+
+  await scrollArticleToProgress(page, 0.83);
+  await expect.poll(async () => {
+    const [article] = await getArticles(page);
+    return article.reading.progress;
+  }).toBeGreaterThanOrEqual(0.80);
+  const [atFarthest] = await getArticles(page);
+  expect(atFarthest.reading.progress).toBeLessThan(0.95);
+
+  await scrollArticleToProgress(page, 0.30);
+  await page.waitForTimeout(850);
+  const [afterReviewing] = await getArticles(page);
+  expect(afterReviewing.reading.progress).toBeCloseTo(atFarthest.reading.progress, 5);
+
+  await openMyArticles(page);
+  await expect(getMyArticleItem(page, "Reading status uses farthest progress")
+    .locator(".myArticleMeta")).toContainText("接近读完 · 83%");
+  await expect(page.locator("#myArticlesSummary")).toHaveText(
+    "共 1 篇 · 未开始 0 · 阅读中 0 · 接近读完 1 · 已读完 0"
+  );
+});
+
+test("一屏短文章不会仅因正文完整可见而自动成为已读完", async ({ page }) => {
+  await fillDraft(page, "Short article\nThis complete article fits inside one viewport.");
+  await startReading(page);
+  await page.waitForTimeout(850);
+
+  const [stored] = await getArticles(page);
+  expect(stored.reading).toEqual({
+    progress: 0,
+    paragraphIndex: 0,
+    updatedAt: null
+  });
+
+  await openMyArticles(page);
+  const item = getMyArticleItem(page, "Short article");
+  await expect(item).toHaveAttribute("data-reading-status", "not-started");
+  await expect(item.locator(".myArticleMeta")).toContainText("未开始");
+  await expect(page.locator("#myArticlesSummary")).toHaveText(
+    "共 1 篇 · 未开始 1 · 阅读中 0 · 接近读完 0 · 已读完 0"
+  );
 });
