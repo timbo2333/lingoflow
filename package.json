@@ -1,0 +1,26 @@
+{
+  "name": "lingoflow",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "playwright test",
+    "test:article": "playwright test tests/article-library.spec.js",
+    "test:article:headed": "playwright test tests/article-library.spec.js --headed"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/timbo2333/lingoflow.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/timbo2333/lingoflow/issues"
+  },
+  "homepage": "https://github.com/timbo2333/lingoflow#readme",
+  "devDependencies": {
+    "@playwright/test": "^1.62.1"
+  }
+}

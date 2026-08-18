@@ -3408,6 +3408,11 @@ const SENTENCE_ABBREVIATIONS = new Set([
   "mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st", "vs", "e.g", "i.e"
 ]);
 let currentArticleText = "";
+let activeArticleId = null;
+let currentArticle = null;
+let articleDraftMode = "new";
+let draftSource = { sourceType: "paste" };
+let articleSavePromise = null;
 let phraseSelectionSnapshot = null;
 let phraseSelectionTimer = null;
 let phraseSelectionFeedbackTimer = null;
@@ -3811,6 +3816,18 @@ function openHelp() {
   document.getElementById("helpModal").classList.add("show");
 }
 
+function resetTxtImportUI() {
+  const zone = document.getElementById("textDropZone");
+  const fileInput = document.getElementById("fileInput");
+  const title = zone?.querySelector(".dropZoneTitle");
+  const hint = zone?.querySelector(".dropZoneHint");
+
+  zone?.classList.remove("dragging");
+  if (title) title.textContent = "拖拽 TXT 文件到这里";
+  if (hint) hint.textContent = "或点击此区域选择文件";
+  if (fileInput) fileInput.value = "";
+}
+
 async function loadTxtFile(file) {
   if (!file) return false;
 
@@ -3821,6 +3838,10 @@ async function loadTxtFile(file) {
   }
 
   const text = await file.text();
+  startNewArticleDraft({
+    sourceType: "txt",
+    sourceTitle: file.name
+  });
   document.getElementById("inputText").value = text;
   return true;
 }
@@ -3828,16 +3849,12 @@ async function loadTxtFile(file) {
 function setupTextDropZone() {
   const zone = document.getElementById("textDropZone");
   const fileInput = document.getElementById("fileInput");
+  const inputText = document.getElementById("inputText");
   if (!zone || !fileInput) return;
 
   const title = zone.querySelector(".dropZoneTitle");
   const hint = zone.querySelector(".dropZoneHint");
   let dragDepth = 0;
-
-  const resetCopy = () => {
-    if (title) title.textContent = "拖拽 TXT 文件到这里";
-    if (hint) hint.textContent = "或点击此区域选择文件";
-  };
 
   const showLoaded = file => {
     if (title) title.textContent = `已载入：${file.name}`;
@@ -3870,7 +3887,7 @@ function setupTextDropZone() {
     dragDepth = Math.max(0, dragDepth - 1);
     if (dragDepth === 0) {
       zone.classList.remove("dragging");
-      resetCopy();
+      resetTxtImportUI();
     }
   });
 
@@ -3881,13 +3898,13 @@ function setupTextDropZone() {
 
     const file = event.dataTransfer?.files?.[0];
     if (!file) {
-      resetCopy();
+      resetTxtImportUI();
       return;
     }
 
     const ok = await loadTxtFile(file);
     if (ok) showLoaded(file);
-    else resetCopy();
+    else resetTxtImportUI();
   });
 
   fileInput.addEventListener("change", async event => {
@@ -3899,6 +3916,12 @@ function setupTextDropZone() {
 
     // 允许用户连续两次选择同一个文件
     event.target.value = "";
+  });
+
+  inputText?.addEventListener("input", () => {
+    if (draftSource.sourceType !== "txt") return;
+    draftSource = { sourceType: "paste" };
+    resetTxtImportUI();
   });
 }
 
@@ -5109,14 +5132,93 @@ function closeWordCard() {
    文章处理
    ========================= */
 
-function generateArticle() {
-  const text = document.getElementById("inputText").value;
-  const article = document.getElementById("article");
+function normalizeDraftSource(source = {}) {
+  const sourceType = ["paste", "txt", "library"].includes(source.sourceType)
+    ? source.sourceType
+    : "paste";
+  const normalized = { sourceType };
 
-  if (!text.trim()) {
-    alert("请先粘贴英文文章。");
-    return;
+  if (sourceType === "library" && String(source.sourceId || "").trim()) {
+    normalized.sourceId = String(source.sourceId).trim();
   }
+  if (String(source.sourceTitle || "").trim()) {
+    normalized.sourceTitle = String(source.sourceTitle).trim();
+  }
+  if (String(source.sourceAttribution || "").trim()) {
+    normalized.sourceAttribution = String(source.sourceAttribution).trim();
+  }
+
+  return normalized;
+}
+
+function getArticleSource(article) {
+  return normalizeDraftSource({
+    sourceType: article?.sourceType,
+    sourceId: article?.sourceId,
+    sourceTitle: article?.sourceTitle,
+    sourceAttribution: article?.sourceAttribution
+  });
+}
+
+function deriveArticleTitle(text, source) {
+  if (source.sourceType === "txt" && source.sourceTitle) {
+    const filenameTitle = source.sourceTitle.replace(/\.txt$/i, "").trim();
+    if (filenameTitle) return filenameTitle;
+  }
+
+  const firstLine = String(text || "")
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .find(Boolean);
+  return firstLine ? firstLine.slice(0, 80) : "未命名文章";
+}
+
+function getDraftArticlePayload(text) {
+  const source = normalizeDraftSource(draftSource);
+  const payload = {
+    title: deriveArticleTitle(text, source),
+    content: text,
+    sourceType: source.sourceType
+  };
+
+  if (source.sourceId) payload.sourceId = source.sourceId;
+  if (source.sourceTitle) payload.sourceTitle = source.sourceTitle;
+  if (source.sourceAttribution) payload.sourceAttribution = source.sourceAttribution;
+  return payload;
+}
+
+async function persistArticleDraft(text) {
+  const library = window.LingoFlowArticleLibrary;
+  if (!library) throw new Error("文章数据层未加载，请刷新页面后重试。");
+
+  const now = new Date().toISOString();
+  const editingCurrent = Boolean(
+    activeArticleId &&
+    currentArticle?.id === activeArticleId &&
+    (articleDraftMode === "editing" || articleDraftMode === "active")
+  );
+
+  if (editingCurrent) {
+    const changes = {
+      title: currentArticle.title || deriveArticleTitle(text, getArticleSource(currentArticle)),
+      content: text,
+      lastReadAt: now
+    };
+
+    if (currentArticle.sourceType === "txt" && draftSource.sourceType === "paste") {
+      changes.sourceType = "paste";
+      changes.sourceTitle = "";
+      changes.sourceAttribution = "";
+    }
+
+    return await library.updateArticle(activeArticleId, changes);
+  }
+
+  return await library.createArticle(getDraftArticlePayload(text));
+}
+
+function renderArticleText(text) {
+  const article = document.getElementById("article");
 
   hidePhraseSelectionToolbar(true);
   currentArticleText = text;
@@ -5181,14 +5283,89 @@ function generateArticle() {
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
+function generateArticle() {
+  const input = document.getElementById("inputText");
+  const text = input.value;
+
+  if (!text.trim()) {
+    alert("请先粘贴英文文章。");
+    return Promise.resolve(null);
+  }
+
+  if (articleSavePromise) return articleSavePromise;
+
+  const startButton = document.querySelector('.controls button[onclick="generateArticle()"]');
+  if (startButton) startButton.disabled = true;
+  input.disabled = true;
+
+  const savePromise = (async () => {
+    try {
+      const savedArticle = await persistArticleDraft(text);
+      activeArticleId = savedArticle.id;
+      currentArticle = savedArticle;
+      articleDraftMode = "active";
+      draftSource = getArticleSource(savedArticle);
+      renderArticleText(savedArticle.content);
+      void requestPersistentStorageBestEffort();
+      return savedArticle;
+    } catch (error) {
+      console.error("Article save error:", error);
+      alert(
+        "文章保存失败：" + (error.message || "未知错误") +
+        "\n\n草稿仍保留在当前页面，请稍后重试。"
+      );
+      return null;
+    } finally {
+      input.disabled = false;
+      if (startButton) startButton.disabled = false;
+    }
+  })();
+
+  articleSavePromise = savePromise;
+  savePromise.finally(() => {
+    if (articleSavePromise === savePromise) articleSavePromise = null;
+  });
+  return savePromise;
+}
+
 function editArticle() {
   speechSynthesis.cancel();
   hidePhraseSelectionToolbar(true);
   closeWordCard();
 
+  if (currentArticle && activeArticleId === currentArticle.id) {
+    articleDraftMode = "editing";
+    draftSource = getArticleSource(currentArticle);
+    document.getElementById("inputText").value = currentArticle.content;
+  }
+
   document.getElementById("inputPanel").style.display = "block";
   document.getElementById("readingToolbar").classList.remove("show");
   document.getElementById("readerLayout").classList.remove("show");
+
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+function startNewArticleDraft(source = { sourceType: "paste" }) {
+  speechSynthesis.cancel();
+  hidePhraseSelectionToolbar(true);
+  closeWordCard();
+
+  activeArticleId = null;
+  currentArticle = null;
+  currentArticleText = "";
+  articleDraftMode = "new";
+  draftSource = normalizeDraftSource(source);
+
+  if (draftSource.sourceType !== "txt") {
+    resetTxtImportUI();
+  }
+
+  document.getElementById("inputText").value = "";
+  document.getElementById("inputPanel").style.display = "block";
+  document.getElementById("readingToolbar").classList.remove("show");
+  document.getElementById("readerLayout").classList.remove("show");
+  updateReadingProgress();
 
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
