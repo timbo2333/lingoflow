@@ -663,6 +663,83 @@
     margin-bottom: 14px;
   }
 
+  .myArticlesModalCard {
+    width: min(760px, 100%);
+  }
+
+  .myArticlesActions {
+    display: flex;
+    justify-content: flex-end;
+    margin-bottom: 14px;
+  }
+
+  .myArticlesList {
+    display: grid;
+    gap: 9px;
+  }
+
+  .myArticleItem {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 14px;
+    padding: 14px;
+    border: 1px solid #e3e3e7;
+    border-radius: 10px;
+  }
+
+  .myArticleMain {
+    min-width: 0;
+  }
+
+  .myArticleTitle {
+    overflow-wrap: anywhere;
+    font-size: 17px;
+    font-weight: 750;
+    line-height: 1.45;
+  }
+
+  .myArticleMeta {
+    margin-top: 5px;
+    color: #77777c;
+    font-size: 12px;
+    line-height: 1.5;
+  }
+
+  .myArticleButtons {
+    display: flex;
+    justify-content: flex-end;
+    gap: 7px;
+    flex-wrap: wrap;
+  }
+
+  .myArticleTitleEditor {
+    display: none;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    gap: 7px;
+    align-items: center;
+  }
+
+  .myArticleItem.editing .myArticleSummary,
+  .myArticleItem.editing .myArticleButtons {
+    display: none;
+  }
+
+  .myArticleItem.editing .myArticleTitleEditor {
+    display: grid;
+  }
+
+  .myArticleTitleInput {
+    width: 100%;
+    min-width: 0;
+    padding: 9px 10px;
+    border: 1px solid #d2d2d7;
+    border-radius: 8px;
+    background: #fff;
+    color: #1d1d1f;
+    font: inherit;
+  }
+
   .dangerButton {
     background: #b42318;
     color: white;
@@ -773,6 +850,19 @@
     .modalCard {
       max-height: 88vh;
       border-radius: 16px 16px 10px 10px;
+    }
+
+    .myArticleItem {
+      grid-template-columns: 1fr;
+      gap: 10px;
+    }
+
+    .myArticleButtons {
+      justify-content: flex-start;
+    }
+
+    .myArticleTitleEditor {
+      grid-template-columns: 1fr auto auto;
     }
   }
 
@@ -1387,6 +1477,8 @@
   body.darkMode .searchResultCard,
   body.darkMode .favoriteInlineEditor,
   body.darkMode .favoriteEditor,
+  body.darkMode .myArticleItem,
+  body.darkMode .myArticleTitleInput,
   body.darkMode .smallInput,
   body.darkMode #directSearchInput,
   body.darkMode select {
@@ -1402,8 +1494,13 @@
   body.darkMode .settingSubValue,
   body.darkMode .vocabMeta,
   body.darkMode .querySourceMeta,
-  body.darkMode .favoriteDate {
+  body.darkMode .favoriteDate,
+  body.darkMode .myArticleMeta {
     color: var(--app-muted);
+  }
+
+  body.darkMode .myArticleItem {
+    border-color: var(--app-border);
   }
 
   body.darkMode .dictionarySetupStatus {
