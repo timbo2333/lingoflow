@@ -670,6 +670,8 @@
   .myArticlesActions {
     display: flex;
     justify-content: flex-end;
+    gap: 8px;
+    flex-wrap: wrap;
     margin-bottom: 14px;
   }
 
@@ -711,6 +713,14 @@
     justify-content: flex-end;
     gap: 7px;
     flex-wrap: wrap;
+  }
+
+  .myArticleItem.busy {
+    opacity: .65;
+  }
+
+  .myArticleDeleteButton {
+    color: #b42318;
   }
 
   .myArticleTitleEditor {
@@ -1501,6 +1511,10 @@
 
   body.darkMode .myArticleItem {
     border-color: var(--app-border);
+  }
+
+  body.darkMode .myArticleDeleteButton {
+    color: #ff8a80;
   }
 
   body.darkMode .dictionarySetupStatus {
