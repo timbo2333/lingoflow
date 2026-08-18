@@ -260,14 +260,20 @@
   async function listArticles(options = {}) {
     const db = await openDatabase();
     const tx = db.transaction(ARTICLE_STORE, "readonly");
-    const request = tx.objectStore(ARTICLE_STORE).getAll();
+    const store = tx.objectStore(ARTICLE_STORE);
+    const deletedOnly = Boolean(options.deletedOnly);
+    const request = deletedOnly
+      ? store.index("byDeletedAt").getAll()
+      : store.getAll();
     const includeDeleted = Boolean(options.includeDeleted);
 
     return await new Promise((resolve, reject) => {
       request.onsuccess = () => {
         const items = (request.result || [])
-          .filter(item => includeDeleted || !item.deletedAt)
-          .sort((a, b) => String(b.lastReadAt || "").localeCompare(String(a.lastReadAt || "")));
+          .filter(item => deletedOnly ? Boolean(item.deletedAt) : includeDeleted || !item.deletedAt)
+          .sort((a, b) => deletedOnly
+            ? String(b.deletedAt || "").localeCompare(String(a.deletedAt || ""))
+            : String(b.lastReadAt || "").localeCompare(String(a.lastReadAt || "")));
         resolve(items);
       };
       request.onerror = () => reject(request.error || new Error("文章列表读取失败。"));

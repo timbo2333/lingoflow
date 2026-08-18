@@ -59,6 +59,13 @@ async function openMyArticles(page) {
   await expect(page.locator("#myArticlesList")).not.toHaveAttribute("data-state", "loading");
 }
 
+async function openRecentlyDeleted(page) {
+  await page.locator("#myArticlesViewButton").click();
+  await expect(page.locator("#myArticlesTitle")).toContainText("最近删除");
+  await expect(page.locator("#myArticlesList")).toHaveAttribute("data-view", "deleted");
+  await expect(page.locator("#myArticlesList")).not.toHaveAttribute("data-state", "loading");
+}
+
 function getMyArticleItem(page, title) {
   return page.locator(".myArticleItem").filter({ hasText: title });
 }
@@ -873,4 +880,317 @@ test("visibilitychange hidden 和 pagehide 会 best-effort flush", async ({ page
   const [afterPageHide] = await getArticles(page);
   expect(afterPageHide.id).toBe(created.id);
   expect(afterPageHide.reading.progress).toBeLessThanOrEqual(1);
+});
+
+test("软删除写入 deletedAt 并保留完整文章数据", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    const library = window.LingoFlowArticleLibrary;
+    const created = await library.createArticle({
+      title: "Soft delete data",
+      content: "The complete article data must survive a soft deletion.",
+      sourceType: "txt",
+      sourceTitle: "soft-delete.txt",
+      sourceAttribution: "Local test file"
+    });
+    const withReading = await library.updateArticleReading(created.id, {
+      progress: 0.64,
+      paragraphIndex: 5,
+      updatedAt: "2026-08-18T02:00:00.000Z",
+      lastReadAt: "2026-08-18T03:00:00.000Z"
+    });
+    const deleted = await library.updateArticle(created.id, {
+      deletedAt: "2026-08-18T04:00:00.000Z"
+    });
+
+    return {
+      before: withReading,
+      deleted,
+      active: await library.listArticles(),
+      trash: await library.listArticles({ deletedOnly: true })
+    };
+  });
+
+  expect(Number.isNaN(Date.parse(result.deleted.deletedAt))).toBe(false);
+  expect(result.active).toHaveLength(0);
+  expect(result.trash).toHaveLength(1);
+  expect(result.deleted).toMatchObject({
+    id: result.before.id,
+    title: result.before.title,
+    content: result.before.content,
+    sourceType: result.before.sourceType,
+    sourceTitle: result.before.sourceTitle,
+    sourceAttribution: result.before.sourceAttribution,
+    createdAt: result.before.createdAt,
+    lastReadAt: result.before.lastReadAt,
+    reading: result.before.reading
+  });
+});
+
+test("最近删除使用 deletedAt 倒序且只返回已删除文章", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    const library = window.LingoFlowArticleLibrary;
+    const active = await library.createArticle({
+      title: "Still active",
+      content: "This article remains active.",
+      sourceType: "paste"
+    });
+    const older = await library.createArticle({
+      title: "Older deleted",
+      content: "Older deleted content.",
+      sourceType: "paste"
+    });
+    const newer = await library.createArticle({
+      title: "Newer deleted",
+      content: "Newer deleted content.",
+      sourceType: "paste"
+    });
+    await library.updateArticle(older.id, {
+      deletedAt: "2026-08-17T08:00:00.000Z"
+    });
+    await library.updateArticle(newer.id, {
+      deletedAt: "2026-08-18T08:00:00.000Z"
+    });
+    return {
+      activeId: active.id,
+      trash: await library.listArticles({ deletedOnly: true })
+    };
+  });
+
+  expect(result.trash.map(article => article.title)).toEqual([
+    "Newer deleted",
+    "Older deleted"
+  ]);
+  expect(result.trash.every(article => article.deletedAt)).toBe(true);
+  expect(result.trash.some(article => article.id === result.activeId)).toBe(false);
+});
+
+test("普通 UI 删除无需确认并在操作期间禁用，最近删除只提供恢复", async ({ page }) => {
+  await fillDraft(page, "Current article\nThis article stays open while another is deleted.");
+  await startReading(page);
+  await page.evaluate(async () => {
+    await window.LingoFlowArticleLibrary.createArticle({
+      title: "Delete through UI",
+      content: "This article will be deleted through the real UI.",
+      sourceType: "paste"
+    });
+  });
+  await openMyArticles(page);
+
+  await page.evaluate(() => {
+    const original = window.LingoFlowArticleLibrary;
+    window.LingoFlowArticleLibrary = Object.freeze({
+      ...original,
+      updateArticle: async (id, changes) => {
+        if (changes.deletedAt) {
+          await new Promise(resolve => setTimeout(resolve, 120));
+        }
+        return await original.updateArticle(id, changes);
+      }
+    });
+  });
+
+  let dialogCount = 0;
+  page.on("dialog", async dialog => {
+    dialogCount += 1;
+    await dialog.dismiss();
+  });
+
+  const item = getMyArticleItem(page, "Delete through UI");
+  const deleteButton = item.getByRole("button", { name: "删除文章：Delete through UI" });
+  await deleteButton.click();
+  await expect(item).toHaveClass(/busy/);
+  await expect(deleteButton).toBeDisabled();
+  await expect(getMyArticleItem(page, "Delete through UI")).toHaveCount(0);
+  expect(dialogCount).toBe(0);
+
+  await openRecentlyDeleted(page);
+  const deletedItem = getMyArticleItem(page, "Delete through UI");
+  await expect(deletedItem).toBeVisible();
+  await expect(deletedItem.locator(".myArticleMeta")).toContainText("删除于：");
+  await expect(deletedItem.locator(".myArticleMeta")).toContainText(/\d{4}/);
+  await expect(deletedItem.getByRole("button")).toHaveCount(1);
+  await expect(deletedItem.getByRole("button", {
+    name: "恢复文章：Delete through UI"
+  })).toBeVisible();
+});
+
+test("删除当前阅读文章前 flush 进度并清理 active、current 和 session", async ({ page }) => {
+  await fillDraft(page, makeLongArticle("Delete active reading article", 70));
+  await startReading(page);
+  const [created] = await getArticles(page);
+  await scrollArticleToProgress(page, 0.47);
+  await openMyArticles(page);
+
+  await getMyArticleItem(page, "Delete active reading article")
+    .getByRole("button", { name: "删除文章：Delete active reading article" })
+    .click();
+  await expect(getMyArticleItem(page, "Delete active reading article")).toHaveCount(0);
+
+  const state = await page.evaluate(async id => ({
+    article: await window.LingoFlowArticleLibrary.getArticle(id),
+    activeArticleId,
+    currentArticle,
+    currentArticleText,
+    articleDraftMode,
+    readingProgressSession,
+    inputValue: document.getElementById("inputText").value,
+    inputVisible: document.getElementById("inputPanel").style.display !== "none",
+    readerVisible: document.getElementById("readerLayout").classList.contains("show")
+  }), created.id);
+
+  expect(state.article.deletedAt).not.toBeNull();
+  expect(state.article.reading.progress).toBeGreaterThan(0.4);
+  expect(state.article.reading.updatedAt).not.toBeNull();
+  expect(state.activeArticleId).toBeNull();
+  expect(state.currentArticle).toBeNull();
+  expect(state.currentArticleText).toBe("");
+  expect(state.articleDraftMode).toBe("new");
+  expect(state.readingProgressSession).toBeNull();
+  expect(state.inputValue).toBe("");
+  expect(state.inputVisible).toBe(true);
+  expect(state.readerVisible).toBe(false);
+});
+
+test("删除非当前文章不影响正在阅读的文章", async ({ page }) => {
+  await fillDraft(page, makeLongArticle("Article still being read"));
+  await startReading(page);
+  const [active] = await getArticles(page);
+  const otherId = await page.evaluate(async () => {
+    const other = await window.LingoFlowArticleLibrary.createArticle({
+      title: "Other article to delete",
+      content: "Deleting this must not disturb the current article.",
+      sourceType: "paste"
+    });
+    return other.id;
+  });
+
+  await openMyArticles(page);
+  await getMyArticleItem(page, "Other article to delete")
+    .getByRole("button", { name: "删除文章：Other article to delete" })
+    .click();
+
+  const state = await page.evaluate(() => ({
+    activeArticleId,
+    currentArticleId: currentArticle?.id || null,
+    sessionArticleId: readingProgressSession?.articleId || null,
+    currentArticleText,
+    readerVisible: document.getElementById("readerLayout").classList.contains("show")
+  }));
+  const deleted = await page.evaluate(id => (
+    window.LingoFlowArticleLibrary.getArticle(id)
+  ), otherId);
+
+  expect(deleted.deletedAt).not.toBeNull();
+  expect(state.activeArticleId).toBe(active.id);
+  expect(state.currentArticleId).toBe(active.id);
+  expect(state.sessionArticleId).toBe(active.id);
+  expect(state.currentArticleText).toBe(active.content);
+  expect(state.readerVisible).toBe(true);
+});
+
+test("删除有未保存正文修改的当前文章会触发草稿保护", async ({ page }) => {
+  await fillDraft(page, "Protected article\nThe saved article body.");
+  await startReading(page);
+  const [created] = await getArticles(page);
+  await page.getByRole("button", { name: /重新编辑文章/ }).click();
+  await page.locator("#inputText").fill("Protected article\nUnsaved article body.");
+  await openMyArticles(page);
+
+  let dialogMessage = "";
+  page.once("dialog", async dialog => {
+    dialogMessage = dialog.message();
+    await dialog.dismiss();
+  });
+  await getMyArticleItem(page, "Protected article")
+    .getByRole("button", { name: "删除文章：Protected article" })
+    .click();
+
+  const article = await page.evaluate(id => (
+    window.LingoFlowArticleLibrary.getArticle(id)
+  ), created.id);
+  expect(dialogMessage).toContain("当前草稿还没有保存");
+  expect(article.deletedAt).toBeNull();
+  await expect(page.locator("#inputText")).toHaveValue(
+    "Protected article\nUnsaved article body."
+  );
+  await expect(getMyArticleItem(page, "Protected article")).toBeVisible();
+});
+
+test("恢复保留文章身份和进度、更新 updatedAt，并在刷新后保持", async ({ page }) => {
+  const original = await page.evaluate(async () => {
+    const library = window.LingoFlowArticleLibrary;
+    const created = await library.createArticle({
+      title: "Restore complete article",
+      content: "Restoring must preserve this complete article.",
+      sourceType: "txt",
+      sourceTitle: "restore.txt",
+      sourceAttribution: "Restore test"
+    });
+    await library.updateArticleReading(created.id, {
+      progress: 0.71,
+      paragraphIndex: 6,
+      updatedAt: "2026-08-18T05:00:00.000Z",
+      lastReadAt: "2026-08-18T06:00:00.000Z"
+    });
+    return await library.updateArticle(created.id, {
+      deletedAt: "2026-08-18T07:00:00.000Z"
+    });
+  });
+
+  await page.reload();
+  await openMyArticles(page);
+  await expect(getMyArticleItem(page, "Restore complete article")).toHaveCount(0);
+  await openRecentlyDeleted(page);
+  await expect(getMyArticleItem(page, "Restore complete article")).toBeVisible();
+  await page.waitForTimeout(20);
+  await getMyArticleItem(page, "Restore complete article")
+    .getByRole("button", { name: "恢复文章：Restore complete article" })
+    .click();
+  await expect(getMyArticleItem(page, "Restore complete article")).toHaveCount(0);
+
+  const restored = await page.evaluate(id => (
+    window.LingoFlowArticleLibrary.getArticle(id)
+  ), original.id);
+  expect(restored).toMatchObject({
+    id: original.id,
+    title: original.title,
+    content: original.content,
+    sourceType: original.sourceType,
+    sourceTitle: original.sourceTitle,
+    sourceAttribution: original.sourceAttribution,
+    createdAt: original.createdAt,
+    lastReadAt: original.lastReadAt,
+    reading: original.reading,
+    deletedAt: null
+  });
+  expect(Date.parse(restored.updatedAt)).toBeGreaterThan(Date.parse(original.updatedAt));
+
+  await page.reload();
+  await openMyArticles(page);
+  await expect(getMyArticleItem(page, "Restore complete article")).toBeVisible();
+  await openRecentlyDeleted(page);
+  await expect(getMyArticleItem(page, "Restore complete article")).toHaveCount(0);
+});
+
+test("标题编辑与软删除并发时两项局部更新都保留", async ({ page }) => {
+  const article = await page.evaluate(async () => {
+    const library = window.LingoFlowArticleLibrary;
+    const created = await library.createArticle({
+      title: "Concurrent original title",
+      content: "Concurrent updates must preserve article data.",
+      sourceType: "paste"
+    });
+    await Promise.all([
+      library.updateArticle(created.id, { title: "Concurrent renamed title" }),
+      library.updateArticle(created.id, {
+        deletedAt: "2026-08-18T08:00:00.000Z"
+      })
+    ]);
+    return await library.getArticle(created.id);
+  });
+
+  expect(article.title).toBe("Concurrent renamed title");
+  expect(article.deletedAt).toBe("2026-08-18T08:00:00.000Z");
+  expect(article.content).toBe("Concurrent updates must preserve article data.");
+  expect((await getArticles(page))).toHaveLength(1);
 });

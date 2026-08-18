@@ -3415,6 +3415,8 @@ let articleDraftMode = "new";
 let draftSource = { sourceType: "paste" };
 let articleSavePromise = null;
 let myArticlesRenderVersion = 0;
+let myArticlesView = "active";
+const myArticleOperations = new Set();
 let readingProgressSaveTimer = null;
 let readingProgressUIFrame = null;
 let readingProgressWriteQueue = Promise.resolve(null);
@@ -5442,6 +5444,45 @@ function confirmReplacingUnsavedDraft() {
   return confirm("当前草稿还没有保存。继续后会放弃这些修改，是否继续？");
 }
 
+function updateMyArticlesViewUI() {
+  const deletedView = myArticlesView === "deleted";
+  const title = document.getElementById("myArticlesTitle");
+  const subtitle = document.getElementById("myArticlesSubtitle");
+  const viewButton = document.getElementById("myArticlesViewButton");
+  const newDraftButton = document.getElementById("newDraftFromArticlesButton");
+
+  if (title) title.textContent = deletedView ? "🗑️ 最近删除" : "📚 我的文章";
+  if (subtitle) {
+    subtitle.textContent = deletedView
+      ? "这里保留已删除的文章，可以随时恢复。"
+      : "从保存在本机的文章继续阅读，或开始一篇新草稿。";
+  }
+  if (viewButton) viewButton.textContent = deletedView ? "← 我的文章" : "最近删除";
+  if (newDraftButton) newDraftButton.hidden = deletedView;
+}
+
+function toggleMyArticlesView() {
+  myArticlesView = myArticlesView === "deleted" ? "active" : "deleted";
+  updateMyArticlesViewUI();
+  return renderMyArticles();
+}
+
+function setMyArticleBusy(articleId, item, busy) {
+  if (busy) myArticleOperations.add(articleId);
+  else myArticleOperations.delete(articleId);
+
+  item?.classList.toggle("busy", busy);
+  item?.querySelectorAll("button, input").forEach(control => {
+    control.disabled = busy;
+  });
+}
+
+function beginMyArticleOperation(articleId, item) {
+  if (myArticleOperations.has(articleId)) return false;
+  setMyArticleBusy(articleId, item, true);
+  return true;
+}
+
 function setMyArticlesMessage(message, state, allowRetry = false) {
   const box = document.getElementById("myArticlesList");
   if (!box) return;
@@ -5484,28 +5525,76 @@ async function saveMyArticleTitle(articleId, item) {
     return;
   }
 
-  const editorButtons = item.querySelectorAll(".myArticleTitleEditor button");
-  editorButtons.forEach(button => { button.disabled = true; });
-  input.disabled = true;
+  if (!beginMyArticleOperation(articleId, item)) return;
 
   try {
     const library = window.LingoFlowArticleLibrary;
     if (!library) throw new Error("文章数据层未加载，请刷新页面后重试。");
 
     const updatedArticle = await library.updateArticle(articleId, { title });
-    if (activeArticleId === updatedArticle.id) {
+    if (activeArticleId === updatedArticle.id && !updatedArticle.deletedAt) {
       currentArticle = updatedArticle;
     }
     await renderMyArticles();
   } catch (error) {
-    input.disabled = false;
-    editorButtons.forEach(button => { button.disabled = false; });
+    setMyArticleBusy(articleId, item, false);
     input.setCustomValidity(error.message || "标题保存失败，请稍后重试。");
     input.reportValidity();
+    return;
+  }
+
+  setMyArticleBusy(articleId, item, false);
+}
+
+async function deleteMyArticle(articleId, item) {
+  const deletingCurrentArticle = activeArticleId === articleId;
+  if (deletingCurrentArticle && !confirmReplacingUnsavedDraft()) return false;
+  if (!beginMyArticleOperation(articleId, item)) return false;
+
+  try {
+    await flushReadingProgress();
+
+    const library = window.LingoFlowArticleLibrary;
+    if (!library) throw new Error("文章数据层未加载，请刷新页面后重试。");
+
+    await library.updateArticle(articleId, {
+      deletedAt: new Date().toISOString()
+    });
+
+    if (deletingCurrentArticle) {
+      await startNewArticleDraft();
+    }
+
+    await renderMyArticles();
+    return true;
+  } catch (error) {
+    alert(`文章删除失败：${error.message || "未知错误"}`);
+    return false;
+  } finally {
+    setMyArticleBusy(articleId, item, false);
   }
 }
 
-function createMyArticleListItem(article) {
+async function restoreMyArticle(articleId, item) {
+  if (!beginMyArticleOperation(articleId, item)) return false;
+
+  try {
+    const library = window.LingoFlowArticleLibrary;
+    if (!library) throw new Error("文章数据层未加载，请刷新页面后重试。");
+
+    await library.updateArticle(articleId, { deletedAt: null });
+    await renderMyArticles();
+    return true;
+  } catch (error) {
+    alert(`文章恢复失败：${error.message || "未知错误"}`);
+    return false;
+  } finally {
+    setMyArticleBusy(articleId, item, false);
+  }
+}
+
+function createMyArticleListItem(article, options = {}) {
+  const deletedView = Boolean(options.deletedView);
   const item = document.createElement("div");
   item.className = "myArticleItem";
   item.dataset.articleId = article.id;
@@ -5522,10 +5611,31 @@ function createMyArticleListItem(article) {
 
   const meta = document.createElement("div");
   meta.className = "myArticleMeta";
-  meta.textContent =
-    `${getArticleSourceLabel(article)} · ${getArticleReadingLabel(article)} · ` +
-    `最近阅读：${formatLearningDate(article.lastReadAt)}`;
+  meta.textContent = deletedView
+    ? `${getArticleSourceLabel(article)} · 删除于：${formatLearningDate(article.deletedAt)}`
+    : `${getArticleSourceLabel(article)} · ${getArticleReadingLabel(article)} · ` +
+      `最近阅读：${formatLearningDate(article.lastReadAt)}`;
   summary.append(title, meta);
+
+  if (deletedView) {
+    main.append(summary);
+
+    const actions = document.createElement("div");
+    actions.className = "myArticleButtons";
+
+    const restoreButton = document.createElement("button");
+    restoreButton.className = "secondary compactButton";
+    restoreButton.type = "button";
+    restoreButton.textContent = "恢复";
+    restoreButton.setAttribute("aria-label", `恢复文章：${article.title || "未命名文章"}`);
+    restoreButton.addEventListener("click", () => {
+      void restoreMyArticle(article.id, item);
+    });
+
+    actions.append(restoreButton);
+    item.append(main, actions);
+    return item;
+  }
 
   const editor = document.createElement("div");
   editor.className = "myArticleTitleEditor";
@@ -5587,7 +5697,16 @@ function createMyArticleListItem(article) {
   editButton.setAttribute("aria-label", `编辑文章标题：${article.title || "未命名文章"}`);
   editButton.addEventListener("click", () => setMyArticleEditing(item, true));
 
-  actions.append(openButton, editButton);
+  const deleteButton = document.createElement("button");
+  deleteButton.className = "secondary compactButton myArticleDeleteButton";
+  deleteButton.type = "button";
+  deleteButton.textContent = "删除";
+  deleteButton.setAttribute("aria-label", `删除文章：${article.title || "未命名文章"}`);
+  deleteButton.addEventListener("click", () => {
+    void deleteMyArticle(article.id, item);
+  });
+
+  actions.append(openButton, editButton, deleteButton);
   item.append(main, actions);
   return item;
 }
@@ -5597,29 +5716,36 @@ async function renderMyArticles() {
   if (!box) return;
 
   const renderVersion = ++myArticlesRenderVersion;
+  const renderView = myArticlesView;
+  const deletedView = renderView === "deleted";
   setMyArticlesMessage("正在读取文章…", "loading");
+  box.dataset.view = renderView;
 
   try {
     const library = window.LingoFlowArticleLibrary;
     if (!library) throw new Error("文章数据层未加载，请刷新页面后重试。");
 
-    const articles = await library.listArticles();
-    if (renderVersion !== myArticlesRenderVersion) return;
+    const articles = await library.listArticles(deletedView ? { deletedOnly: true } : {});
+    if (renderVersion !== myArticlesRenderVersion || renderView !== myArticlesView) return;
 
     if (!articles.length) {
       setMyArticlesMessage(
-        "还没有文章。粘贴或导入 TXT 后，点击“生成可点击文章”会自动保存到这里。",
+        deletedView
+          ? "最近删除中没有文章。"
+          : "还没有文章。粘贴或导入 TXT 后，点击“生成可点击文章”会自动保存到这里。",
         "empty"
       );
       return;
     }
 
     const fragment = document.createDocumentFragment();
-    articles.forEach(article => fragment.appendChild(createMyArticleListItem(article)));
+    articles.forEach(article => fragment.appendChild(
+      createMyArticleListItem(article, { deletedView })
+    ));
     box.dataset.state = "ready";
     box.replaceChildren(fragment);
   } catch (error) {
-    if (renderVersion !== myArticlesRenderVersion) return;
+    if (renderVersion !== myArticlesRenderVersion || renderView !== myArticlesView) return;
     setMyArticlesMessage(
       `文章读取失败：${error.message || "未知错误"}`,
       "error",
@@ -5630,6 +5756,8 @@ async function renderMyArticles() {
 
 async function openMyArticles() {
   document.getElementById("myArticlesModal")?.classList.add("show");
+  myArticlesView = "active";
+  updateMyArticlesViewUI();
   setMyArticlesMessage("正在读取文章…", "loading");
   await flushReadingProgress();
   return renderMyArticles();

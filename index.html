@@ -311,13 +311,15 @@ I felt nervous when I asked my friends for advice, but their suggestions helped 
       <div class="modalHeader">
         <div>
           <div id="myArticlesTitle" class="modalTitle">📚 我的文章</div>
-          <div class="modalSub">从保存在本机的文章继续阅读，或开始一篇新草稿。</div>
+          <div id="myArticlesSubtitle" class="modalSub">从保存在本机的文章继续阅读，或开始一篇新草稿。</div>
         </div>
         <button class="iconClose" type="button" aria-label="关闭我的文章"
                 onclick="closeModal('myArticlesModal')">×</button>
       </div>
 
       <div class="myArticlesActions">
+        <button id="myArticlesViewButton" class="secondary" type="button"
+                onclick="toggleMyArticlesView()">最近删除</button>
         <button id="newDraftFromArticlesButton" type="button"
                 onclick="startNewDraftFromMyArticles()">＋ 新草稿</button>
       </div>
