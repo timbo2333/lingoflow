@@ -683,6 +683,69 @@
     overflow-wrap: anywhere;
   }
 
+  .myArticlesContinue {
+    margin: -2px 0 12px;
+  }
+
+  .myArticlesContinueButton {
+    display: flex;
+    align-items: center;
+    width: 100%;
+    min-width: 0;
+    padding: 10px 12px;
+    text-align: left;
+  }
+
+  .myArticlesContinueLabel,
+  .myArticlesContinueProgress {
+    flex: 0 0 auto;
+  }
+
+  .myArticlesContinueTitle {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 700;
+  }
+
+  .myArticlesContinueProgress {
+    margin-left: 5px;
+    color: #77777c;
+    font-size: 13px;
+  }
+
+  .myArticlesFilters {
+    display: flex;
+    gap: 7px;
+    margin-bottom: 14px;
+    padding-bottom: 2px;
+    overflow-x: auto;
+    overscroll-behavior-inline: contain;
+    scrollbar-width: none;
+  }
+
+  .myArticlesFilters[hidden] {
+    display: none;
+  }
+
+  .myArticlesFilters::-webkit-scrollbar {
+    display: none;
+  }
+
+  .myArticlesFilterButton {
+    flex: 0 0 auto;
+    padding: 7px 12px;
+    border-radius: 999px;
+    font-size: 13px;
+  }
+
+  .myArticlesFilterButton[aria-pressed="true"] {
+    border-color: #1d1d1f;
+    background: #1d1d1f;
+    color: #fff;
+  }
+
   .myArticlesList {
     display: grid;
     gap: 9px;
@@ -1514,6 +1577,7 @@
   body.darkMode .querySourceMeta,
   body.darkMode .favoriteDate,
   body.darkMode .myArticlesSummary,
+  body.darkMode .myArticlesContinueProgress,
   body.darkMode .myArticleMeta {
     color: var(--app-muted);
   }
@@ -1524,6 +1588,12 @@
 
   body.darkMode .myArticleDeleteButton {
     color: #ff8a80;
+  }
+
+  body.darkMode .myArticlesFilterButton[aria-pressed="true"] {
+    border-color: #f3f3f4;
+    background: #f3f3f4;
+    color: #1d1d1f;
   }
 
   body.darkMode .dictionarySetupStatus {

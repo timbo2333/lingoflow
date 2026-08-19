@@ -3410,6 +3410,9 @@ const SENTENCE_ABBREVIATIONS = new Set([
 const READING_PROGRESS_DEBOUNCE_MS = 700;
 const ARTICLE_NEAR_COMPLETE_PROGRESS = 0.80;
 const ARTICLE_COMPLETED_PROGRESS = 0.95;
+const MY_ARTICLES_FILTER_KEYS = new Set([
+  "all", "not-started", "reading", "near-complete", "completed"
+]);
 let currentArticleText = "";
 let activeArticleId = null;
 let currentArticle = null;
@@ -3418,6 +3421,7 @@ let draftSource = { sourceType: "paste" };
 let articleSavePromise = null;
 let myArticlesRenderVersion = 0;
 let myArticlesView = "active";
+let myArticlesFilter = "all";
 const myArticleOperations = new Set();
 let readingProgressSaveTimer = null;
 let readingProgressUIFrame = null;
@@ -5444,6 +5448,87 @@ function updateMyArticlesSummary(articles, deletedView = false) {
   summaryElement.hidden = false;
 }
 
+function filterMyArticlesByStatus(articles, filterKey = myArticlesFilter) {
+  if (!Array.isArray(articles)) return [];
+  if (filterKey === "all") return articles;
+  return articles.filter(article => getArticleReadingStatus(article).key === filterKey);
+}
+
+function getContinueReadingArticle(articles) {
+  if (!Array.isArray(articles)) return null;
+
+  return articles
+    .filter(article => {
+      if (article?.deletedAt) return false;
+      const statusKey = getArticleReadingStatus(article).key;
+      return statusKey === "reading" || statusKey === "near-complete";
+    })
+    .sort((a, b) => String(b.lastReadAt || "").localeCompare(String(a.lastReadAt || "")))[0]
+    || null;
+}
+
+function updateMyArticlesFilterUI(deletedView = false) {
+  const filterGroup = document.getElementById("myArticlesFilters");
+  if (!filterGroup) return;
+
+  filterGroup.hidden = deletedView;
+  filterGroup.querySelectorAll("[data-filter]").forEach(button => {
+    button.setAttribute(
+      "aria-pressed",
+      String(!deletedView && button.dataset.filter === myArticlesFilter)
+    );
+  });
+}
+
+function updateMyArticlesContinueReading(article, deletedView = false) {
+  const container = document.getElementById("myArticlesContinue");
+  const button = document.getElementById("myArticlesContinueButton");
+  const titleElement = document.getElementById("myArticlesContinueTitle");
+  const progressElement = document.getElementById("myArticlesContinueProgress");
+  if (!container || !button || !titleElement || !progressElement) return;
+
+  if (deletedView || !article) {
+    container.hidden = true;
+    button.disabled = false;
+    delete button.dataset.articleId;
+    button.removeAttribute("aria-label");
+    titleElement.textContent = "";
+    progressElement.textContent = "";
+    return;
+  }
+
+  const title = article.title || "未命名文章";
+  const status = getArticleReadingStatus(article);
+  container.hidden = false;
+  button.disabled = false;
+  button.dataset.articleId = article.id;
+  button.setAttribute("aria-label", `继续阅读文章：${title}，已阅读 ${status.percent}%`);
+  titleElement.textContent = title;
+  progressElement.textContent = `· ${status.percent}%`;
+}
+
+function setMyArticlesFilter(filterKey) {
+  if (myArticlesView !== "active" || !MY_ARTICLES_FILTER_KEYS.has(filterKey)) {
+    return Promise.resolve(false);
+  }
+  if (filterKey === myArticlesFilter) return Promise.resolve(true);
+
+  myArticlesFilter = filterKey;
+  updateMyArticlesFilterUI(false);
+  return renderMyArticles();
+}
+
+async function continueReadingFromMyArticles() {
+  const button = document.getElementById("myArticlesContinueButton");
+  const articleId = button?.dataset.articleId;
+  if (!button || !articleId || button.disabled) return false;
+
+  button.disabled = true;
+  const opened = await openSavedArticle(articleId);
+  if (!opened) button.disabled = false;
+  return opened;
+}
+
 function waitForReadingLayout() {
   return new Promise(resolve => {
     requestAnimationFrame(() => requestAnimationFrame(resolve));
@@ -5514,7 +5599,9 @@ function updateMyArticlesViewUI() {
   }
   if (viewButton) viewButton.textContent = deletedView ? "← 我的文章" : "最近删除";
   if (newDraftButton) newDraftButton.hidden = deletedView;
+  updateMyArticlesFilterUI(deletedView);
   if (deletedView) updateMyArticlesSummary(null, true);
+  if (deletedView) updateMyArticlesContinueReading(null, true);
 }
 
 function toggleMyArticlesView() {
@@ -5651,10 +5738,11 @@ async function restoreMyArticle(articleId, item) {
 
 function createMyArticleListItem(article, options = {}) {
   const deletedView = Boolean(options.deletedView);
+  const readingStatus = getArticleReadingStatus(article);
   const item = document.createElement("div");
   item.className = "myArticleItem";
   item.dataset.articleId = article.id;
-  item.dataset.readingStatus = getArticleReadingStatus(article).key;
+  item.dataset.readingStatus = readingStatus.key;
 
   const main = document.createElement("div");
   main.className = "myArticleMain";
@@ -5737,10 +5825,16 @@ function createMyArticleListItem(article, options = {}) {
   actions.className = "myArticleButtons";
 
   const openButton = document.createElement("button");
+  const openLabel = readingStatus.key === "reading" || readingStatus.key === "near-complete"
+    ? "继续阅读"
+    : "打开";
   openButton.className = "secondary compactButton";
   openButton.type = "button";
-  openButton.textContent = "打开";
-  openButton.setAttribute("aria-label", `打开文章：${article.title || "未命名文章"}`);
+  openButton.textContent = openLabel;
+  openButton.setAttribute(
+    "aria-label",
+    `${openLabel}文章：${article.title || "未命名文章"}`
+  );
   openButton.addEventListener("click", async () => {
     openButton.disabled = true;
     const opened = await openSavedArticle(article.id);
@@ -5774,19 +5868,29 @@ async function renderMyArticles() {
 
   const renderVersion = ++myArticlesRenderVersion;
   const renderView = myArticlesView;
+  const renderFilter = myArticlesFilter;
   const deletedView = renderView === "deleted";
   updateMyArticlesSummary(null, deletedView);
+  updateMyArticlesContinueReading(null, deletedView);
+  updateMyArticlesFilterUI(deletedView);
   setMyArticlesMessage("正在读取文章…", "loading");
   box.dataset.view = renderView;
+  if (deletedView) delete box.dataset.filter;
+  else box.dataset.filter = renderFilter;
 
   try {
     const library = window.LingoFlowArticleLibrary;
     if (!library) throw new Error("文章数据层未加载，请刷新页面后重试。");
 
     const articles = await library.listArticles(deletedView ? { deletedOnly: true } : {});
-    if (renderVersion !== myArticlesRenderVersion || renderView !== myArticlesView) return;
+    if (renderVersion !== myArticlesRenderVersion ||
+        renderView !== myArticlesView || renderFilter !== myArticlesFilter) return;
 
     updateMyArticlesSummary(articles, deletedView);
+    updateMyArticlesContinueReading(
+      deletedView ? null : getContinueReadingArticle(articles),
+      deletedView
+    );
 
     if (!articles.length) {
       setMyArticlesMessage(
@@ -5798,14 +5902,23 @@ async function renderMyArticles() {
       return;
     }
 
+    const visibleArticles = deletedView
+      ? articles
+      : filterMyArticlesByStatus(articles, renderFilter);
+    if (!visibleArticles.length) {
+      setMyArticlesMessage("没有符合当前状态的文章", "empty");
+      return;
+    }
+
     const fragment = document.createDocumentFragment();
-    articles.forEach(article => fragment.appendChild(
+    visibleArticles.forEach(article => fragment.appendChild(
       createMyArticleListItem(article, { deletedView })
     ));
     box.dataset.state = "ready";
     box.replaceChildren(fragment);
   } catch (error) {
-    if (renderVersion !== myArticlesRenderVersion || renderView !== myArticlesView) return;
+    if (renderVersion !== myArticlesRenderVersion ||
+        renderView !== myArticlesView || renderFilter !== myArticlesFilter) return;
     setMyArticlesMessage(
       `文章读取失败：${error.message || "未知错误"}`,
       "error",
@@ -5817,6 +5930,7 @@ async function renderMyArticles() {
 async function openMyArticles() {
   document.getElementById("myArticlesModal")?.classList.add("show");
   myArticlesView = "active";
+  myArticlesFilter = "all";
   updateMyArticlesViewUI();
   setMyArticlesMessage("正在读取文章…", "loading");
   await flushReadingProgress();

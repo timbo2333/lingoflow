@@ -66,6 +66,17 @@ async function openRecentlyDeleted(page) {
   await expect(page.locator("#myArticlesList")).not.toHaveAttribute("data-state", "loading");
 }
 
+async function selectMyArticlesFilter(page, label, filterKey) {
+  const button = page.locator("#myArticlesFilters").getByRole("button", {
+    name: label,
+    exact: true
+  });
+  await button.click();
+  await expect(button).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator("#myArticlesList")).toHaveAttribute("data-filter", filterKey);
+  await expect(page.locator("#myArticlesList")).not.toHaveAttribute("data-state", "loading");
+}
+
 function getMyArticleItem(page, title) {
   return page.locator(".myArticleItem").filter({ hasText: title });
 }
@@ -390,7 +401,7 @@ test("从我的文章重新打开正文不会创建重复记录", async ({ page 
   await page.getByRole("button", { name: /新草稿/ }).click();
   await openMyArticles(page);
   await getMyArticleItem(page, "Reopen title")
-    .getByRole("button", { name: "打开文章：Reopen title" })
+    .getByRole("button", { name: "继续阅读文章：Reopen title" })
     .click();
 
   await expect(page.locator("#readerLayout")).toHaveClass(/show/);
@@ -664,7 +675,7 @@ test("回到顶部超过 debounce 后通过真实 UI 重开仍恢复最远进度
   await openMyArticles(page);
   await getMyArticleItem(page, "Keep farthest progress after toolbar navigation")
     .getByRole("button", {
-      name: "打开文章：Keep farthest progress after toolbar navigation"
+      name: "继续阅读文章：Keep farthest progress after toolbar navigation"
     })
     .click();
   await expect(page.locator("#myArticlesModal")).not.toHaveClass(/show/);
@@ -727,7 +738,7 @@ test("刷新后从我的文章打开会恢复保存的 paragraphIndex", async ({
   await expect(page.locator("#inputText")).toBeVisible();
   await openMyArticles(page);
   await getMyArticleItem(page, "Restore saved paragraph")
-    .getByRole("button", { name: "打开文章：Restore saved paragraph" })
+    .getByRole("button", { name: "继续阅读文章：Restore saved paragraph" })
     .click();
   await expect(page.locator("#myArticlesModal")).not.toHaveClass(/show/);
   await expect.poll(() => page.evaluate(() => Boolean(calculateArticleReadingSnapshot())))
@@ -778,7 +789,7 @@ test("paragraphIndex 无效时在不同 viewport 和字体下使用 progress 恢
   await page.reload();
   await openMyArticles(page);
   await getMyArticleItem(page, "Progress fallback after layout change")
-    .getByRole("button", { name: "打开文章：Progress fallback after layout change" })
+    .getByRole("button", { name: "继续阅读文章：Progress fallback after layout change" })
     .click();
   await expect.poll(() => page.evaluate(() => Boolean(calculateArticleReadingSnapshot())))
     .toBe(true);
@@ -1431,4 +1442,390 @@ test("一屏短文章不会仅因正文完整可见而自动成为已读完", as
   await expect(page.locator("#myArticlesSummary")).toHaveText(
     "共 1 篇 · 未开始 1 · 阅读中 0 · 接近读完 0 · 已读完 0"
   );
+});
+
+test("五种状态筛选复用统一状态并保持全局统计和按钮文案", async ({ page }) => {
+  await page.evaluate(async () => {
+    const library = window.LingoFlowArticleLibrary;
+    await library.createArticle({
+      title: "Filter not started",
+      content: "Not started filter content.",
+      sourceType: "paste"
+    });
+    const legacyReading = await library.createArticle({
+      title: "Filter legacy reading",
+      content: "Legacy reading filter content.",
+      sourceType: "paste"
+    });
+    const nearBoundary = await library.createArticle({
+      title: "Filter near boundary",
+      content: "Near complete boundary content.",
+      sourceType: "paste"
+    });
+    const completeBoundary = await library.createArticle({
+      title: "Filter complete boundary",
+      content: "Completed boundary content.",
+      sourceType: "paste"
+    });
+    const deletedReading = await library.createArticle({
+      title: "Filter deleted reading",
+      content: "Deleted reading content.",
+      sourceType: "paste"
+    });
+
+    await library.updateArticleReading(legacyReading.id, {
+      progress: 0.42,
+      paragraphIndex: 1,
+      updatedAt: null,
+      lastReadAt: "2026-08-18T08:00:00.000Z"
+    });
+    await library.updateArticleReading(nearBoundary.id, {
+      progress: 0.80,
+      paragraphIndex: 2,
+      updatedAt: "2026-08-18T08:10:00.000Z",
+      lastReadAt: "2026-08-18T08:10:00.000Z"
+    });
+    await library.updateArticleReading(completeBoundary.id, {
+      progress: 0.95,
+      paragraphIndex: 3,
+      updatedAt: "2026-08-18T08:20:00.000Z",
+      lastReadAt: "2026-08-18T08:20:00.000Z"
+    });
+    await library.updateArticleReading(deletedReading.id, {
+      progress: 0.60,
+      paragraphIndex: 4,
+      updatedAt: "2026-08-18T08:30:00.000Z",
+      lastReadAt: "2026-08-18T08:30:00.000Z"
+    });
+    await library.updateArticle(deletedReading.id, {
+      deletedAt: "2026-08-18T09:00:00.000Z"
+    });
+  });
+
+  await openMyArticles(page);
+  const summary = page.locator("#myArticlesSummary");
+  const list = page.locator("#myArticlesList");
+  const expectedSummary =
+    "共 4 篇 · 未开始 1 · 阅读中 1 · 接近读完 1 · 已读完 1";
+  await expect(summary).toHaveText(expectedSummary);
+
+  await expect(getMyArticleItem(page, "Filter not started")
+    .getByRole("button", { name: "打开文章：Filter not started" })).toBeVisible();
+  await expect(getMyArticleItem(page, "Filter legacy reading")
+    .getByRole("button", { name: "继续阅读文章：Filter legacy reading" })).toBeVisible();
+  await expect(getMyArticleItem(page, "Filter near boundary")
+    .getByRole("button", { name: "继续阅读文章：Filter near boundary" })).toBeVisible();
+  await expect(getMyArticleItem(page, "Filter complete boundary")
+    .getByRole("button", { name: "打开文章：Filter complete boundary" })).toBeVisible();
+
+  const cases = [
+    ["未开始", "not-started", "Filter not started"],
+    ["阅读中", "reading", "Filter legacy reading"],
+    ["接近读完", "near-complete", "Filter near boundary"],
+    ["已读完", "completed", "Filter complete boundary"]
+  ];
+  for (const [label, key, title] of cases) {
+    await selectMyArticlesFilter(page, label, key);
+    await expect(page.locator(".myArticleItem")).toHaveCount(1);
+    await expect(getMyArticleItem(page, title)).toHaveAttribute("data-reading-status", key);
+    await expect(summary).toHaveText(expectedSummary);
+  }
+
+  await selectMyArticlesFilter(page, "全部", "all");
+  await expect(page.locator(".myArticleItem")).toHaveCount(4);
+  await expect(list).not.toContainText("Filter deleted reading");
+});
+
+test("筛选无结果显示专用空状态且重新打开默认恢复全部", async ({ page }) => {
+  await page.evaluate(async () => {
+    await window.LingoFlowArticleLibrary.createArticle({
+      title: "Only unstarted filter article",
+      content: "Only an unstarted article exists.",
+      sourceType: "paste"
+    });
+  });
+
+  await openMyArticles(page);
+  await expect(page.locator("#myArticlesContinue")).toBeHidden();
+  await selectMyArticlesFilter(page, "已读完", "completed");
+  await expect(page.locator("#myArticlesList")).toContainText(
+    "没有符合当前状态的文章"
+  );
+  await expect(page.locator("#myArticlesSummary")).toHaveText(
+    "共 1 篇 · 未开始 1 · 阅读中 0 · 接近读完 0 · 已读完 0"
+  );
+
+  await page.getByRole("button", { name: "关闭我的文章" }).click();
+  await openMyArticles(page);
+  await expect(page.locator("#myArticlesFilters")
+    .getByRole("button", { name: "全部", exact: true }))
+    .toHaveAttribute("aria-pressed", "true");
+  await expect(getMyArticleItem(page, "Only unstarted filter article")).toBeVisible();
+});
+
+test("继续阅读候选选择最近的未完成已开始文章并排除其他状态", async ({ page }) => {
+  const ids = await page.evaluate(async () => {
+    const library = window.LingoFlowArticleLibrary;
+    const notStarted = await library.createArticle({
+      title: "Candidate not started newest",
+      content: "This article has not started.",
+      sourceType: "paste"
+    });
+    const reading = await library.createArticle({
+      title: "Candidate reading older",
+      content: "This is an older reading candidate.",
+      sourceType: "paste"
+    });
+    const nearComplete = await library.createArticle({
+      title: "Candidate near complete latest",
+      content: "This is the latest valid candidate.",
+      sourceType: "paste"
+    });
+    const completed = await library.createArticle({
+      title: "Candidate completed newest",
+      content: "Completed articles are excluded.",
+      sourceType: "paste"
+    });
+    const deleted = await library.createArticle({
+      title: "Candidate deleted newest",
+      content: "Deleted articles are excluded.",
+      sourceType: "paste"
+    });
+
+    await library.updateArticleReading(reading.id, {
+      progress: 0.41,
+      paragraphIndex: 1,
+      updatedAt: "2026-08-18T09:00:00.000Z",
+      lastReadAt: "2026-08-18T09:00:00.000Z"
+    });
+    await library.updateArticleReading(nearComplete.id, {
+      progress: 0.84,
+      paragraphIndex: 2,
+      updatedAt: "2026-08-18T10:00:00.000Z",
+      lastReadAt: "2026-08-18T10:00:00.000Z"
+    });
+    await library.updateArticleReading(completed.id, {
+      progress: 0.98,
+      paragraphIndex: 3,
+      updatedAt: "2026-08-20T10:00:00.000Z",
+      lastReadAt: "2026-08-20T10:00:00.000Z"
+    });
+    await library.updateArticleReading(deleted.id, {
+      progress: 0.55,
+      paragraphIndex: 4,
+      updatedAt: "2026-08-21T10:00:00.000Z",
+      lastReadAt: "2026-08-21T10:00:00.000Z"
+    });
+    await library.updateArticle(deleted.id, {
+      deletedAt: "2026-08-21T11:00:00.000Z"
+    });
+    return {
+      notStarted: notStarted.id,
+      reading: reading.id,
+      nearComplete: nearComplete.id,
+      completed: completed.id,
+      deleted: deleted.id
+    };
+  });
+
+  await openMyArticles(page);
+  const continueButton = page.locator("#myArticlesContinueButton");
+  await expect(page.locator("#myArticlesContinue")).toBeVisible();
+  await expect(continueButton).toHaveAttribute("data-article-id", ids.nearComplete);
+  await expect(page.locator("#myArticlesContinueTitle"))
+    .toHaveText("Candidate near complete latest");
+  await expect(page.locator("#myArticlesContinueProgress")).toHaveText("· 84%");
+
+  const candidateId = await page.evaluate(async () => {
+    const articles = await window.LingoFlowArticleLibrary.listArticles({
+      includeDeleted: true
+    });
+    return getContinueReadingArticle(articles)?.id || null;
+  });
+  expect(candidateId).toBe(ids.nearComplete);
+});
+
+test("继续阅读入口复用真实打开链路并 flush、恢复位置和更新 lastReadAt", async ({ page }) => {
+  await fillDraft(page, makeLongArticle("Continue reading real path", 70));
+  await startReading(page);
+  const [created] = await getArticles(page);
+  await scrollArticleToProgress(page, 0.58);
+
+  await openMyArticles(page);
+  const [beforeContinue] = await getArticles(page);
+  expect(beforeContinue.id).toBe(created.id);
+  expect(beforeContinue.reading.progress).toBeGreaterThan(0.50);
+  await expect(page.locator("#myArticlesContinueButton"))
+    .toHaveAttribute("data-article-id", created.id);
+
+  await page.waitForTimeout(20);
+  await page.locator("#myArticlesContinueButton").click();
+  await expect(page.locator("#myArticlesModal")).not.toHaveClass(/show/);
+  await expect(page.locator("#readerLayout")).toHaveClass(/show/);
+  await expect.poll(() => page.evaluate(() => (
+    calculateArticleReadingSnapshot()?.progress || 0
+  ))).toBeGreaterThan(0.50);
+
+  const [afterContinue] = await getArticles(page);
+  expect(afterContinue.id).toBe(created.id);
+  expect(afterContinue.reading).toEqual(beforeContinue.reading);
+  expect(Date.parse(afterContinue.lastReadAt)).toBeGreaterThan(
+    Date.parse(beforeContinue.lastReadAt)
+  );
+});
+
+test("继续阅读入口保留未保存草稿保护", async ({ page }) => {
+  const candidate = await page.evaluate(async () => {
+    const library = window.LingoFlowArticleLibrary;
+    const created = await library.createArticle({
+      title: "Protected continue candidate",
+      content: "Opening this article must protect the current draft.",
+      sourceType: "paste"
+    });
+    return await library.updateArticleReading(created.id, {
+      progress: 0.40,
+      paragraphIndex: 1,
+      updatedAt: "2026-08-18T11:00:00.000Z",
+      lastReadAt: "2026-08-18T11:00:00.000Z"
+    });
+  });
+  const draft = "Unsaved draft that must remain on the page.";
+  await fillDraft(page, draft);
+  await openMyArticles(page);
+
+  page.once("dialog", dialog => dialog.dismiss());
+  await page.locator("#myArticlesContinueButton").click();
+  await expect(page.locator("#myArticlesModal")).toHaveClass(/show/);
+  await expect(page.locator("#inputText")).toHaveValue(draft);
+  await expect(page.locator("#myArticlesContinueButton")).toBeEnabled();
+
+  const stored = await page.evaluate(id => (
+    window.LingoFlowArticleLibrary.getArticle(id)
+  ), candidate.id);
+  expect(stored.lastReadAt).toBe(candidate.lastReadAt);
+});
+
+test("删除恢复会重算继续阅读且最近删除隐藏控件并保留筛选", async ({ page }) => {
+  const ids = await page.evaluate(async () => {
+    const library = window.LingoFlowArticleLibrary;
+    const latest = await library.createArticle({
+      title: "Latest continue candidate",
+      content: "The latest candidate can be deleted and restored.",
+      sourceType: "paste"
+    });
+    const fallback = await library.createArticle({
+      title: "Fallback continue candidate",
+      content: "This candidate should become the fallback.",
+      sourceType: "paste"
+    });
+    await library.updateArticleReading(latest.id, {
+      progress: 0.45,
+      paragraphIndex: 1,
+      updatedAt: "2026-08-18T12:00:00.000Z",
+      lastReadAt: "2026-08-18T12:00:00.000Z"
+    });
+    await library.updateArticleReading(fallback.id, {
+      progress: 0.35,
+      paragraphIndex: 1,
+      updatedAt: "2026-08-18T11:00:00.000Z",
+      lastReadAt: "2026-08-18T11:00:00.000Z"
+    });
+    return { latest: latest.id, fallback: fallback.id };
+  });
+
+  await openMyArticles(page);
+  await selectMyArticlesFilter(page, "阅读中", "reading");
+  const continueButton = page.locator("#myArticlesContinueButton");
+  await expect(continueButton).toHaveAttribute("data-article-id", ids.latest);
+
+  await getMyArticleItem(page, "Latest continue candidate")
+    .getByRole("button", { name: "删除文章：Latest continue candidate" })
+    .click();
+  await expect(continueButton).toHaveAttribute("data-article-id", ids.fallback);
+  await expect(continueButton).toContainText("Fallback continue candidate");
+
+  await openRecentlyDeleted(page);
+  await expect(page.locator("#myArticlesSummary")).toBeHidden();
+  await expect(page.locator("#myArticlesFilters")).toBeHidden();
+  await expect(page.locator("#myArticlesContinue")).toBeHidden();
+  await getMyArticleItem(page, "Latest continue candidate")
+    .getByRole("button", { name: "恢复文章：Latest continue candidate" })
+    .click();
+
+  await page.locator("#myArticlesViewButton").click();
+  await expect(page.locator("#myArticlesList")).toHaveAttribute("data-view", "active");
+  await expect(page.locator("#myArticlesList")).toHaveAttribute("data-filter", "reading");
+  await expect(page.locator("#myArticlesFilters")
+    .getByRole("button", { name: "阅读中", exact: true }))
+    .toHaveAttribute("aria-pressed", "true");
+  await expect(continueButton).toHaveAttribute("data-article-id", ids.latest);
+});
+
+test("快速切换筛选和最近删除时旧异步结果不会覆盖当前视图", async ({ page }) => {
+  await page.evaluate(async () => {
+    const library = window.LingoFlowArticleLibrary;
+    const reading = await library.createArticle({
+      title: "Async reading article",
+      content: "Reading result may arrive late.",
+      sourceType: "paste"
+    });
+    const completed = await library.createArticle({
+      title: "Async completed article",
+      content: "Completed result should remain current.",
+      sourceType: "paste"
+    });
+    const deleted = await library.createArticle({
+      title: "Async deleted article",
+      content: "Deleted view should remain current.",
+      sourceType: "paste"
+    });
+    await library.updateArticleReading(reading.id, {
+      progress: 0.40,
+      updatedAt: "2026-08-18T13:00:00.000Z"
+    });
+    await library.updateArticleReading(completed.id, {
+      progress: 0.96,
+      updatedAt: "2026-08-18T13:10:00.000Z"
+    });
+    await library.updateArticle(deleted.id, {
+      deletedAt: "2026-08-18T13:20:00.000Z"
+    });
+  });
+  await openMyArticles(page);
+
+  await page.evaluate(() => {
+    const original = window.LingoFlowArticleLibrary;
+    window.LingoFlowArticleLibrary = Object.freeze({
+      ...original,
+      listArticles: async options => {
+        const filterAtRequest = myArticlesFilter;
+        if (!options?.deletedOnly && filterAtRequest === "reading") {
+          await new Promise(resolve => setTimeout(resolve, 180));
+        }
+        return await original.listArticles(options);
+      }
+    });
+  });
+
+  await page.locator("#myArticlesFilters")
+    .getByRole("button", { name: "阅读中", exact: true }).click();
+  await page.waitForTimeout(20);
+  await page.locator("#myArticlesFilters")
+    .getByRole("button", { name: "已读完", exact: true }).click();
+  await expect(page.locator("#myArticlesList")).toHaveAttribute("data-filter", "completed");
+  await expect(getMyArticleItem(page, "Async completed article")).toBeVisible();
+  await page.waitForTimeout(220);
+  await expect(getMyArticleItem(page, "Async completed article")).toBeVisible();
+  await expect(getMyArticleItem(page, "Async reading article")).toHaveCount(0);
+
+  await page.locator("#myArticlesFilters")
+    .getByRole("button", { name: "阅读中", exact: true }).click();
+  await page.waitForTimeout(20);
+  await page.locator("#myArticlesViewButton").click();
+  await expect(page.locator("#myArticlesList")).toHaveAttribute("data-view", "deleted");
+  await expect(getMyArticleItem(page, "Async deleted article")).toBeVisible();
+  await page.waitForTimeout(220);
+  await expect(page.locator("#myArticlesList")).toHaveAttribute("data-view", "deleted");
+  await expect(getMyArticleItem(page, "Async deleted article")).toBeVisible();
+  await expect(getMyArticleItem(page, "Async reading article")).toHaveCount(0);
 });
