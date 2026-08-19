@@ -77,6 +77,21 @@ async function selectMyArticlesFilter(page, label, filterKey) {
   await expect(page.locator("#myArticlesList")).not.toHaveAttribute("data-state", "loading");
 }
 
+async function searchMyArticles(page, query, normalizedQuery = query) {
+  await page.locator("#myArticlesSearchInput").fill(query);
+  await expect(page.locator("#myArticlesList")).toHaveAttribute(
+    "data-search-query",
+    normalizedQuery
+  );
+  await expect(page.locator("#myArticlesList")).not.toHaveAttribute("data-state", "loading");
+}
+
+async function expectMyArticlesHistoryView(page, view) {
+  await expect.poll(() => page.evaluate(() => (
+    history.state?.lingoflowMyArticles?.view || null
+  ))).toBe(view);
+}
+
 function getMyArticleItem(page, title) {
   return page.locator(".myArticleItem").filter({ hasText: title });
 }
@@ -1200,7 +1215,10 @@ test("恢复保留文章身份和进度、更新 updatedAt，并在刷新后保�
   expect(Date.parse(restored.updatedAt)).toBeGreaterThan(Date.parse(original.updatedAt));
 
   await page.reload();
-  await openMyArticles(page);
+  await expect(page.locator("#myArticlesModal")).toHaveClass(/show/);
+  await expect(page.locator("#myArticlesList")).toHaveAttribute("data-view", "deleted");
+  await page.locator("#myArticlesViewButton").click();
+  await expect(page.locator("#myArticlesList")).toHaveAttribute("data-view", "active");
   await expect(getMyArticleItem(page, "Restore complete article")).toBeVisible();
   await openRecentlyDeleted(page);
   await expect(getMyArticleItem(page, "Restore complete article")).toHaveCount(0);
@@ -1828,4 +1846,541 @@ test("快速切换筛选和最近删除时旧异步结果不会覆盖当前视�
   await expect(page.locator("#myArticlesList")).toHaveAttribute("data-view", "deleted");
   await expect(getMyArticleItem(page, "Async deleted article")).toBeVisible();
   await expect(getMyArticleItem(page, "Async reading article")).toHaveCount(0);
+});
+
+test("文章搜索规范化 title 并支持大小写、空白、NFKC 和中文", async ({ page }) => {
+  await page.evaluate(async () => {
+    const library = window.LingoFlowArticleLibrary;
+    await library.createArticle({
+      title: "Travel   Notes for Summer",
+      content: "A summer travel article.",
+      sourceType: "paste"
+    });
+    await library.createArticle({
+      title: "Ｆｕｌｌｗｉｄｔｈ Guide",
+      content: "A full width title article.",
+      sourceType: "paste"
+    });
+    await library.createArticle({
+      title: "上海散步指南",
+      content: "一篇中文标题文章。",
+      sourceType: "paste"
+    });
+  });
+
+  await openMyArticles(page);
+  await searchMyArticles(page, "  TRAVEL   notes  ", "travel notes");
+  await expect(page.locator(".myArticleItem")).toHaveCount(1);
+  await expect(getMyArticleItem(page, "Travel   Notes for Summer")).toBeVisible();
+
+  await searchMyArticles(page, "fullWIDTH", "fullwidth");
+  await expect(page.locator(".myArticleItem")).toHaveCount(1);
+  await expect(getMyArticleItem(page, "Ｆｕｌｌｗｉｄｔｈ Guide")).toBeVisible();
+
+  await searchMyArticles(page, "上海散步");
+  await expect(page.locator(".myArticleItem")).toHaveCount(1);
+  await expect(getMyArticleItem(page, "上海散步指南")).toBeVisible();
+});
+
+test("搜索只匹配 title 以及 TXT/library sourceTitle，不匹配 paste 残留来源或正文", async ({ page }) => {
+  await page.evaluate(async () => {
+    const library = window.LingoFlowArticleLibrary;
+    await library.createArticle({
+      title: "TXT article",
+      content: "Plain TXT content.",
+      sourceType: "txt",
+      sourceTitle: "Ocean Journey.txt"
+    });
+    await library.createArticle({
+      title: "Library article",
+      content: "Plain library content.",
+      sourceType: "library",
+      sourceId: "library-origins",
+      sourceTitle: "Library Origins"
+    });
+    await library.createArticle({
+      title: "Paste article",
+      content: "Plain paste content.",
+      sourceType: "paste",
+      sourceTitle: "Private Residue.txt"
+    });
+    await library.createArticle({
+      title: "Content only article",
+      content: "HiddenNeedle appears only in article content.",
+      sourceType: "paste"
+    });
+  });
+
+  await openMyArticles(page);
+  await searchMyArticles(page, "ocean journey");
+  await expect(getMyArticleItem(page, "TXT article")).toBeVisible();
+  await expect(page.locator(".myArticleItem")).toHaveCount(1);
+
+  await searchMyArticles(page, "library origins");
+  await expect(getMyArticleItem(page, "Library article")).toBeVisible();
+  await expect(page.locator(".myArticleItem")).toHaveCount(1);
+
+  await searchMyArticles(page, "private residue");
+  await expect(page.locator("#myArticlesList")).toContainText("没有找到相关文章");
+
+  await searchMyArticles(page, "hiddenneedle");
+  await expect(page.locator("#myArticlesList")).toContainText("没有找到相关文章");
+});
+
+test("搜索与五类状态筛选使用 AND 关系并在切换时保留搜索词", async ({ page }) => {
+  await page.evaluate(async () => {
+    const library = window.LingoFlowArticleLibrary;
+    const create = async (title, progress, updatedAt) => {
+      const article = await library.createArticle({
+        title,
+        content: `${title} content.`,
+        sourceType: "paste"
+      });
+      if (progress > 0) {
+        await library.updateArticleReading(article.id, {
+          progress,
+          paragraphIndex: 1,
+          updatedAt
+        });
+      }
+    };
+
+    await create("Project not started", 0, null);
+    await create("Project reading", 0.42, null);
+    await create("Project near complete", 0.80, "2026-08-19T08:00:00.000Z");
+    await create("Project completed", 0.95, "2026-08-19T09:00:00.000Z");
+    await create("Other reading", 0.50, "2026-08-19T10:00:00.000Z");
+  });
+
+  await openMyArticles(page);
+  const expectedSummary =
+    "共 5 篇 · 未开始 1 · 阅读中 2 · 接近读完 1 · 已读完 1";
+  await searchMyArticles(page, "project");
+  await expect(page.locator(".myArticleItem")).toHaveCount(4);
+  await expect(page.locator("#myArticlesSummary")).toHaveText(expectedSummary);
+
+  const cases = [
+    ["未开始", "not-started", "Project not started"],
+    ["阅读中", "reading", "Project reading"],
+    ["接近读完", "near-complete", "Project near complete"],
+    ["已读完", "completed", "Project completed"]
+  ];
+  for (const [label, key, title] of cases) {
+    await selectMyArticlesFilter(page, label, key);
+    await expect(page.locator("#myArticlesSearchInput")).toHaveValue("project");
+    await expect(page.locator(".myArticleItem")).toHaveCount(1);
+    await expect(getMyArticleItem(page, title)).toBeVisible();
+    await expect(page.locator("#myArticlesSummary")).toHaveText(expectedSummary);
+  }
+
+  await selectMyArticlesFilter(page, "全部", "all");
+  await expect(page.locator(".myArticleItem")).toHaveCount(4);
+  await page.locator("#myArticlesSearchInput").fill("");
+  await expect(page.locator("#myArticlesList")).toHaveAttribute("data-search-query", "");
+  await expect(page.locator(".myArticleItem")).toHaveCount(5);
+});
+
+test("文章搜索区分三种空状态", async ({ page }) => {
+  await page.evaluate(async () => {
+    const library = window.LingoFlowArticleLibrary;
+    const reading = await library.createArticle({
+      title: "Reading alpha",
+      content: "Reading alpha content.",
+      sourceType: "paste"
+    });
+    await library.updateArticleReading(reading.id, {
+      progress: 0.40,
+      updatedAt: "2026-08-19T11:00:00.000Z"
+    });
+  });
+
+  await openMyArticles(page);
+  await searchMyArticles(page, "missing");
+  await expect(page.locator("#myArticlesList")).toContainText("没有找到相关文章");
+
+  await selectMyArticlesFilter(page, "阅读中", "reading");
+  await expect(page.locator("#myArticlesList"))
+    .toContainText("没有符合搜索和筛选条件的文章");
+
+  await page.locator("#myArticlesSearchInput").fill("");
+  await expect(getMyArticleItem(page, "Reading alpha")).toBeVisible();
+  await selectMyArticlesFilter(page, "已读完", "completed");
+  await expect(page.locator("#myArticlesList")).toContainText("没有符合当前状态的文章");
+});
+
+test("搜索不影响统计、继续阅读候选或文章持久化数据", async ({ page }) => {
+  const candidate = await page.evaluate(async () => {
+    const library = window.LingoFlowArticleLibrary;
+    const article = await library.createArticle({
+      title: "Continue candidate",
+      content: "This article remains the continue-reading candidate.",
+      sourceType: "paste"
+    });
+    return await library.updateArticleReading(article.id, {
+      progress: 0.52,
+      paragraphIndex: 2,
+      updatedAt: "2026-08-19T12:00:00.000Z",
+      lastReadAt: "2026-08-19T12:00:00.000Z"
+    });
+  });
+
+  const before = await getArticles(page);
+  await openMyArticles(page);
+  const summary = "共 1 篇 · 未开始 0 · 阅读中 1 · 接近读完 0 · 已读完 0";
+  await expect(page.locator("#myArticlesSummary")).toHaveText(summary);
+  await expect(page.locator("#myArticlesContinueButton"))
+    .toHaveAttribute("data-article-id", candidate.id);
+
+  await searchMyArticles(page, "no matching title");
+  await expect(page.locator("#myArticlesList")).toContainText("没有找到相关文章");
+  await expect(page.locator("#myArticlesSummary")).toHaveText(summary);
+  await expect(page.locator("#myArticlesContinueButton"))
+    .toHaveAttribute("data-article-id", candidate.id);
+
+  expect(await getArticles(page)).toEqual(before);
+});
+
+test("最近删除隐藏并忽略搜索，同一 modal 会话保留搜索，重开后重置", async ({ page }) => {
+  await page.evaluate(async () => {
+    const library = window.LingoFlowArticleLibrary;
+    await library.createArticle({
+      title: "Active compass article",
+      content: "Active article content.",
+      sourceType: "paste"
+    });
+    const deleted = await library.createArticle({
+      title: "Deleted unrelated article",
+      content: "Deleted article content.",
+      sourceType: "paste"
+    });
+    await library.updateArticle(deleted.id, {
+      deletedAt: "2026-08-19T13:00:00.000Z"
+    });
+  });
+
+  await openMyArticles(page);
+  await searchMyArticles(page, "compass");
+  await expect(getMyArticleItem(page, "Active compass article")).toBeVisible();
+
+  await openRecentlyDeleted(page);
+  await expect(page.locator("#myArticlesSearch")).toBeHidden();
+  await expect(getMyArticleItem(page, "Deleted unrelated article")).toBeVisible();
+  await expect(page.locator("#myArticlesList")).not.toHaveAttribute("data-search-query");
+
+  await page.locator("#myArticlesViewButton").click();
+  await expect(page.locator("#myArticlesSearch")).toBeVisible();
+  await expect(page.locator("#myArticlesSearchInput")).toHaveValue("compass");
+  await expect(getMyArticleItem(page, "Active compass article")).toBeVisible();
+
+  await page.getByRole("button", { name: "关闭我的文章" }).click();
+  await openMyArticles(page);
+  await expect(page.locator("#myArticlesSearchInput")).toHaveValue("");
+  await expect(page.locator("#myArticlesList")).toHaveAttribute("data-search-query", "");
+  await expect(page.locator("#myArticlesFilters")
+    .getByRole("button", { name: "全部", exact: true }))
+    .toHaveAttribute("aria-pressed", "true");
+
+  await page.locator("#myArticlesSearchInput").fill("pending close");
+  await page.getByRole("button", { name: "关闭我的文章" }).click();
+  await page.waitForTimeout(190);
+  await openMyArticles(page);
+  await expect(page.locator("#myArticlesSearchInput")).toHaveValue("");
+  await expect(page.locator("#myArticlesList")).toHaveAttribute("data-search-query", "");
+});
+
+test("150ms debounce、中文输入合成与快速状态切换不会留下旧搜索结果", async ({ page }) => {
+  await page.evaluate(async () => {
+    const library = window.LingoFlowArticleLibrary;
+    const slow = await library.createArticle({
+      title: "Slow reading result",
+      content: "Slow result content.",
+      sourceType: "paste"
+    });
+    const fast = await library.createArticle({
+      title: "Fast completed result",
+      content: "Fast result content.",
+      sourceType: "paste"
+    });
+    await library.updateArticleReading(slow.id, {
+      progress: 0.40,
+      updatedAt: "2026-08-19T14:00:00.000Z"
+    });
+    await library.updateArticleReading(fast.id, {
+      progress: 0.96,
+      updatedAt: "2026-08-19T14:10:00.000Z"
+    });
+  });
+  await openMyArticles(page);
+
+  await page.evaluate(() => {
+    const original = window.LingoFlowArticleLibrary;
+    window.articleSearchListCalls = 0;
+    window.LingoFlowArticleLibrary = Object.freeze({
+      ...original,
+      listArticles: async options => {
+        window.articleSearchListCalls += 1;
+        const queryAtRequest = myArticlesSearchQuery;
+        if (!options?.deletedOnly && queryAtRequest === "slow") {
+          await new Promise(resolve => setTimeout(resolve, 180));
+        }
+        return await original.listArticles(options);
+      }
+    });
+  });
+
+  await page.evaluate(() => {
+    const input = document.getElementById("myArticlesSearchInput");
+    ["s", "sl", "slow"].forEach(value => {
+      input.value = value;
+      input.dispatchEvent(new InputEvent("input", { bubbles: true, data: value }));
+    });
+  });
+  await page.waitForTimeout(80);
+  expect(await page.evaluate(() => window.articleSearchListCalls)).toBe(0);
+  await expect.poll(() => page.evaluate(() => window.articleSearchListCalls)).toBe(1);
+
+  const callsBeforeComposition = await page.evaluate(() => window.articleSearchListCalls);
+  await page.evaluate(() => {
+    const input = document.getElementById("myArticlesSearchInput");
+    input.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+    input.value = "中文";
+    input.dispatchEvent(new InputEvent("input", {
+      bubbles: true,
+      data: "中文",
+      isComposing: true
+    }));
+  });
+  await page.waitForTimeout(190);
+  expect(await page.evaluate(() => window.articleSearchListCalls)).toBe(callsBeforeComposition);
+  await page.evaluate(() => {
+    const input = document.getElementById("myArticlesSearchInput");
+    input.dispatchEvent(
+      new CompositionEvent("compositionend", { bubbles: true, data: "中文" })
+    );
+    input.value = "中文";
+    input.dispatchEvent(new InputEvent("input", {
+      bubbles: true,
+      data: "中文",
+      isComposing: false
+    }));
+  });
+  expect(await page.evaluate(() => ({
+    composing: myArticlesSearchComposing,
+    query: myArticlesSearchQuery,
+    value: document.getElementById("myArticlesSearchInput").value,
+    modalOpen: document.getElementById("myArticlesModal").classList.contains("show"),
+    view: myArticlesView
+  }))).toEqual({
+    composing: false,
+    query: "中文",
+    value: "中文",
+    modalOpen: true,
+    view: "active"
+  });
+  await expect.poll(() => page.evaluate(() => window.articleSearchListCalls))
+    .toBe(callsBeforeComposition + 1);
+
+  await page.locator("#myArticlesSearchInput").fill("slow");
+  await page.waitForTimeout(165);
+  await page.locator("#myArticlesSearchInput").fill("fast");
+  await page.locator("#myArticlesFilters")
+    .getByRole("button", { name: "已读完", exact: true }).click();
+  await expect(page.locator("#myArticlesList")).toHaveAttribute("data-filter", "completed");
+  await expect(page.locator("#myArticlesList")).toHaveAttribute("data-search-query", "fast");
+  await expect(getMyArticleItem(page, "Fast completed result")).toBeVisible();
+  await page.waitForTimeout(220);
+  await expect(getMyArticleItem(page, "Fast completed result")).toBeVisible();
+  await expect(getMyArticleItem(page, "Slow reading result")).toHaveCount(0);
+});
+
+test("浏览器 Back 关闭 active modal 且 Forward 可恢复，不离开或重载页面", async ({ page }) => {
+  const originalUrl = page.url();
+  const pageToken = await page.evaluate(() => {
+    window.myArticlesPageToken = crypto.randomUUID();
+    return window.myArticlesPageToken;
+  });
+
+  await openMyArticles(page);
+  await expectMyArticlesHistoryView(page, "active");
+
+  await page.goBack();
+  await expect(page.locator("#myArticlesModal")).not.toHaveClass(/show/);
+  await expectMyArticlesHistoryView(page, null);
+  expect(page.url()).toBe(originalUrl);
+  expect(await page.evaluate(() => window.myArticlesPageToken)).toBe(pageToken);
+
+  await page.goForward();
+  await expect(page.locator("#myArticlesModal")).toHaveClass(/show/);
+  await expect(page.locator("#myArticlesList")).not.toHaveAttribute("data-state", "loading");
+  await expectMyArticlesHistoryView(page, "active");
+  expect(page.url()).toBe(originalUrl);
+  expect(await page.evaluate(() => window.myArticlesPageToken)).toBe(pageToken);
+});
+
+test("最近删除连续 Back 按 deleted、active、closed 导航并保留会话筛选", async ({ page }) => {
+  await page.evaluate(async () => {
+    const article = await window.LingoFlowArticleLibrary.createArticle({
+      title: "History reading article",
+      content: "History reading article content.",
+      sourceType: "paste"
+    });
+    await window.LingoFlowArticleLibrary.updateArticleReading(article.id, {
+      progress: 0.40,
+      updatedAt: "2026-08-19T15:00:00.000Z"
+    });
+  });
+
+  await openMyArticles(page);
+  const activeHistoryLength = await page.evaluate(() => history.length);
+  await searchMyArticles(page, "history");
+  await selectMyArticlesFilter(page, "阅读中", "reading");
+  expect(await page.evaluate(() => history.length)).toBe(activeHistoryLength);
+  await expectMyArticlesHistoryView(page, "active");
+
+  await openRecentlyDeleted(page);
+  await expectMyArticlesHistoryView(page, "deleted");
+  expect(await page.evaluate(() => history.length)).toBe(activeHistoryLength + 1);
+
+  await page.goBack();
+  await expect(page.locator("#myArticlesModal")).toHaveClass(/show/);
+  await expect(page.locator("#myArticlesList")).toHaveAttribute("data-view", "active");
+  await expect(page.locator("#myArticlesSearchInput")).toHaveValue("history");
+  await expect(page.locator("#myArticlesFilters")
+    .getByRole("button", { name: "阅读中", exact: true }))
+    .toHaveAttribute("aria-pressed", "true");
+  await expectMyArticlesHistoryView(page, "active");
+
+  await page.goBack();
+  await expect(page.locator("#myArticlesModal")).not.toHaveClass(/show/);
+  await expectMyArticlesHistoryView(page, null);
+  await expect(page.locator("#myArticlesSearchInput")).toHaveValue("");
+
+  await page.goForward();
+  await expect(page.locator("#myArticlesModal")).toHaveClass(/show/);
+  await expectMyArticlesHistoryView(page, "active");
+  await expect(page.locator("#myArticlesSearchInput")).toHaveValue("");
+  await expect(page.locator("#myArticlesFilters")
+    .getByRole("button", { name: "全部", exact: true }))
+    .toHaveAttribute("aria-pressed", "true");
+
+  await page.goForward();
+  await expect(page.locator("#myArticlesList")).toHaveAttribute("data-view", "deleted");
+  await expectMyArticlesHistoryView(page, "deleted");
+});
+
+test("最近删除的返回按钮只退回 active 视图", async ({ page }) => {
+  await openMyArticles(page);
+  await openRecentlyDeleted(page);
+  await page.locator("#myArticlesViewButton").click();
+
+  await expect(page.locator("#myArticlesModal")).toHaveClass(/show/);
+  await expect(page.locator("#myArticlesList")).toHaveAttribute("data-view", "active");
+  await expect(page.locator("#myArticlesViewButton")).toHaveText("最近删除");
+  await expectMyArticlesHistoryView(page, "active");
+});
+
+test("关闭按钮从 active 或 deleted 都安全关闭整个 modal", async ({ page }) => {
+  const originalUrl = page.url();
+
+  await openMyArticles(page);
+  await page.getByRole("button", { name: "关闭我的文章" }).click();
+  await expect(page.locator("#myArticlesModal")).not.toHaveClass(/show/);
+  await expectMyArticlesHistoryView(page, null);
+  expect(page.url()).toBe(originalUrl);
+
+  await openMyArticles(page);
+  await openRecentlyDeleted(page);
+  await page.getByRole("button", { name: "关闭我的文章" }).click();
+  await expect(page.locator("#myArticlesModal")).not.toHaveClass(/show/);
+  await expectMyArticlesHistoryView(page, null);
+  expect(page.url()).toBe(originalUrl);
+
+  await page.goForward();
+  await expect(page.locator("#myArticlesModal")).toHaveClass(/show/);
+  await expectMyArticlesHistoryView(page, "active");
+});
+
+test("快速 Back 会取消待执行搜索和旧异步 render", async ({ page }) => {
+  await page.evaluate(async () => {
+    await window.LingoFlowArticleLibrary.createArticle({
+      title: "Delayed history search",
+      content: "Delayed history search content.",
+      sourceType: "paste"
+    });
+  });
+  await openMyArticles(page);
+
+  await page.evaluate(() => {
+    const original = window.LingoFlowArticleLibrary;
+    window.LingoFlowArticleLibrary = Object.freeze({
+      ...original,
+      listArticles: async options => {
+        if (!options?.deletedOnly && myArticlesSearchQuery === "delayed") {
+          await new Promise(resolve => setTimeout(resolve, 220));
+        }
+        return original.listArticles(options);
+      }
+    });
+  });
+
+  await page.locator("#myArticlesSearchInput").fill("delayed");
+  await page.waitForTimeout(165);
+  await page.goBack();
+  await expect(page.locator("#myArticlesModal")).not.toHaveClass(/show/);
+  await expectMyArticlesHistoryView(page, null);
+  await page.waitForTimeout(260);
+  await expect(page.locator("#myArticlesModal")).not.toHaveClass(/show/);
+  await expect(page.locator("#myArticlesSearchInput")).toHaveValue("");
+  expect(await page.evaluate(() => myArticlesSearchTimer)).toBeNull();
+});
+
+test("刷新会按 active/deleted history state 恢复且不重复 push", async ({ page }) => {
+  await openMyArticles(page);
+  await page.locator("#myArticlesSearchInput").fill("reset on refresh");
+  await selectMyArticlesFilter(page, "已读完", "completed");
+  const activeHistoryLength = await page.evaluate(() => history.length);
+
+  await page.reload();
+  await expect(page.locator("#myArticlesModal")).toHaveClass(/show/);
+  await expect(page.locator("#myArticlesList")).toHaveAttribute("data-view", "active");
+  await expect(page.locator("#myArticlesList")).not.toHaveAttribute("data-state", "loading");
+  await expectMyArticlesHistoryView(page, "active");
+  expect(await page.evaluate(() => history.length)).toBe(activeHistoryLength);
+  await expect(page.locator("#myArticlesSearchInput")).toHaveValue("");
+  await expect(page.locator("#myArticlesFilters")
+    .getByRole("button", { name: "全部", exact: true }))
+    .toHaveAttribute("aria-pressed", "true");
+
+  await openRecentlyDeleted(page);
+  const deletedHistoryLength = await page.evaluate(() => history.length);
+  await page.reload();
+  await expect(page.locator("#myArticlesModal")).toHaveClass(/show/);
+  await expect(page.locator("#myArticlesList")).toHaveAttribute("data-view", "deleted");
+  await expect(page.locator("#myArticlesList")).not.toHaveAttribute("data-state", "loading");
+  await expectMyArticlesHistoryView(page, "deleted");
+  expect(await page.evaluate(() => history.length)).toBe(deletedHistoryLength);
+  await expect(page.locator("#myArticlesSearch")).toBeHidden();
+  await expect(page.locator("#myArticlesSearchInput")).toHaveValue("");
+});
+
+test("刷新时会清理无效的我的文章 history marker", async ({ page }) => {
+  const originalUrl = page.url();
+  await page.evaluate(() => {
+    history.replaceState({
+      preservedState: "keep-me",
+      lingoflowMyArticles: {
+        version: 999,
+        view: "deleted",
+        depth: 2,
+        sessionId: "invalid-session"
+      }
+    }, "");
+  });
+
+  await page.reload();
+  await expect(page.locator("#myArticlesModal")).not.toHaveClass(/show/);
+  expect(await page.evaluate(() => history.state)).toEqual({
+    preservedState: "keep-me"
+  });
+  expect(page.url()).toBe(originalUrl);
 });

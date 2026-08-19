@@ -335,6 +335,15 @@ I felt nervous when I asked my friends for advice, but their suggestions helped 
         </button>
       </div>
 
+      <div id="myArticlesSearch" class="myArticlesSearch">
+        <input id="myArticlesSearchInput" class="smallInput" type="search"
+               placeholder="搜索文章标题或来源文件名…"
+               aria-label="搜索文章标题或来源文件名"
+               oninput="handleMyArticlesSearchInput(event)"
+               oncompositionstart="handleMyArticlesSearchCompositionStart()"
+               oncompositionend="handleMyArticlesSearchCompositionEnd(this.value)">
+      </div>
+
       <div id="myArticlesFilters" class="myArticlesFilters" role="group"
            aria-label="按阅读状态筛选文章">
         <button class="secondary myArticlesFilterButton" type="button"
