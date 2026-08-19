@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>英语点读阅读器 V0.5.5</title>
+<title>LingoFlow V0.6 · 英语点读阅读器</title>
 
 
  <link rel="stylesheet" href="css/style.css">
@@ -16,11 +16,11 @@
 
   <h1>英语点读阅读器</h1>
   <div class="description">
-    V0.5.5 · 稳定版：发音偏好、词组收藏、离线词库引导与体验优化。
+    文章库、阅读进度与继续阅读体验升级。
   </div>
 
   <div class="topActions">
-    <span class="versionBadge">V0.5.5</span>
+    <span class="versionBadge">V0.6 · 稳定版</span>
     <button class="secondary compactButton" onclick="openChangelog()">📝 更新日志</button>
     <span class="shortcutHint">⌘/Ctrl + K 快速查词</span>
   </div>
@@ -128,11 +128,11 @@ I felt nervous when I asked my friends for advice, but their suggestions helped 
       <div class="dropZoneIcon">📄</div>
       <div class="dropZoneTitle">拖拽 TXT 文件到这里</div>
       <div class="dropZoneHint">或点击此区域选择文件</div>
-      <div class="dropZoneSub">载入完成后，再点击“生成可点击文章”</div>
+      <div class="dropZoneSub">载入完成后，再点击“开始阅读”</div>
     </div>
 
     <div class="controls">
-      <button onclick="generateArticle()">生成可点击文章</button>
+      <button onclick="generateArticle()">开始阅读</button>
       <button id="myArticlesInputButton" class="secondary" type="button"
               onclick="openMyArticles()">📚 我的文章</button>
       <input type="file" id="fileInput" accept=".txt,text/plain">
@@ -448,7 +448,7 @@ I felt nervous when I asked my friends for advice, but their suggestions helped 
       <div class="settingsGrid">
         <div class="settingItem">
           <div class="settingLabel">当前版本</div>
-          <div class="settingValue">V0.5.5</div>
+          <div class="settingValue">V0.6</div>
         </div>
 
         <div class="settingItem">
@@ -598,7 +598,7 @@ I felt nervous when I asked my friends for advice, but their suggestions helped 
         <input id="fullBackupFileInput" type="file" accept=".erbackup,.txt" hidden>
 
         <div id="backupStatus" class="backupStatus">
-          日常迁移优先使用“学习数据备份 → 智能合并”。本地词典丢失后，可以重新自动加载或手动导入，无需随日常备份一起保存。
+          日常迁移优先使用“学习数据备份 → 智能合并”。当前备份暂不包含“我的文章”及文章阅读进度；换设备或清除浏览器站点数据前请注意。本地词典丢失后，可以重新自动加载或手动导入。
         </div>
       </div>
 
@@ -674,19 +674,17 @@ I felt nervous when I asked my friends for advice, but their suggestions helped 
       <div class="modalHeader">
         <div>
           <div class="modalTitle">❓ 一分钟上手</div>
-          <div class="modalSub">LingoFlow V0.5.5</div>
+          <div class="modalSub">LingoFlow V0.6</div>
         </div>
         <button class="iconClose" onclick="closeModal('helpModal')">×</button>
       </div>
 
       <div class="helpSteps">
-        <div class="helpStep"><b>1. 首次准备</b><span>首次进入可选择“自动加载词库”“手动导入”或“稍后再说”；完成后词库保存在本机，日常查询无需联网。</span></div>
-        <div class="helpStep"><b>2. 开始阅读</b><span>粘贴英文或拖入 TXT → 生成文章 → 点击不会的词。</span></div>
-        <div class="helpStep"><b>3. 查询 ≠ 收藏</b><span>点词只进入“查询记录”；想重点学习的单词可以收藏，也可以划选 2–20 个英文词收藏为词组。</span></div>
-        <div class="helpStep"><b>4. 收藏可自定义</b><span>单词和词组都可编辑释义、上下文和备注；词库未收录的表达也能收藏。</span></div>
-        <div class="helpStep"><b>5. 换电脑</b><span>优先导出“学习数据备份”，在另一台电脑选择“智能合并”；离线词库可以重新准备。</span></div>
-        <div class="helpStep"><b>6. 听发音</b><span>可在“设置”中提前选择默认英语声音和语速，选择会自动保存，并统一用于单词、词组和收藏朗读。</span></div>
-        <div class="helpStep"><b>7. 导入 TXT</b><span>把 TXT 拖进大区域，或者直接点击该区域选择文件；载入后再生成文章。</span></div>
+        <div class="helpStep"><b>1. 准备离线词库</b><span>首次使用可选择自动加载或手动导入；完成后词库保存在本机，后续日常查词无需重复下载。</span></div>
+        <div class="helpStep"><b>2. 开始阅读</b><span>粘贴英文或导入 TXT，点击“开始阅读”；文章会自动保存到“我的文章”。</span></div>
+        <div class="helpStep"><b>3. 我的文章与继续阅读</b><span>阅读进度会自动保存，再次打开可恢复位置；“继续阅读”可快速回到最近阅读中的文章。</span></div>
+        <div class="helpStep"><b>4. 管理文章</b><span>可查看阅读状态、按状态筛选、搜索标题或来源文件名，并从“最近删除”恢复文章。</span></div>
+        <div class="helpStep"><b>5. 阅读与学习</b><span>点词查词、朗读并收藏单词或词组；可在设置中备份学习数据，但当前备份暂不包含“我的文章”及文章阅读进度。</span></div>
       </div>
 
       <div class="shortcutBox">
@@ -694,6 +692,7 @@ I felt nervous when I asked my friends for advice, but their suggestions helped 
         <span>Ctrl/⌘ + K：直接查词</span>
         <span>Ctrl/⌘ + F：阅读时定位原文搜索</span>
         <span>Esc：关闭弹窗 / 释义卡</span>
+        <span>在“我的文章”中使用浏览器返回，会先退出最近删除或关闭文章窗口，不会直接离开页面。</span>
       </div>
     </div>
   </div>
@@ -707,6 +706,19 @@ I felt nervous when I asked my friends for advice, but their suggestions helped 
           <div class="modalSub">记录每个版本真正改了什么，方便以后继续迭代。</div>
         </div>
         <button class="iconClose" onclick="closeModal('changelogModal')">×</button>
+      </div>
+
+      <div class="changeVersion">
+        <div class="changeVersionTitle">V0.6</div>
+        <div class="changeDate">2026-08-19</div>
+        <ul>
+          <li>新增“我的文章”，开始阅读后文章会自动保存。</li>
+          <li>阅读进度会自动保存，重新打开文章时可恢复位置并继续阅读。</li>
+          <li>新增阅读状态和状态筛选，查找不同进度的文章更方便。</li>
+          <li>支持按文章标题或来源文件名搜索。</li>
+          <li>新增“最近删除”，可以恢复误删的文章。</li>
+          <li>改进“我的文章”的浏览器返回体验，返回时会先退出当前文章窗口。</li>
+        </ul>
       </div>
 
       <div class="changeVersion">

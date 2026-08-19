@@ -3883,7 +3883,7 @@ function setupTextDropZone() {
 
   const showLoaded = file => {
     if (title) title.textContent = `已载入：${file.name}`;
-    if (hint) hint.textContent = "现在点击“生成可点击文章”即可开始阅读";
+    if (hint) hint.textContent = "现在点击“开始阅读”，文章会自动保存";
   };
 
   zone.addEventListener("click", () => fileInput.click());
@@ -6188,7 +6188,7 @@ async function renderMyArticles() {
       setMyArticlesMessage(
         deletedView
           ? "最近删除中没有文章。"
-          : "还没有文章。粘贴或导入 TXT 后，点击“生成可点击文章”会自动保存到这里。",
+          : "还没有文章。粘贴或导入 TXT 后，点击“开始阅读”会自动保存到这里。",
         "empty"
       );
       return;
