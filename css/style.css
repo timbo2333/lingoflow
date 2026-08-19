@@ -715,6 +715,19 @@
     font-size: 13px;
   }
 
+  .myArticlesSearch {
+    width: 100%;
+    margin-bottom: 12px;
+  }
+
+  .myArticlesSearch[hidden] {
+    display: none;
+  }
+
+  .myArticlesSearch input {
+    width: 100%;
+  }
+
   .myArticlesFilters {
     display: flex;
     gap: 7px;

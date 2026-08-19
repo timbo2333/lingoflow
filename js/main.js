@@ -3410,6 +3410,9 @@ const SENTENCE_ABBREVIATIONS = new Set([
 const READING_PROGRESS_DEBOUNCE_MS = 700;
 const ARTICLE_NEAR_COMPLETE_PROGRESS = 0.80;
 const ARTICLE_COMPLETED_PROGRESS = 0.95;
+const MY_ARTICLES_SEARCH_DEBOUNCE_MS = 150;
+const MY_ARTICLES_HISTORY_KEY = "lingoflowMyArticles";
+const MY_ARTICLES_HISTORY_VERSION = 1;
 const MY_ARTICLES_FILTER_KEYS = new Set([
   "all", "not-started", "reading", "near-complete", "completed"
 ]);
@@ -3422,6 +3425,12 @@ let articleSavePromise = null;
 let myArticlesRenderVersion = 0;
 let myArticlesView = "active";
 let myArticlesFilter = "all";
+let myArticlesSearchQuery = "";
+let myArticlesSearchTimer = null;
+let myArticlesSearchComposing = false;
+let myArticlesHistorySessionId = null;
+let myArticlesHistoryNavigationPending = false;
+let myArticlesHistoryInitialized = false;
 const myArticleOperations = new Set();
 let readingProgressSaveTimer = null;
 let readingProgressUIFrame = null;
@@ -4553,6 +4562,10 @@ document.getElementById("articleFindInput").addEventListener("keydown", event =>
    ========================= */
 
 function closeModal(id) {
+  if (id === "myArticlesModal") {
+    closeMyArticlesModal();
+    return;
+  }
   document.getElementById(id).classList.remove("show");
 }
 
@@ -5454,6 +5467,34 @@ function filterMyArticlesByStatus(articles, filterKey = myArticlesFilter) {
   return articles.filter(article => getArticleReadingStatus(article).key === filterKey);
 }
 
+function normalizeArticleSearchText(value) {
+  return String(value ?? "")
+    .normalize("NFKC")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toLocaleLowerCase();
+}
+
+function articleMatchesSearch(article, normalizedQuery) {
+  if (!normalizedQuery) return true;
+
+  if (normalizeArticleSearchText(article?.title).includes(normalizedQuery)) {
+    return true;
+  }
+
+  if (article?.sourceType !== "txt" && article?.sourceType !== "library") {
+    return false;
+  }
+
+  return normalizeArticleSearchText(article?.sourceTitle).includes(normalizedQuery);
+}
+
+function filterMyArticlesBySearch(articles, normalizedQuery = myArticlesSearchQuery) {
+  if (!Array.isArray(articles)) return [];
+  if (!normalizedQuery) return articles;
+  return articles.filter(article => articleMatchesSearch(article, normalizedQuery));
+}
+
 function getContinueReadingArticle(articles) {
   if (!Array.isArray(articles)) return null;
 
@@ -5478,6 +5519,235 @@ function updateMyArticlesFilterUI(deletedView = false) {
       String(!deletedView && button.dataset.filter === myArticlesFilter)
     );
   });
+}
+
+function updateMyArticlesSearchUI(deletedView = false) {
+  const container = document.getElementById("myArticlesSearch");
+  if (container) container.hidden = deletedView;
+}
+
+function cancelMyArticlesSearchDebounce() {
+  if (myArticlesSearchTimer === null) return;
+  clearTimeout(myArticlesSearchTimer);
+  myArticlesSearchTimer = null;
+}
+
+function resetMyArticlesSearchState() {
+  cancelMyArticlesSearchDebounce();
+  myArticlesSearchQuery = "";
+  myArticlesSearchComposing = false;
+  myArticlesRenderVersion += 1;
+
+  const input = document.getElementById("myArticlesSearchInput");
+  if (input) input.value = "";
+}
+
+function applyMyArticlesSearchInput(value, force = false) {
+  const normalizedQuery = normalizeArticleSearchText(value);
+  if (!force && normalizedQuery === myArticlesSearchQuery) return;
+
+  cancelMyArticlesSearchDebounce();
+  myArticlesSearchQuery = normalizedQuery;
+  myArticlesRenderVersion += 1;
+
+  if (myArticlesView !== "active") return;
+  if (!normalizedQuery) {
+    void renderMyArticles();
+    return;
+  }
+
+  myArticlesSearchTimer = setTimeout(() => {
+    myArticlesSearchTimer = null;
+    if (myArticlesView === "active" &&
+        document.getElementById("myArticlesModal")?.classList.contains("show")) {
+      void renderMyArticles();
+    }
+  }, MY_ARTICLES_SEARCH_DEBOUNCE_MS);
+}
+
+function handleMyArticlesSearchInput(event) {
+  if (myArticlesSearchComposing || event?.isComposing) return;
+  const input = event?.target || document.getElementById("myArticlesSearchInput");
+  applyMyArticlesSearchInput(input?.value || "");
+}
+
+function handleMyArticlesSearchCompositionStart() {
+  myArticlesSearchComposing = true;
+  cancelMyArticlesSearchDebounce();
+  myArticlesRenderVersion += 1;
+}
+
+function handleMyArticlesSearchCompositionEnd(value) {
+  myArticlesSearchComposing = false;
+  applyMyArticlesSearchInput(value, true);
+}
+
+function createMyArticlesHistorySessionId() {
+  if (window.crypto?.randomUUID) return `my-articles:${window.crypto.randomUUID()}`;
+  return `my-articles:${Date.now()}:${Math.random().toString(36).slice(2)}`;
+}
+
+function getMyArticlesHistoryMarker(state = history.state) {
+  if (!state || typeof state !== "object" || Array.isArray(state)) return null;
+
+  const marker = state[MY_ARTICLES_HISTORY_KEY];
+  if (!marker || typeof marker !== "object" ||
+      marker.version !== MY_ARTICLES_HISTORY_VERSION ||
+      typeof marker.sessionId !== "string" || !marker.sessionId) {
+    return null;
+  }
+
+  const expectedDepth = marker.view === "active"
+    ? 1
+    : (marker.view === "deleted" ? 2 : 0);
+  if (!expectedDepth || marker.depth !== expectedDepth) return null;
+
+  return {
+    version: MY_ARTICLES_HISTORY_VERSION,
+    view: marker.view,
+    depth: expectedDepth,
+    sessionId: marker.sessionId
+  };
+}
+
+function clearInvalidMyArticlesHistoryMarker() {
+  const state = history.state;
+  if (!state || typeof state !== "object" || Array.isArray(state) ||
+      !Object.prototype.hasOwnProperty.call(state, MY_ARTICLES_HISTORY_KEY) ||
+      getMyArticlesHistoryMarker(state)) {
+    return;
+  }
+
+  const nextState = { ...state };
+  delete nextState[MY_ARTICLES_HISTORY_KEY];
+  history.replaceState(Object.keys(nextState).length ? nextState : null, "");
+}
+
+function pushMyArticlesHistoryState(view) {
+  const depth = view === "deleted" ? 2 : 1;
+  const marker = {
+    version: MY_ARTICLES_HISTORY_VERSION,
+    view,
+    depth,
+    sessionId: myArticlesHistorySessionId
+  };
+  const currentState = history.state && typeof history.state === "object" &&
+    !Array.isArray(history.state)
+    ? history.state
+    : {};
+
+  history.pushState({
+    ...currentState,
+    [MY_ARTICLES_HISTORY_KEY]: marker
+  }, "");
+  return marker;
+}
+
+function hideMyArticlesModalUI() {
+  document.getElementById("myArticlesModal")?.classList.remove("show");
+  resetMyArticlesSearchState();
+  myArticlesFilter = "all";
+  myArticlesView = "active";
+  updateMyArticlesViewUI();
+}
+
+async function applyMyArticlesHistoryState(marker, options = {}) {
+  const modal = document.getElementById("myArticlesModal");
+  if (!modal || !marker) return false;
+
+  const wasOpen = modal.classList.contains("show");
+  myArticlesHistorySessionId = marker.sessionId;
+  myArticlesHistoryNavigationPending = false;
+  cancelMyArticlesSearchDebounce();
+
+  if (!wasOpen || options.resetSessionState) {
+    resetMyArticlesSearchState();
+    myArticlesFilter = "all";
+  }
+
+  myArticlesView = marker.view;
+  modal.classList.add("show");
+  updateMyArticlesViewUI();
+  setMyArticlesMessage("正在读取文章…", "loading");
+
+  if (!wasOpen) await flushReadingProgress();
+  return renderMyArticles();
+}
+
+function closeMyArticlesModal() {
+  const modal = document.getElementById("myArticlesModal");
+  if (!modal?.classList.contains("show") || myArticlesHistoryNavigationPending) {
+    return false;
+  }
+
+  const marker = getMyArticlesHistoryMarker();
+  if (!marker || marker.sessionId !== myArticlesHistorySessionId) {
+    hideMyArticlesModalUI();
+    return true;
+  }
+
+  myArticlesHistoryNavigationPending = true;
+  hideMyArticlesModalUI();
+  history.go(-marker.depth);
+  return true;
+}
+
+function returnToActiveMyArticlesView() {
+  if (myArticlesHistoryNavigationPending) return false;
+
+  const marker = getMyArticlesHistoryMarker();
+  if (marker?.view === "deleted" &&
+      marker.sessionId === myArticlesHistorySessionId) {
+    myArticlesHistoryNavigationPending = true;
+    history.back();
+    return true;
+  }
+
+  myArticlesView = "active";
+  updateMyArticlesViewUI();
+  void renderMyArticles();
+  return true;
+}
+
+function handleMyArticlesPopState() {
+  const wasPending = myArticlesHistoryNavigationPending;
+  myArticlesHistoryNavigationPending = false;
+  const marker = getMyArticlesHistoryMarker();
+
+  if (marker) {
+    void applyMyArticlesHistoryState(marker);
+    return;
+  }
+
+  if (wasPending || document.getElementById("myArticlesModal")?.classList.contains("show")) {
+    hideMyArticlesModalUI();
+  }
+}
+
+function handleMyArticlesPageShow(event) {
+  if (!event.persisted) return;
+
+  const marker = getMyArticlesHistoryMarker();
+  if (marker) {
+    void applyMyArticlesHistoryState(marker, {
+      resetSessionState: !document.getElementById("myArticlesModal")?.classList.contains("show")
+    });
+  } else if (document.getElementById("myArticlesModal")?.classList.contains("show")) {
+    hideMyArticlesModalUI();
+  }
+}
+
+function initializeMyArticlesHistory() {
+  if (myArticlesHistoryInitialized) return;
+  myArticlesHistoryInitialized = true;
+  window.addEventListener("popstate", handleMyArticlesPopState);
+  window.addEventListener("pageshow", handleMyArticlesPageShow);
+
+  clearInvalidMyArticlesHistoryMarker();
+  const marker = getMyArticlesHistoryMarker();
+  if (marker) {
+    void applyMyArticlesHistoryState(marker, { resetSessionState: true });
+  }
 }
 
 function updateMyArticlesContinueReading(article, deletedView = false) {
@@ -5514,6 +5784,7 @@ function setMyArticlesFilter(filterKey) {
   if (filterKey === myArticlesFilter) return Promise.resolve(true);
 
   myArticlesFilter = filterKey;
+  cancelMyArticlesSearchDebounce();
   updateMyArticlesFilterUI(false);
   return renderMyArticles();
 }
@@ -5600,14 +5871,27 @@ function updateMyArticlesViewUI() {
   if (viewButton) viewButton.textContent = deletedView ? "← 我的文章" : "最近删除";
   if (newDraftButton) newDraftButton.hidden = deletedView;
   updateMyArticlesFilterUI(deletedView);
+  updateMyArticlesSearchUI(deletedView);
   if (deletedView) updateMyArticlesSummary(null, true);
   if (deletedView) updateMyArticlesContinueReading(null, true);
 }
 
 function toggleMyArticlesView() {
-  myArticlesView = myArticlesView === "deleted" ? "active" : "deleted";
-  updateMyArticlesViewUI();
-  return renderMyArticles();
+  if (myArticlesHistoryNavigationPending) return Promise.resolve(false);
+  cancelMyArticlesSearchDebounce();
+
+  if (myArticlesView === "deleted") {
+    return Promise.resolve(returnToActiveMyArticlesView());
+  }
+
+  const currentMarker = getMyArticlesHistoryMarker();
+  if (!currentMarker || currentMarker.view !== "active" ||
+      currentMarker.sessionId !== myArticlesHistorySessionId) {
+    return Promise.resolve(false);
+  }
+
+  const deletedMarker = pushMyArticlesHistoryState("deleted");
+  return applyMyArticlesHistoryState(deletedMarker);
 }
 
 function setMyArticleBusy(articleId, item, busy) {
@@ -5869,14 +6153,21 @@ async function renderMyArticles() {
   const renderVersion = ++myArticlesRenderVersion;
   const renderView = myArticlesView;
   const renderFilter = myArticlesFilter;
+  const renderSearchQuery = myArticlesSearchQuery;
   const deletedView = renderView === "deleted";
   updateMyArticlesSummary(null, deletedView);
   updateMyArticlesContinueReading(null, deletedView);
   updateMyArticlesFilterUI(deletedView);
+  updateMyArticlesSearchUI(deletedView);
   setMyArticlesMessage("正在读取文章…", "loading");
   box.dataset.view = renderView;
-  if (deletedView) delete box.dataset.filter;
-  else box.dataset.filter = renderFilter;
+  if (deletedView) {
+    delete box.dataset.filter;
+    delete box.dataset.searchQuery;
+  } else {
+    box.dataset.filter = renderFilter;
+    box.dataset.searchQuery = renderSearchQuery;
+  }
 
   try {
     const library = window.LingoFlowArticleLibrary;
@@ -5884,7 +6175,8 @@ async function renderMyArticles() {
 
     const articles = await library.listArticles(deletedView ? { deletedOnly: true } : {});
     if (renderVersion !== myArticlesRenderVersion ||
-        renderView !== myArticlesView || renderFilter !== myArticlesFilter) return;
+        renderView !== myArticlesView || renderFilter !== myArticlesFilter ||
+        renderSearchQuery !== myArticlesSearchQuery) return;
 
     updateMyArticlesSummary(articles, deletedView);
     updateMyArticlesContinueReading(
@@ -5902,11 +6194,19 @@ async function renderMyArticles() {
       return;
     }
 
-    const visibleArticles = deletedView
+    const statusFilteredArticles = deletedView
       ? articles
       : filterMyArticlesByStatus(articles, renderFilter);
+    const visibleArticles = deletedView
+      ? statusFilteredArticles
+      : filterMyArticlesBySearch(statusFilteredArticles, renderSearchQuery);
     if (!visibleArticles.length) {
-      setMyArticlesMessage("没有符合当前状态的文章", "empty");
+      const emptyMessage = renderSearchQuery
+        ? (renderFilter === "all"
+          ? "没有找到相关文章"
+          : "没有符合搜索和筛选条件的文章")
+        : "没有符合当前状态的文章";
+      setMyArticlesMessage(emptyMessage, "empty");
       return;
     }
 
@@ -5918,7 +6218,8 @@ async function renderMyArticles() {
     box.replaceChildren(fragment);
   } catch (error) {
     if (renderVersion !== myArticlesRenderVersion ||
-        renderView !== myArticlesView || renderFilter !== myArticlesFilter) return;
+        renderView !== myArticlesView || renderFilter !== myArticlesFilter ||
+        renderSearchQuery !== myArticlesSearchQuery) return;
     setMyArticlesMessage(
       `文章读取失败：${error.message || "未知错误"}`,
       "error",
@@ -5928,13 +6229,18 @@ async function renderMyArticles() {
 }
 
 async function openMyArticles() {
-  document.getElementById("myArticlesModal")?.classList.add("show");
-  myArticlesView = "active";
-  myArticlesFilter = "all";
-  updateMyArticlesViewUI();
-  setMyArticlesMessage("正在读取文章…", "loading");
-  await flushReadingProgress();
-  return renderMyArticles();
+  if (myArticlesHistoryNavigationPending) return false;
+
+  const modal = document.getElementById("myArticlesModal");
+  const currentMarker = getMyArticlesHistoryMarker();
+  if (modal?.classList.contains("show") && currentMarker) return true;
+  if (currentMarker) {
+    return applyMyArticlesHistoryState(currentMarker, { resetSessionState: true });
+  }
+
+  myArticlesHistorySessionId = createMyArticlesHistorySessionId();
+  const activeMarker = pushMyArticlesHistoryState("active");
+  return applyMyArticlesHistoryState(activeMarker, { resetSessionState: true });
 }
 
 async function openSavedArticle(articleId) {
@@ -6241,6 +6547,7 @@ setupTextDropZone();
 setupPhraseSelection();
 checkBackupReminder();
 updateReadingProgress();
+initializeMyArticlesHistory();
 
 document.addEventListener("keydown", function(event) {
   if (event.key === "Escape") {
