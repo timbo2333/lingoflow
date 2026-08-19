@@ -46,12 +46,31 @@ async function fillDraft(page, text) {
 }
 
 async function startReading(page) {
-  await page.getByRole("button", { name: "生成可点击文章" }).click();
+  await page.getByRole("button", { name: "开始阅读", exact: true }).click();
   await expect(page.locator("#readerLayout")).toHaveClass(/show/);
   await expect.poll(async () => (
     page.evaluate(() => Boolean(calculateArticleReadingSnapshot()))
   )).toBe(true);
 }
+
+test("V0.6 发布信息在主要用户入口保持一致", async ({ page }) => {
+  await expect(page).toHaveTitle(/LingoFlow V0\.6/);
+  await expect(page.locator(".versionBadge")).toHaveText("V0.6 · 稳定版");
+
+  await page.locator('button[onclick="openSettings()"]:visible').first().click();
+  const versionSetting = page.locator(".settingItem").filter({
+    has: page.locator(".settingLabel", { hasText: "当前版本" })
+  });
+  await expect(versionSetting.locator(".settingValue")).toHaveText("V0.6");
+  await page.locator("#settingsModal .iconClose").click();
+
+  await page.locator('button[onclick="openHelp()"]:visible').first().click();
+  await expect(page.locator("#helpModal .modalSub")).toHaveText("LingoFlow V0.6");
+  await page.locator("#helpModal .iconClose").click();
+
+  await page.locator('button[onclick="openChangelog()"]:visible').first().click();
+  await expect(page.locator("#changelogModal .changeVersionTitle").first()).toHaveText("V0.6");
+});
 
 async function openMyArticles(page) {
   await page.locator("#myArticlesInputButton:visible, #myArticlesToolbarButton:visible").click();
