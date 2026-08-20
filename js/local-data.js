@@ -37,6 +37,11 @@
       return writeJson(FAVORITES_STORAGE_KEY, data);
     },
 
+    getStorageBytes() {
+      const value = localStorage.getItem(FAVORITES_STORAGE_KEY) || "";
+      return new TextEncoder().encode(value).length;
+    },
+
     remove(favoriteKey) {
       const favorites = readJson(FAVORITES_STORAGE_KEY) || {};
       delete favorites[favoriteKey];

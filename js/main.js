@@ -2410,7 +2410,6 @@ document.getElementById("dictFileInput").addEventListener(
    ========================= */
 
 const VOCAB_STORAGE_KEY = "EnglishReaderV05Vocab"; // 历史兼容：现在作为“查询记录”
-const FAVORITES_STORAGE_KEY = "EnglishReaderV051Favorites";
 const QUERY_EVENTS_KEY = "EnglishReaderV052QueryEvents";
 const HISTORY_BASELINES_KEY = "EnglishReaderV052HistoryBaselines";
 const DEVICE_ID_KEY = "EnglishReaderV052DeviceId";
@@ -2717,15 +2716,11 @@ function setVocabData(data) {
 }
 
 function getFavoritesData() {
-  try {
-    return JSON.parse(localStorage.getItem(FAVORITES_STORAGE_KEY) || "{}");
-  } catch {
-    return {};
-  }
+  return window.LingoFlowLocalData.FavoriteData.getAll();
 }
 
 function setFavoritesData(data) {
-  localStorage.setItem(FAVORITES_STORAGE_KEY, JSON.stringify(data));
+  window.LingoFlowLocalData.FavoriteData.setAll(data);
   updateVocabBadges();
   updateFavoriteButton();
 }
@@ -4618,7 +4613,7 @@ async function openSettings() {
   document.getElementById("settingsFavoriteCount").textContent =
     `${favoriteCount.toLocaleString()} 个收藏`;
   document.getElementById("settingsFavoriteSize").textContent =
-    `约 ${formatBytes(getLocalStorageBytes(FAVORITES_STORAGE_KEY))}`;
+    `约 ${formatBytes(window.LingoFlowLocalData.FavoriteData.getStorageBytes())}`;
 
   const dictScan = await getECDICTMeta("scan_entries_bytes");
   const lemmaScan = await getECDICTMeta("scan_lemmas_bytes");
@@ -4641,7 +4636,7 @@ async function openSettings() {
   const overheadBox = document.getElementById("settingsStorageOverhead");
 
   const vocabBytes = getLocalStorageBytes(VOCAB_STORAGE_KEY);
-  const favoriteBytes = getLocalStorageBytes(FAVORITES_STORAGE_KEY);
+  const favoriteBytes = window.LingoFlowLocalData.FavoriteData.getStorageBytes();
   const learningBytes = vocabBytes + favoriteBytes;
 
   const cachedKnownBytes =
@@ -4739,7 +4734,7 @@ async function scanStorageBreakdown() {
     await setECDICTMeta("scan_lemmas_bytes", lemma.bytes);
 
     const vocabBytes = getLocalStorageBytes(VOCAB_STORAGE_KEY);
-    const favoriteBytes = getLocalStorageBytes(FAVORITES_STORAGE_KEY);
+    const favoriteBytes = window.LingoFlowLocalData.FavoriteData.getStorageBytes();
     const knownTotal = dict.bytes + lemma.bytes + vocabBytes + favoriteBytes;
 
     document.getElementById("settingsKnownTotal").textContent =
