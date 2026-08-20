@@ -66,12 +66,23 @@
       return writeJson(VOCAB_STORAGE_KEY, data);
     },
 
+    getVocabStorageBytes() {
+      const value = localStorage.getItem(VOCAB_STORAGE_KEY) || "";
+      return new TextEncoder().encode(value).length;
+    },
+
     getHistoryBaselines() {
       return readJson(HISTORY_BASELINES_KEY);
     },
 
     setHistoryBaselines(data) {
       return writeJson(HISTORY_BASELINES_KEY, data || {});
+    },
+
+    clearHistory() {
+      localStorage.removeItem(VOCAB_STORAGE_KEY);
+      localStorage.removeItem(QUERY_EVENTS_KEY);
+      localStorage.removeItem(HISTORY_BASELINES_KEY);
     },
 
     getDeviceId() {
