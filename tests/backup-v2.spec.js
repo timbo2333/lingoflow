@@ -23,6 +23,7 @@ test.beforeEach(async ({ page }) => {
   });
   await page.goto("/");
   await expect(page.locator("#inputText")).toBeVisible();
+  expect(await page.evaluate(() => typeof window.LingoFlowBackupV2Schema)).toBe("object");
   expect(await page.evaluate(() => typeof window.LingoFlowBackupV2)).toBe("object");
 });
 
@@ -135,11 +136,129 @@ test("Backup v2 在调用 Article Library 前拒绝批内重复 ID", async ({ pa
   expect(result.restored.status).toBe("rejected");
   expect(result.restored.summary).toMatchObject({
     total: 2,
-    rejected: 2,
-    notAttempted: 0
+    rejected: 1,
+    notAttempted: 1
   });
   expect(result.assessCalls).toBe(0);
   expect(result.restoreCalls).toBe(0);
+});
+
+test("restoreArticles 在 Schema 验证失败时不调用 Article Library", async ({ page }) => {
+  const article = makeArticle("article:schema-rejected");
+  delete article.title;
+  const result = await page.evaluate(async incoming => {
+    let assessCalls = 0;
+    let restoreCalls = 0;
+    window.LingoFlowArticleLibrary = Object.freeze({
+      assessArticleRestore: async () => {
+        assessCalls += 1;
+        return { status: "restored", written: false };
+      },
+      restoreArticle: async () => {
+        restoreCalls += 1;
+        return { status: "restored", written: true };
+      }
+    });
+
+    const restored = await window.LingoFlowBackupV2.restoreArticles({
+      articles: [incoming]
+    });
+    return { restored, assessCalls, restoreCalls };
+  }, article);
+
+  expect(result.assessCalls).toBe(0);
+  expect(result.restoreCalls).toBe(0);
+  expect(result.restored).toMatchObject({
+    status: "rejected",
+    summary: {
+      total: 1,
+      restored: 0,
+      rejected: 1,
+      failed: 0,
+      notAttempted: 0
+    },
+    errors: [{
+      code: "missing-field",
+      path: "title",
+      index: 0,
+      articleId: article.id
+    }]
+  });
+  expect(result.restored.items).toEqual([
+    expect.objectContaining({
+      index: 0,
+      articleId: article.id,
+      status: "rejected",
+      written: false
+    })
+  ]);
+});
+
+test("restoreArticles 让 Schema 与 Article Library 使用同一份未修改快照", async ({ page }) => {
+  const article = makeArticle("article:schema-snapshot", {
+    extension: {
+      labels: ["backup", "article"]
+    }
+  });
+  const result = await page.evaluate(async incoming => {
+    const schema = window.LingoFlowBackupV2Schema;
+    const observations = {
+      schemaBefore: null,
+      schemaAfter: null,
+      assessedSameArticle: false,
+      restoredSameArticle: false
+    };
+    let schemaArticle = null;
+    window.LingoFlowBackupV2Schema = Object.freeze({
+      validateArticles: articles => {
+        schemaArticle = articles[0];
+        observations.schemaBefore = JSON.stringify(articles);
+        const validation = schema.validateArticles(articles);
+        observations.schemaAfter = JSON.stringify(articles);
+        return validation;
+      }
+    });
+    window.LingoFlowArticleLibrary = Object.freeze({
+      assessArticleRestore: async candidate => {
+        observations.assessedSameArticle = candidate === schemaArticle;
+        return {
+          status: "restored",
+          articleId: candidate.id,
+          written: false
+        };
+      },
+      restoreArticle: async candidate => {
+        observations.restoredSameArticle = candidate === schemaArticle;
+        return {
+          status: "restored",
+          articleId: candidate.id,
+          written: true
+        };
+      }
+    });
+
+    const inputBefore = JSON.stringify(incoming);
+    const restored = await window.LingoFlowBackupV2.restoreArticles({
+      articles: [incoming]
+    });
+    return {
+      restored,
+      observations,
+      inputBefore,
+      inputAfter: JSON.stringify(incoming)
+    };
+  }, article);
+
+  expect(result.restored).toMatchObject({
+    status: "completed",
+    summary: { total: 1, restored: 1 }
+  });
+  expect(result.observations.schemaBefore).toBe(JSON.stringify([article]));
+  expect(result.observations.schemaAfter).toBe(result.observations.schemaBefore);
+  expect(result.observations.assessedSameArticle).toBe(true);
+  expect(result.observations.restoredSameArticle).toBe(true);
+  expect(result.inputBefore).toBe(JSON.stringify(article));
+  expect(result.inputAfter).toBe(result.inputBefore);
 });
 
 test("Backup v2 在写入前拒绝批内相同来源的不同 Article ID", async ({ page }) => {

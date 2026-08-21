@@ -130,6 +130,14 @@
     return library;
   }
 
+  function getBackupSchema() {
+    const schema = window.LingoFlowBackupV2Schema;
+    if (!schema || typeof schema.validateArticles !== "function") {
+      return null;
+    }
+    return schema;
+  }
+
   function isArticleResult(result) {
     return Boolean(result) &&
       typeof result === "object" &&
@@ -247,6 +255,40 @@
     };
   }
 
+  function rejectedSchemaRestoreResult(articles, validation, fallbackErrors = []) {
+    const sourceItems = Array.isArray(validation?.items) ? validation.items : [];
+    const items = sourceItems.map((item, index) => {
+      const status = item?.status === "rejected" ? "rejected" : "not-attempted";
+      return {
+        ...item,
+        index: Number.isInteger(item?.index) ? item.index : index,
+        status,
+        written: false
+      };
+    });
+
+    for (let index = items.length; index < articles.length; index += 1) {
+      items.push({
+        index,
+        articleId: typeof articles[index]?.id === "string" ? articles[index].id : null,
+        status: "not-attempted",
+        written: false
+      });
+    }
+
+    const summary = createRestoreSummary(articles.length);
+    summary.rejected = items.filter(item => item.status === "rejected").length;
+    summary.notAttempted = articles.length - summary.rejected;
+    return {
+      status: "rejected",
+      summary,
+      items,
+      errors: Array.isArray(validation?.errors)
+        ? validation.errors.slice()
+        : fallbackErrors
+    };
+  }
+
   async function restoreArticles(batch) {
     const snapshot = createBatchSnapshot(batch);
     if (snapshot.error) {
@@ -254,6 +296,40 @@
     }
 
     const batchSnapshot = snapshot.batch;
+    const snapshotArticles = batchSnapshot &&
+      typeof batchSnapshot === "object" &&
+      !Array.isArray(batchSnapshot)
+      ? batchSnapshot.articles
+      : undefined;
+    const schema = getBackupSchema();
+    if (!schema) {
+      return rejectedSchemaRestoreResult(
+        Array.isArray(snapshotArticles) ? snapshotArticles : [],
+        null,
+        [createError("backup-schema-unavailable")]
+      );
+    }
+
+    let schemaValidation;
+    try {
+      schemaValidation = schema.validateArticles(snapshotArticles);
+    } catch (error) {
+      return rejectedSchemaRestoreResult(
+        Array.isArray(snapshotArticles) ? snapshotArticles : [],
+        null,
+        [createError("backup-schema-validation-failed", {
+          message: error?.message || "Backup Schema 验证失败。"
+        })]
+      );
+    }
+    if (!schemaValidation || schemaValidation.status !== "valid") {
+      return rejectedSchemaRestoreResult(
+        Array.isArray(snapshotArticles) ? snapshotArticles : [],
+        schemaValidation,
+        [createError("backup-schema-validation-failed")]
+      );
+    }
+
     const assessment = await assessArticles(batchSnapshot);
     if (assessment.status === "rejected") {
       return rejectedRestoreResult(assessment);
