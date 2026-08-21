@@ -411,11 +411,7 @@ function syncSpeechPreferenceControls() {
 }
 
 function saveSpeechPreferences(patch) {
-  const preferences = {
-    ...getReadingPreferences(),
-    ...patch
-  };
-  localStorage.setItem(READING_PREFS_KEY, JSON.stringify(preferences));
+  window.LingoFlowLocalData.PreferenceData.patch(patch);
   syncSpeechPreferenceControls();
 }
 
@@ -2409,14 +2405,8 @@ document.getElementById("dictFileInput").addEventListener(
    自动生词本
    ========================= */
 
-const VOCAB_STORAGE_KEY = "EnglishReaderV05Vocab"; // 历史兼容：现在作为“查询记录”
-const FAVORITES_STORAGE_KEY = "EnglishReaderV051Favorites";
-const QUERY_EVENTS_KEY = "EnglishReaderV052QueryEvents";
-const HISTORY_BASELINES_KEY = "EnglishReaderV052HistoryBaselines";
-const DEVICE_ID_KEY = "EnglishReaderV052DeviceId";
 const LAST_BACKUP_KEY = "EnglishReaderV052LastBackup";
 const BACKUP_DISMISS_KEY = "EnglishReaderV052BackupDismiss";
-const READING_PREFS_KEY = "EnglishReaderV052ReadingPrefs";
 
 
 function makeId(prefix = "id") {
@@ -2425,30 +2415,23 @@ function makeId(prefix = "id") {
 }
 
 function getDeviceId() {
-  let id = localStorage.getItem(DEVICE_ID_KEY);
-  if (!id) {
-    id = makeId("device");
-    localStorage.setItem(DEVICE_ID_KEY, id);
-  }
-  return id;
+  return window.LingoFlowLocalData.QueryData.getDeviceId();
 }
 
 function getQueryEvents() {
-  try { return JSON.parse(localStorage.getItem(QUERY_EVENTS_KEY) || "{}"); }
-  catch { return {}; }
+  return window.LingoFlowLocalData.QueryData.getEvents();
 }
 
 function setQueryEvents(data) {
-  localStorage.setItem(QUERY_EVENTS_KEY, JSON.stringify(data || {}));
+  window.LingoFlowLocalData.QueryData.setEvents(data);
 }
 
 function getHistoryBaselines() {
-  try { return JSON.parse(localStorage.getItem(HISTORY_BASELINES_KEY) || "{}"); }
-  catch { return {}; }
+  return window.LingoFlowLocalData.QueryData.getHistoryBaselines();
 }
 
 function setHistoryBaselines(data) {
-  localStorage.setItem(HISTORY_BASELINES_KEY, JSON.stringify(data || {}));
+  window.LingoFlowLocalData.QueryData.setHistoryBaselines(data);
 }
 
 function ensureHistoryMigration() {
@@ -2704,28 +2687,20 @@ let currentLookupState = {
 };
 
 function getVocabData() {
-  try {
-    return JSON.parse(localStorage.getItem(VOCAB_STORAGE_KEY) || "{}");
-  } catch {
-    return {};
-  }
+  return window.LingoFlowLocalData.QueryData.getVocab();
 }
 
 function setVocabData(data) {
-  localStorage.setItem(VOCAB_STORAGE_KEY, JSON.stringify(data));
+  window.LingoFlowLocalData.QueryData.setVocab(data);
   updateVocabBadges();
 }
 
 function getFavoritesData() {
-  try {
-    return JSON.parse(localStorage.getItem(FAVORITES_STORAGE_KEY) || "{}");
-  } catch {
-    return {};
-  }
+  return window.LingoFlowLocalData.FavoriteData.getAll();
 }
 
 function setFavoritesData(data) {
-  localStorage.setItem(FAVORITES_STORAGE_KEY, JSON.stringify(data));
+  window.LingoFlowLocalData.FavoriteData.setAll(data);
   updateVocabBadges();
   updateFavoriteButton();
 }
@@ -2893,9 +2868,7 @@ function removeVocabWord(word) {
 
 function clearVocabBook() {
   if (!confirm("确定清空全部查询记录吗？收藏内容不会被删除。")) return;
-  localStorage.removeItem(VOCAB_STORAGE_KEY);
-  localStorage.removeItem(QUERY_EVENTS_KEY);
-  localStorage.removeItem(HISTORY_BASELINES_KEY);
+  window.LingoFlowLocalData.QueryData.clearHistory();
   updateVocabBadges();
   renderVocabBook();
 }
@@ -3761,11 +3734,7 @@ function setupPhraseSelection() {
    ========================= */
 
 function getReadingPreferences() {
-  try {
-    return JSON.parse(localStorage.getItem(READING_PREFS_KEY) || "{}");
-  } catch {
-    return {};
-  }
+  return window.LingoFlowLocalData.PreferenceData.get();
 }
 
 function applyAppearance(mode) {
@@ -3810,25 +3779,22 @@ function applyReadingPreferences() {
 
 function saveReadingPreferences() {
   const old = getReadingPreferences();
-  const prefs = {
-    ...old,
+  window.LingoFlowLocalData.PreferenceData.patch({
     fontSize: document.getElementById("readerFontSize")?.value || old.fontSize || "21",
     lineHeight: document.getElementById("readerLineHeight")?.value || old.lineHeight || "2",
     appearance: document.getElementById("appearanceMode")?.value || old.appearance || "system"
-  };
-
-  localStorage.setItem(READING_PREFS_KEY, JSON.stringify(prefs));
+  });
   applyReadingPreferences();
 }
 
 function syncQuickReadingSetting(type, value) {
-  const prefs = { ...getReadingPreferences() };
+  const patch = {};
 
-  if (type === "font") prefs.fontSize = value;
-  if (type === "line") prefs.lineHeight = value;
-  if (type === "appearance") prefs.appearance = value;
+  if (type === "font") patch.fontSize = value;
+  if (type === "line") patch.lineHeight = value;
+  if (type === "appearance") patch.appearance = value;
 
-  localStorage.setItem(READING_PREFS_KEY, JSON.stringify(prefs));
+  window.LingoFlowLocalData.PreferenceData.patch(patch);
   applyReadingPreferences();
 }
 
@@ -4613,12 +4579,12 @@ async function openSettings() {
   document.getElementById("settingsVocabCount").textContent =
     `${vocabCount.toLocaleString()} 条查询记录`;
   document.getElementById("settingsVocabSize").textContent =
-    `约 ${formatBytes(getLocalStorageBytes(VOCAB_STORAGE_KEY))}`;
+    `约 ${formatBytes(window.LingoFlowLocalData.QueryData.getVocabStorageBytes())}`;
 
   document.getElementById("settingsFavoriteCount").textContent =
     `${favoriteCount.toLocaleString()} 个收藏`;
   document.getElementById("settingsFavoriteSize").textContent =
-    `约 ${formatBytes(getLocalStorageBytes(FAVORITES_STORAGE_KEY))}`;
+    `约 ${formatBytes(window.LingoFlowLocalData.FavoriteData.getStorageBytes())}`;
 
   const dictScan = await getECDICTMeta("scan_entries_bytes");
   const lemmaScan = await getECDICTMeta("scan_lemmas_bytes");
@@ -4640,8 +4606,8 @@ async function openSettings() {
   const knownTotalBox = document.getElementById("settingsKnownTotal");
   const overheadBox = document.getElementById("settingsStorageOverhead");
 
-  const vocabBytes = getLocalStorageBytes(VOCAB_STORAGE_KEY);
-  const favoriteBytes = getLocalStorageBytes(FAVORITES_STORAGE_KEY);
+  const vocabBytes = window.LingoFlowLocalData.QueryData.getVocabStorageBytes();
+  const favoriteBytes = window.LingoFlowLocalData.FavoriteData.getStorageBytes();
   const learningBytes = vocabBytes + favoriteBytes;
 
   const cachedKnownBytes =
@@ -4681,11 +4647,6 @@ async function openSettings() {
   }
 }
 
-
-function getLocalStorageBytes(key) {
-  const value = localStorage.getItem(key) || "";
-  return new TextEncoder().encode(value).length;
-}
 
 async function estimateStoreBytes(storeName, onProgress) {
   const db = await openECDICTDatabase();
@@ -4738,8 +4699,8 @@ async function scanStorageBreakdown() {
     await setECDICTMeta("scan_entries_bytes", dict.bytes);
     await setECDICTMeta("scan_lemmas_bytes", lemma.bytes);
 
-    const vocabBytes = getLocalStorageBytes(VOCAB_STORAGE_KEY);
-    const favoriteBytes = getLocalStorageBytes(FAVORITES_STORAGE_KEY);
+    const vocabBytes = window.LingoFlowLocalData.QueryData.getVocabStorageBytes();
+    const favoriteBytes = window.LingoFlowLocalData.FavoriteData.getStorageBytes();
     const knownTotal = dict.bytes + lemma.bytes + vocabBytes + favoriteBytes;
 
     document.getElementById("settingsKnownTotal").textContent =
@@ -4954,10 +4915,7 @@ async function importBackupFile(file, expectedType = "auto") {
       if (!importedReading.speechRate && data.preferences?.speed) {
         importedReading.speechRate = normalizeSpeechRate(data.preferences.speed);
       }
-      localStorage.setItem(READING_PREFS_KEY, JSON.stringify({
-        ...getReadingPreferences(),
-        ...importedReading
-      }));
+      window.LingoFlowLocalData.PreferenceData.patch(importedReading);
       applyReadingPreferences();
     }
 
@@ -5116,7 +5074,7 @@ async function importBackupFile(file, expectedType = "auto") {
     if (!restoredReading.speechRate && importedPreferences?.speed) {
       restoredReading.speechRate = normalizeSpeechRate(importedPreferences.speed);
     }
-    localStorage.setItem(READING_PREFS_KEY, JSON.stringify(restoredReading));
+    window.LingoFlowLocalData.PreferenceData.replace(restoredReading);
     applyReadingPreferences();
   }
 
