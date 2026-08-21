@@ -82,6 +82,163 @@
     return record;
   }
 
+  function isPlainObject(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+    const prototype = Object.getPrototypeOf(value);
+    return prototype === Object.prototype || prototype === null;
+  }
+
+  function isJsonCompatible(value) {
+    if (value === null) return true;
+    if (["string", "boolean"].includes(typeof value)) return true;
+    if (typeof value === "number") return Number.isFinite(value);
+    if (Array.isArray(value)) return value.every(isJsonCompatible);
+    if (!isPlainObject(value)) return false;
+    return Object.values(value).every(isJsonCompatible);
+  }
+
+  function isValidTimestamp(value, nullable = false) {
+    if (nullable && value === null) return true;
+    return typeof value === "string" &&
+      Boolean(value.trim()) &&
+      Number.isFinite(Date.parse(value));
+  }
+
+  function createRestoreResult(status, articleId, details = {}) {
+    return {
+      status,
+      articleId: articleId || null,
+      written: Boolean(details.written),
+      conflicts: details.conflicts || [],
+      conflictFields: details.conflictFields || [],
+      ...(details.reason ? { reason: details.reason } : {}),
+      ...(details.conflictingArticleId
+        ? { conflictingArticleId: details.conflictingArticleId }
+        : {})
+    };
+  }
+
+  function rejectRestoreArticle(article, reason) {
+    const articleId = typeof article?.id === "string" && article.id.trim()
+      ? article.id
+      : null;
+    return createRestoreResult("rejected", articleId, { reason });
+  }
+
+  function validateRestoreArticle(article) {
+    if (!isPlainObject(article) || !isJsonCompatible(article)) {
+      return { result: rejectRestoreArticle(article, "invalid-article") };
+    }
+
+    if (typeof article.id !== "string" || !article.id.trim() || article.id !== article.id.trim()) {
+      return { result: rejectRestoreArticle(article, "invalid-id") };
+    }
+    if (typeof article.title !== "string" || !article.title.trim()) {
+      return { result: rejectRestoreArticle(article, "invalid-title") };
+    }
+    if (typeof article.content !== "string" || !article.content.trim()) {
+      return { result: rejectRestoreArticle(article, "invalid-content") };
+    }
+    if (typeof article.sourceType !== "string" || !SOURCE_TYPES.has(article.sourceType)) {
+      return { result: rejectRestoreArticle(article, "invalid-source") };
+    }
+
+    if (article.sourceType === "library") {
+      if (typeof article.sourceId !== "string" || !article.sourceId.trim()) {
+        return { result: rejectRestoreArticle(article, "invalid-source") };
+      }
+    } else if (Object.prototype.hasOwnProperty.call(article, "sourceId")) {
+      return { result: rejectRestoreArticle(article, "invalid-source") };
+    }
+
+    for (const key of ["sourceTitle", "sourceAttribution"]) {
+      if (Object.prototype.hasOwnProperty.call(article, key) &&
+          (typeof article[key] !== "string" || !article[key].trim())) {
+        return { result: rejectRestoreArticle(article, "invalid-source") };
+      }
+    }
+
+    if (!isValidTimestamp(article.createdAt) ||
+        !isValidTimestamp(article.updatedAt) ||
+        !isValidTimestamp(article.lastReadAt) ||
+        !isValidTimestamp(article.deletedAt, true)) {
+      return { result: rejectRestoreArticle(article, "invalid-lifecycle") };
+    }
+
+    const reading = article.reading;
+    if (!isPlainObject(reading) ||
+        typeof reading.progress !== "number" ||
+        reading.progress < 0 ||
+        reading.progress > 1 ||
+        !Number.isInteger(reading.paragraphIndex) ||
+        reading.paragraphIndex < 0 ||
+        !isValidTimestamp(reading.updatedAt, true)) {
+      return { result: rejectRestoreArticle(article, "invalid-reading") };
+    }
+
+    return { article: structuredClone(article) };
+  }
+
+  function valuesEqual(left, right) {
+    if (Object.is(left, right)) return true;
+    if (typeof left !== typeof right || left === null || right === null) return false;
+
+    if (Array.isArray(left) || Array.isArray(right)) {
+      return Array.isArray(left) &&
+        Array.isArray(right) &&
+        left.length === right.length &&
+        left.every((value, index) => valuesEqual(value, right[index]));
+    }
+
+    if (!isPlainObject(left) || !isPlainObject(right)) return false;
+    const leftKeys = Object.keys(left).sort();
+    const rightKeys = Object.keys(right).sort();
+    return leftKeys.length === rightKeys.length &&
+      leftKeys.every((key, index) => (
+        key === rightKeys[index] && valuesEqual(left[key], right[key])
+      ));
+  }
+
+  function classifyArticleRestore(current, incoming) {
+    const fields = Array.from(new Set([
+      ...Object.keys(current),
+      ...Object.keys(incoming)
+    ])).sort();
+    const conflictFields = fields.filter(key => !valuesEqual(current[key], incoming[key]));
+
+    if (!conflictFields.length) {
+      return createRestoreResult("unchanged", incoming.id);
+    }
+
+    const conflictTypes = new Set();
+    const lifecycleFields = new Set([
+      "createdAt",
+      "updatedAt",
+      "lastReadAt",
+      "deletedAt"
+    ]);
+
+    for (const field of conflictFields) {
+      if (field === "content") conflictTypes.add("content");
+      else if (field === "reading") conflictTypes.add("reading");
+      else if (lifecycleFields.has(field)) conflictTypes.add("lifecycle");
+      else if (field !== "id") conflictTypes.add("metadata");
+    }
+
+    return createRestoreResult("conflict", incoming.id, {
+      conflicts: Array.from(conflictTypes).sort(),
+      conflictFields
+    });
+  }
+
+  function createSourceConflictResult(incoming, current) {
+    return createRestoreResult("conflict", incoming.id, {
+      conflicts: ["source"],
+      conflictFields: ["sourceType", "sourceId"],
+      conflictingArticleId: current.id
+    });
+  }
+
   function openDatabase() {
     ensureIndexedDB();
     if (databasePromise) return databasePromise;
@@ -295,6 +452,96 @@
     });
   }
 
+  async function assessArticleRestore(article) {
+    const validation = validateRestoreArticle(article);
+    if (validation.result) return validation.result;
+
+    const incoming = validation.article;
+    const current = await getArticle(incoming.id);
+    if (current) return classifyArticleRestore(current, incoming);
+
+    if (incoming.sourceType === "library") {
+      const sourceMatch = await findArticleBySource(incoming.sourceType, incoming.sourceId);
+      if (sourceMatch) {
+        return sourceMatch.id === incoming.id
+          ? classifyArticleRestore(sourceMatch, incoming)
+          : createSourceConflictResult(incoming, sourceMatch);
+      }
+    }
+
+    return createRestoreResult("restored", incoming.id);
+  }
+
+  async function restoreArticle(article) {
+    const validation = validateRestoreArticle(article);
+    if (validation.result) return validation.result;
+
+    const incoming = validation.article;
+    const db = await openDatabase();
+
+    return await new Promise((resolve, reject) => {
+      const tx = db.transaction(ARTICLE_STORE, "readwrite");
+      const store = tx.objectStore(ARTICLE_STORE);
+      const request = store.get(incoming.id);
+      let result = null;
+      let restoreError = null;
+
+      function addIncomingArticle() {
+        try {
+          const addRequest = store.add(incoming);
+          addRequest.onsuccess = () => {
+            result = createRestoreResult("restored", incoming.id, { written: true });
+          };
+          addRequest.onerror = () => {
+            restoreError = addRequest.error || new Error("文章恢复失败。");
+          };
+        } catch (error) {
+          restoreError = error;
+          tx.abort();
+        }
+      }
+
+      request.onsuccess = () => {
+        const current = request.result;
+        if (current) {
+          result = classifyArticleRestore(current, incoming);
+          return;
+        }
+
+        if (incoming.sourceType !== "library") {
+          addIncomingArticle();
+          return;
+        }
+
+        const sourceRequest = store.index("bySource").get([
+          incoming.sourceType,
+          incoming.sourceId
+        ]);
+        sourceRequest.onsuccess = () => {
+          const sourceMatch = sourceRequest.result;
+          if (sourceMatch) {
+            result = sourceMatch.id === incoming.id
+              ? classifyArticleRestore(sourceMatch, incoming)
+              : createSourceConflictResult(incoming, sourceMatch);
+            return;
+          }
+          addIncomingArticle();
+        };
+        sourceRequest.onerror = () => {
+          restoreError = sourceRequest.error || new Error("文章来源查询失败。");
+        };
+      };
+
+      request.onerror = () => {
+        restoreError = request.error || new Error("文章读取失败。");
+      };
+
+      tx.oncomplete = () => resolve(result);
+      tx.onerror = () => reject(restoreError || tx.error || new Error("文章恢复失败。"));
+      tx.onabort = () => reject(restoreError || tx.error || new Error("文章恢复事务已中止。"));
+    });
+  }
+
   window.LingoFlowArticleLibrary = Object.freeze({
     DB_NAME,
     DB_VERSION,
@@ -304,6 +551,8 @@
     updateArticle,
     updateArticleReading,
     listArticles,
-    findArticleBySource
+    findArticleBySource,
+    assessArticleRestore,
+    restoreArticle
   });
 })();

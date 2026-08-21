@@ -163,6 +163,27 @@ async function inspectDatabase(page, databaseName) {
   }, databaseName);
 }
 
+function makeRestoreArticle(overrides = {}) {
+  const reading = {
+    progress: 0.42,
+    paragraphIndex: 3,
+    updatedAt: "2026-08-18T03:00:00.000Z"
+  };
+  return {
+    id: "article:backup-restore",
+    title: "Restored article",
+    content: "Article content restored from a personal backup.",
+    sourceType: "txt",
+    sourceTitle: "restored-article.txt",
+    createdAt: "2026-08-18T01:00:00.000Z",
+    updatedAt: "2026-08-18T02:00:00.000Z",
+    lastReadAt: "2026-08-18T04:00:00.000Z",
+    deletedAt: null,
+    ...overrides,
+    reading: { ...reading, ...(overrides.reading || {}) }
+  };
+}
+
 test("LingoFlowLibraryDB 使用预期的 version、store 和索引", async ({ page }) => {
   const schema = await page.evaluate(async () => {
     const db = await window.LingoFlowArticleLibrary.openDatabase();
@@ -194,6 +215,188 @@ test("LingoFlowLibraryDB 使用预期的 version、store 和索引", async ({ pa
     { name: "byLastReadAt", keyPath: "lastReadAt", unique: false },
     { name: "bySource", keyPath: ["sourceType", "sourceId"], unique: true }
   ]);
+});
+
+test("Article 恢复评估只读且恢复保留原身份、时间和 Reading Progress", async ({ page }) => {
+  const article = makeRestoreArticle();
+  const result = await page.evaluate(async incoming => {
+    const library = window.LingoFlowArticleLibrary;
+    const assessment = await library.assessArticleRestore(incoming);
+    const beforeRestore = await library.getArticle(incoming.id);
+    const restored = await library.restoreArticle(incoming);
+    const stored = await library.getArticle(incoming.id);
+    return { assessment, beforeRestore, restored, stored };
+  }, article);
+
+  expect(result.assessment).toMatchObject({
+    status: "restored",
+    articleId: article.id,
+    written: false,
+    conflicts: []
+  });
+  expect(result.beforeRestore).toBeNull();
+  expect(result.restored).toMatchObject({
+    status: "restored",
+    articleId: article.id,
+    written: true,
+    conflicts: []
+  });
+  expect(result.stored).toEqual(article);
+  expect(result.stored.id).toBe(article.id);
+  expect(result.stored.createdAt).toBe(article.createdAt);
+  expect(result.stored.updatedAt).toBe(article.updatedAt);
+  expect(result.stored.lastReadAt).toBe(article.lastReadAt);
+  expect(result.stored.reading).toEqual(article.reading);
+});
+
+test("Article 恢复保留软删除状态且重复恢复返回 unchanged", async ({ page }) => {
+  const article = makeRestoreArticle({
+    id: "article:backup-deleted",
+    deletedAt: "2026-08-18T05:00:00.000Z"
+  });
+  const result = await page.evaluate(async incoming => {
+    const library = window.LingoFlowArticleLibrary;
+    const first = await library.restoreArticle(incoming);
+    const second = await library.restoreArticle(incoming);
+    const stored = await library.getArticle(incoming.id);
+    const articles = await library.listArticles({ includeDeleted: true });
+    return { first, second, stored, count: articles.length };
+  }, article);
+
+  expect(result.first).toMatchObject({ status: "restored", written: true });
+  expect(result.second).toMatchObject({
+    status: "unchanged",
+    articleId: article.id,
+    written: false,
+    conflicts: []
+  });
+  expect(result.stored).toEqual(article);
+  expect(result.stored.deletedAt).toBe(article.deletedAt);
+  expect(result.count).toBe(1);
+});
+
+test("Article 恢复遇到同 ID 正文冲突时不覆盖本地记录", async ({ page }) => {
+  const article = makeRestoreArticle({ id: "article:backup-content-conflict" });
+  const incoming = { ...article, content: "Conflicting backup article content." };
+  const result = await page.evaluate(async ({ local, candidate }) => {
+    const library = window.LingoFlowArticleLibrary;
+    await library.restoreArticle(local);
+    const assessment = await library.assessArticleRestore(candidate);
+    const restored = await library.restoreArticle(candidate);
+    const stored = await library.getArticle(local.id);
+    return { assessment, restored, stored };
+  }, { local: article, candidate: incoming });
+
+  expect(result.assessment).toMatchObject({
+    status: "conflict",
+    written: false,
+    conflicts: ["content"],
+    conflictFields: ["content"]
+  });
+  expect(result.restored).toMatchObject({
+    status: "conflict",
+    written: false,
+    conflicts: ["content"],
+    conflictFields: ["content"]
+  });
+  expect(result.stored).toEqual(article);
+});
+
+test("Article 恢复遇到生命周期冲突时不删除或复活本地记录", async ({ page }) => {
+  const active = makeRestoreArticle({ id: "article:backup-active-lifecycle" });
+  const deletedCandidate = {
+    ...active,
+    deletedAt: "2026-08-18T05:00:00.000Z"
+  };
+  const deleted = makeRestoreArticle({
+    id: "article:backup-deleted-lifecycle",
+    deletedAt: "2026-08-18T05:00:00.000Z"
+  });
+  const activeCandidate = { ...deleted, deletedAt: null };
+
+  const result = await page.evaluate(async candidates => {
+    const library = window.LingoFlowArticleLibrary;
+    await library.restoreArticle(candidates.active);
+    await library.restoreArticle(candidates.deleted);
+    const deleteConflict = await library.restoreArticle(candidates.deletedCandidate);
+    const restoreConflict = await library.restoreArticle(candidates.activeCandidate);
+    return {
+      deleteConflict,
+      restoreConflict,
+      activeStored: await library.getArticle(candidates.active.id),
+      deletedStored: await library.getArticle(candidates.deleted.id)
+    };
+  }, { active, deletedCandidate, deleted, activeCandidate });
+
+  expect(result.deleteConflict).toMatchObject({
+    status: "conflict",
+    written: false,
+    conflicts: ["lifecycle"],
+    conflictFields: ["deletedAt"]
+  });
+  expect(result.restoreConflict).toMatchObject({
+    status: "conflict",
+    written: false,
+    conflicts: ["lifecycle"],
+    conflictFields: ["deletedAt"]
+  });
+  expect(result.activeStored).toEqual(active);
+  expect(result.deletedStored).toEqual(deleted);
+});
+
+test("Article 恢复拒绝无效输入且不写入数据", async ({ page }) => {
+  const invalid = makeRestoreArticle({ id: "" });
+  const result = await page.evaluate(async incoming => {
+    const library = window.LingoFlowArticleLibrary;
+    return {
+      assessment: await library.assessArticleRestore(incoming),
+      restored: await library.restoreArticle(incoming),
+      articles: await library.listArticles({ includeDeleted: true })
+    };
+  }, invalid);
+
+  expect(result.assessment).toMatchObject({
+    status: "rejected",
+    articleId: null,
+    written: false,
+    reason: "invalid-id"
+  });
+  expect(result.restored).toMatchObject({
+    status: "rejected",
+    articleId: null,
+    written: false,
+    reason: "invalid-id"
+  });
+  expect(result.articles).toEqual([]);
+});
+
+test("Article 恢复将相同内置来源的不同 ID 识别为来源冲突", async ({ page }) => {
+  const local = makeRestoreArticle({
+    id: "article:library-local",
+    sourceType: "library",
+    sourceId: "library:shared-source",
+    sourceTitle: "Shared library source"
+  });
+  const incoming = { ...local, id: "article:library-backup" };
+  const result = await page.evaluate(async ({ localArticle, candidate }) => {
+    const library = window.LingoFlowArticleLibrary;
+    await library.restoreArticle(localArticle);
+    const assessment = await library.assessArticleRestore(candidate);
+    const restored = await library.restoreArticle(candidate);
+    const articles = await library.listArticles({ includeDeleted: true });
+    return { assessment, restored, articles };
+  }, { localArticle: local, candidate: incoming });
+
+  for (const restoreResult of [result.assessment, result.restored]) {
+    expect(restoreResult).toMatchObject({
+      status: "conflict",
+      articleId: incoming.id,
+      written: false,
+      conflicts: ["source"],
+      conflictingArticleId: local.id
+    });
+  }
+  expect(result.articles).toEqual([local]);
 });
 
 test("草稿输入时不落库，点击生成后才创建文章", async ({ page }) => {
