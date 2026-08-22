@@ -1,12 +1,25 @@
+# Backup v2 Format Specification
 
-### Backup Format
+## 1. Purpose
 
-Defines:
+Backup Format is a long-term contract for understanding backup data, not a storage or recovery implementation.
+
+Backup Format describes what the backup represents.
+
+---
+
+## 2. Backup Format Responsibilities
+
+Backup Format defines:
 
 - backup identity;
 - versioning;
 - included scope;
 - compatibility information.
+
+---
+
+## 3. Related Layer Responsibilities
 
 ### Backup Schema
 
@@ -70,7 +83,7 @@ Entities should be classified according to their data ownership and reconstructi
 
 ---
 
-## 5.1 Personal Data
+### 5.1 Personal Data
 
 Personal Data represents user-owned information that cannot be easily reconstructed.
 
@@ -93,7 +106,7 @@ Missing Personal Data from a backup scope should be explicitly declared.
 
 ---
 
-## 5.2 Derived Data
+### 5.2 Derived Data
 
 Derived Data represents information calculated from other user data.
 
@@ -113,7 +126,7 @@ When both source data and derived data exist, source data remains authoritative.
 
 ---
 
-## 5.3 Rebuildable Resources
+### 5.3 Rebuildable Resources
 
 Rebuildable Resources represent resources that can be recreated independently.
 
