@@ -1,4 +1,4 @@
-# LingoFlow Backup Schema 规范
+# LingoFlow Backup Schema 规范（Backup Schema Specification）
 
 本文档定义 LingoFlow 备份数据交换格式的长期语义边界。它与 [同步数据模型规范](./sync-model-specification.md) 和 [个人数据备份规范](./personal-backup-specification.md) 共同约束备份、恢复、迁移及未来可能出现的跨设备数据流转。
 
@@ -52,6 +52,7 @@ Personal Data 是用户无法轻易重建，或重新创建会丢失个人语义
 - 未来通过稳定用户资产身份关联的其他个人数据。
 
 普通个人数据备份应以这些数据为保护中心。软删除信息在安全清理前仍属于需要保留的个人数据。
+Favorite 必须通过稳定身份表达，不能依赖当前存储结构中的文本键或集合位置。
 
 ### 2.2 Rebuildable Resources
 
@@ -78,7 +79,7 @@ Article 是独立用户资产。Backup Schema 应保留：
 - 用户个人文章身份与外部或内置来源身份的边界。
 - 创建、内容或元数据更新、最近阅读和软删除的时间语义。
 
-活动 Article 与仍处于软删除生命周期内的 Article 都应能够进入个人数据备份。恢复不得为已有 Article 生成新身份，也不得因为原始来源不可访问而丢弃用户正文。
+活动 Article 与仍处于软删除生命周期内的 Article 都应能够进入个人数据备份。恢复不得在已有稳定身份存在时生成新身份。对于无法解析稳定身份的旧格式，应通过明确迁移规则处理。恢复不得因为原始来源不可访问而丢弃用户正文。
 
 Article 缺少关联 Favorite 或 QueryEvent 不影响 Article 自身恢复；同样，Article 缺失或已删除也不能导致关联资产的内容快照被丢弃。
 
