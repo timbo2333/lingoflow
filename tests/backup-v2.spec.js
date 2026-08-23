@@ -24,6 +24,7 @@ test.beforeEach(async ({ page }) => {
   await page.goto("/");
   await expect(page.locator("#inputText")).toBeVisible();
   expect(await page.evaluate(() => typeof window.LingoFlowBackupV2Schema)).toBe("object");
+  expect(await page.evaluate(() => typeof window.LingoFlowBackupV2Envelope)).toBe("object");
   expect(await page.evaluate(() => typeof window.LingoFlowBackupV2)).toBe("object");
 });
 
@@ -100,6 +101,131 @@ test("Backup v2 拒绝无效批次并接受空 Article 集合", async ({ page })
     },
     items: [],
     errors: []
+  });
+});
+
+test("restoreBackup 在 Envelope 无效时阻止 Article 验证、评估和恢复", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    const calls = {
+      schema: 0,
+      assess: 0,
+      restore: 0
+    };
+    window.LingoFlowBackupV2Schema = Object.freeze({
+      validateArticles: () => {
+        calls.schema += 1;
+        return { status: "valid", articles: [], items: [], errors: [] };
+      }
+    });
+    window.LingoFlowArticleLibrary = Object.freeze({
+      assessArticleRestore: async () => {
+        calls.assess += 1;
+        return { status: "restored", written: false };
+      },
+      restoreArticle: async () => {
+        calls.restore += 1;
+        return { status: "restored", written: true };
+      }
+    });
+
+    const restored = await window.LingoFlowBackupV2.restoreBackup({
+      format: { name: "LingoFlow Backup", version: 3 },
+      metadata: {},
+      schema: { articles: "1" },
+      data: { articles: [] }
+    });
+    return { restored, calls };
+  });
+
+  expect(result.calls).toEqual({ schema: 0, assess: 0, restore: 0 });
+  expect(result.restored).toEqual({
+    status: "rejected",
+    summary: {
+      total: 0,
+      restored: 0,
+      unchanged: 0,
+      conflicts: 0,
+      rejected: 0,
+      failed: 0,
+      notAttempted: 0
+    },
+    items: [],
+    errors: [{
+      code: "unsupported-format-version",
+      path: "format.version"
+    }]
+  });
+});
+
+test("restoreBackup 让合法 Envelope 中的非法 Article 被 Schema 拒绝且不写入", async ({ page }) => {
+  const article = makeArticle("article:envelope-valid-schema-rejected");
+  delete article.title;
+  const result = await page.evaluate(async incoming => {
+    const originalSchema = window.LingoFlowBackupV2Schema;
+    const originalLibrary = window.LingoFlowArticleLibrary;
+    const calls = {
+      schema: 0,
+      assess: 0,
+      restore: 0
+    };
+
+    const built = window.LingoFlowBackupV2Envelope.buildEnvelope({
+      articles: [incoming]
+    });
+    const envelopeValidation = built.envelope
+      ? window.LingoFlowBackupV2Envelope.validateEnvelope(built.envelope)
+      : null;
+    const beforeRestore = await originalLibrary.getArticle(incoming.id);
+
+    window.LingoFlowBackupV2Schema = Object.freeze({
+      validateArticles: articles => {
+        calls.schema += 1;
+        return originalSchema.validateArticles(articles);
+      }
+    });
+    window.LingoFlowArticleLibrary = Object.freeze({
+      assessArticleRestore: async () => {
+        calls.assess += 1;
+        return { status: "restored", written: false };
+      },
+      restoreArticle: async () => {
+        calls.restore += 1;
+        return { status: "restored", written: true };
+      }
+    });
+
+    const restored = await window.LingoFlowBackupV2.restoreBackup(built.envelope);
+    const afterRestore = await originalLibrary.getArticle(incoming.id);
+    return {
+      buildStatus: built.status,
+      envelopeStatus: envelopeValidation?.status,
+      beforeRestore,
+      afterRestore,
+      restored,
+      calls
+    };
+  }, article);
+
+  expect(result.buildStatus).toBe("ready");
+  expect(result.envelopeStatus).toBe("valid");
+  expect(result.calls).toEqual({ schema: 1, assess: 0, restore: 0 });
+  expect(result.beforeRestore).toBeNull();
+  expect(result.afterRestore).toBeNull();
+  expect(result.restored).toMatchObject({
+    status: "rejected",
+    summary: {
+      total: 1,
+      restored: 0,
+      rejected: 1,
+      failed: 0,
+      notAttempted: 0
+    },
+    errors: [{
+      code: "missing-field",
+      path: "title",
+      index: 0,
+      articleId: article.id
+    }]
   });
 });
 

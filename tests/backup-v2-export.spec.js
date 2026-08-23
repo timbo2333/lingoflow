@@ -109,6 +109,51 @@ test("Backup v2 Export 接受空 Article 集合", async ({ page }) => {
   });
 });
 
+test("exportBackup 将 Article 导出结果封装为完整 Backup Envelope", async ({ page }) => {
+  const article = makeArticle("article:export-envelope");
+  const result = await page.evaluate(async incoming => {
+    await window.LingoFlowArticleLibrary.restoreArticle(incoming);
+    const exported = await window.LingoFlowBackupV2Export.exportBackup();
+    const validation = exported.payload
+      ? window.LingoFlowBackupV2Envelope.validateEnvelope(exported.payload)
+      : null;
+    return { exported, validation };
+  }, article);
+
+  expect(result.exported).toEqual({
+    status: "ready",
+    payload: {
+      format: {
+        name: "LingoFlow Backup",
+        version: 2
+      },
+      metadata: {},
+      schema: {
+        articles: "1"
+      },
+      data: {
+        articles: [article]
+      }
+    }
+  });
+  expect(result.validation?.status).toBe("valid");
+});
+
+test("exportBackup 在 Envelope 构建被拒绝时不返回 payload", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    window.LingoFlowBackupV2Envelope = Object.freeze({
+      buildEnvelope: () => ({
+        status: "rejected",
+        envelope: null,
+        errors: [{ code: "invalid-envelope", path: "$" }]
+      })
+    });
+    return window.LingoFlowBackupV2Export.exportBackup();
+  });
+
+  expect(result).toEqual({ status: "rejected", payload: null });
+});
+
 test("Backup v2 Export 在 Schema 拒绝异常 Article 时不返回 payload", async ({ page }) => {
   const result = await page.evaluate(async () => {
     let listOptions = null;

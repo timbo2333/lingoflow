@@ -138,6 +138,16 @@
     return schema;
   }
 
+  function getBackupEnvelope() {
+    const envelope = window.LingoFlowBackupV2Envelope;
+    if (!envelope ||
+        typeof envelope.validateEnvelope !== "function" ||
+        typeof envelope.unwrapEnvelope !== "function") {
+      return null;
+    }
+    return envelope;
+  }
+
   function isArticleResult(result) {
     return Boolean(result) &&
       typeof result === "object" &&
@@ -289,6 +299,15 @@
     };
   }
 
+  function rejectedEnvelopeRestoreResult(errors) {
+    return {
+      status: "rejected",
+      summary: createRestoreSummary(0),
+      items: [],
+      errors: Array.isArray(errors) ? errors.slice() : []
+    };
+  }
+
   async function restoreArticles(batch) {
     const snapshot = createBatchSnapshot(batch);
     if (snapshot.error) {
@@ -416,8 +435,52 @@
     };
   }
 
+  async function restoreBackup(envelopeValue) {
+    const envelope = getBackupEnvelope();
+    if (!envelope) {
+      return rejectedEnvelopeRestoreResult([
+        createError("backup-envelope-unavailable")
+      ]);
+    }
+
+    let validation;
+    try {
+      validation = envelope.validateEnvelope(envelopeValue);
+    } catch (error) {
+      return rejectedEnvelopeRestoreResult([
+        createError("backup-envelope-validation-failed", {
+          message: error?.message || "Backup Envelope 验证失败。"
+        })
+      ]);
+    }
+    if (!validation || validation.status !== "valid") {
+      return rejectedEnvelopeRestoreResult(
+        validation?.errors || [createError("backup-envelope-validation-failed")]
+      );
+    }
+
+    let unwrapped;
+    try {
+      unwrapped = envelope.unwrapEnvelope(envelopeValue);
+    } catch (error) {
+      return rejectedEnvelopeRestoreResult([
+        createError("backup-envelope-unpack-failed", {
+          message: error?.message || "Backup Envelope 解包失败。"
+        })
+      ]);
+    }
+    if (!unwrapped || unwrapped.status !== "valid") {
+      return rejectedEnvelopeRestoreResult(
+        unwrapped?.errors || [createError("backup-envelope-unpack-failed")]
+      );
+    }
+
+    return restoreArticles(unwrapped.data);
+  }
+
   window.LingoFlowBackupV2 = Object.freeze({
     assessArticles,
-    restoreArticles
+    restoreArticles,
+    restoreBackup
   });
 })();
