@@ -2556,10 +2556,6 @@ function mergeUniqueMaps(current, incoming) {
   return { ...(current || {}), ...(incoming || {}) };
 }
 
-function getFavoriteType(item) {
-  return item?.type === "phrase" ? "phrase" : "word";
-}
-
 function normalizePhraseText(text) {
   return String(text || "")
     .replace(/\s+/g, " ")
@@ -2567,76 +2563,6 @@ function normalizePhraseText(text) {
     .replace(/^[^A-Za-z]+|[^A-Za-z]+$/g, "")
     .replace(/\s+/g, " ")
     .trim();
-}
-
-function getPhraseIdentity(text) {
-  return normalizePhraseText(text)
-    .toLowerCase()
-    .replace(/’/g, "'");
-}
-
-function getPhraseFavoriteKey(text) {
-  const identity = getPhraseIdentity(text);
-  return identity ? `phrase:${identity}` : "";
-}
-
-function getCanonicalFavoriteMapKey(fallbackKey, item) {
-  if (getFavoriteType(item) !== "phrase") return fallbackKey;
-
-  const text = item?.word || item?.displayWord || String(fallbackKey || "").replace(/^phrase:/, "");
-  return getPhraseFavoriteKey(text) || fallbackKey;
-}
-
-function mergeFavoriteRecords(a, b) {
-  if (!a) return b;
-  if (!b) return a;
-
-  const aTime = new Date(a.updatedAt || a.createdAt || 0);
-  const bTime = new Date(b.updatedAt || b.createdAt || 0);
-  const newer = bTime >= aTime ? b : a;
-  const older = newer === b ? a : b;
-
-  let note = newer.note || "";
-  const olderNote = older.note || "";
-  if (olderNote && note && olderNote !== note && !note.includes(olderNote)) {
-    note = `${note}\n\n—— 合并自另一设备 ——\n${olderNote}`;
-  } else if (!note) {
-    note = olderNote;
-  }
-
-  const tags = [...new Set([...(a.tags || []), ...(b.tags || [])])];
-  const mergedType = a.type === "phrase" || b.type === "phrase"
-    ? "phrase"
-    : (newer.type || older.type || "");
-
-  return {
-    ...older,
-    ...newer,
-    ...(mergedType ? { type: mergedType } : {}),
-    tags,
-    mastered: Boolean(a.mastered || b.mastered),
-    note,
-    sentence: newer.sentence || older.sentence || "",
-    meaning: newer.meaning || older.meaning || "",
-    phonetic: newer.phonetic || older.phonetic || "",
-    pos: newer.pos || older.pos || "",
-    createdAt: [a.createdAt, b.createdAt].filter(Boolean)
-      .sort((x,y) => new Date(x)-new Date(y))[0] || newer.createdAt,
-    updatedAt: newer.updatedAt || older.updatedAt
-  };
-}
-
-function mergeFavoritesMaps(current, incoming) {
-  const result = {};
-
-  for (const source of [current || {}, incoming || {}]) {
-    for (const [key, value] of Object.entries(source)) {
-      const targetKey = getCanonicalFavoriteMapKey(key, value);
-      result[targetKey] = mergeFavoriteRecords(result[targetKey], value);
-    }
-  }
-
-  return result;
 }
 
 function simpleStableHash(text) {
@@ -2695,14 +2621,10 @@ function setVocabData(data) {
   updateVocabBadges();
 }
 
-function getFavoritesData() {
-  return window.LingoFlowLocalData.FavoriteData.getAll();
-}
-
-function setFavoritesData(data) {
-  window.LingoFlowLocalData.FavoriteData.setAll(data);
-  updateVocabBadges();
-  updateFavoriteButton();
+function getLegacyFavoriteBackup() {
+  const backup = window.LingoFlowLegacyFavoriteBackup;
+  if (!backup) throw new Error("Legacy Favorite backup adapter is unavailable.");
+  return backup;
 }
 
 function addToVocab(word, result, sourceType = "article") {
@@ -2745,7 +2667,7 @@ function addToVocab(word, result, sourceType = "article") {
 
 function updateVocabBadges() {
   const historyCount = Object.keys(getVocabData()).length;
-  const favoriteCount = Object.keys(getFavoritesData()).length;
+  const favoriteCount = window.LingoFlowFavoriteRepository.count();
 
   const a = document.getElementById("vocabCountBadge");
   const b = document.getElementById("vocabCountBadgeToolbar");
@@ -2951,13 +2873,49 @@ function escapeJs(text) {
    手动收藏
    ========================= */
 
-function getFavoriteKey(word, result) {
+function getFavoriteLookupText(word, result) {
   return normalizeWord(result?.baseWord || word);
 }
 
+function getFavoriteRepository() {
+  return window.LingoFlowFavoriteRepository;
+}
+
+function getFavoriteLearningRepository() {
+  return window.LingoFlowFavoriteLearningRepository;
+}
+
+function findActiveFavorites(type, text) {
+  if (!text) return [];
+  return getFavoriteRepository().findByContent({ type, text });
+}
+
+function getFavoriteOrigin(source) {
+  const kind = String(source || "").trim();
+  if (!kind) return null;
+
+  const origin = { kind };
+  if ((kind === "article" || kind === "article-selection") && activeArticleId) {
+    origin.articleId = activeArticleId;
+    const articleTitle = String(currentArticle?.title || "").trim();
+    if (articleTitle) origin.articleTitleSnapshot = articleTitle;
+  }
+  return origin;
+}
+
+function refreshFavoriteUi() {
+  updateVocabBadges();
+  updateFavoriteButton();
+}
+
+function getFavoriteStorageBytes() {
+  return getFavoriteRepository().getStorageBytes() +
+    getFavoriteLearningRepository().getStorageBytes();
+}
+
 function isFavorite(word, result) {
-  const key = getFavoriteKey(word, result);
-  return Boolean(key && getFavoritesData()[key]);
+  const text = getFavoriteLookupText(word, result);
+  return findActiveFavorites("word", text).length > 0;
 }
 
 function updateFavoriteButton() {
@@ -2986,94 +2944,80 @@ function saveCurrentFavorite() {
   const { word, result, sentence, source } = currentLookupState;
   if (!word) return;
 
-  const key = getFavoriteKey(word, result);
-  if (!key) return;
+  const text = getFavoriteLookupText(word, result);
+  if (!text) return;
 
-  const favorites = getFavoritesData();
-  const existing = favorites[key];
+  const existing = findActiveFavorites("word", text);
+  if (existing.length) return existing[0];
 
-  favorites[key] = {
-    type: existing?.type || "word",
-    word: key,
-    displayWord: word,
-    phonetic: result?.phonetic || existing?.phonetic || "",
-    pos: result?.pos || existing?.pos || "",
-    meaning: result?.meaning || existing?.meaning || "",
-    sentence: existing?.sentence ?? sentence ?? "",
-    note: existing?.note || "",
-    tags: existing?.tags || [],
-    mastered: Boolean(existing?.mastered),
-    source: source || existing?.source || "",
-    dictionaryFound: Boolean(result),
-    createdAt: existing?.createdAt || new Date().toISOString(),
-    updatedAt: new Date().toISOString()
+  const input = {
+    type: "word",
+    text,
+    displayText: word,
+    phonetic: result?.phonetic || "",
+    partOfSpeech: result?.pos || "",
+    meaning: result?.meaning || "",
+    context: sentence || "",
+    note: "",
+    tags: []
   };
+  const origin = getFavoriteOrigin(source);
+  if (origin) input.origin = origin;
 
-  setFavoritesData(favorites);
+  const favorite = getFavoriteRepository().create(input);
+  refreshFavoriteUi();
+  return favorite;
 }
 
-function findPhraseFavorite(favorites, text) {
-  const identity = getPhraseIdentity(text);
-  if (!identity) return null;
-
-  const canonicalKey = getPhraseFavoriteKey(identity);
-  if (favorites[canonicalKey] && getFavoriteType(favorites[canonicalKey]) === "phrase") {
-    return { key: canonicalKey, item: favorites[canonicalKey] };
-  }
-
-  for (const [key, item] of Object.entries(favorites)) {
-    if (getFavoriteType(item) !== "phrase") continue;
-    if (getPhraseIdentity(item.word || item.displayWord || "") === identity) {
-      return { key, item };
-    }
-  }
-
-  return null;
+function findPhraseFavorite(text) {
+  const normalizedText = normalizePhraseText(text);
+  return normalizedText ? findActiveFavorites("phrase", normalizedText) : [];
 }
 
 function savePhraseFavorite(snapshot) {
   const text = normalizePhraseText(snapshot?.text || "");
-  const canonicalKey = getPhraseFavoriteKey(text);
-  if (!text || !canonicalKey) return { saved: false, existed: false, text: "" };
+  if (!text) return { saved: false, existed: false, text: "" };
 
-  const favorites = getFavoritesData();
-  const match = findPhraseFavorite(favorites, text);
-  const key = match?.key || canonicalKey;
-  const existing = match?.item;
-  const now = new Date().toISOString();
+  const matches = findPhraseFavorite(text);
+  if (matches.length) {
+    return { saved: true, existed: true, text };
+  }
 
-  favorites[key] = {
-    ...existing,
+  const input = {
     type: "phrase",
-    word: text,
-    displayWord: text,
-    phonetic: existing?.phonetic || "",
-    pos: existing?.pos || "",
-    meaning: existing?.meaning || "",
-    sentence: snapshot?.context || existing?.sentence || "",
-    note: existing?.note || "",
-    tags: existing?.tags || [],
-    mastered: Boolean(existing?.mastered),
-    source: "article-selection",
-    createdAt: existing?.createdAt || now,
-    updatedAt: now
+    text,
+    displayText: text,
+    phonetic: "",
+    partOfSpeech: "",
+    meaning: "",
+    context: snapshot?.context || "",
+    note: "",
+    tags: []
   };
+  const origin = getFavoriteOrigin("article-selection");
+  if (origin) input.origin = origin;
 
-  setFavoritesData(favorites);
-  return { saved: true, existed: Boolean(existing), text };
+  getFavoriteRepository().create(input);
+  refreshFavoriteUi();
+  return { saved: true, existed: false, text };
 }
 
 function toggleCurrentFavorite() {
   const { word, result } = currentLookupState;
   if (!word) return;
 
-  const key = getFavoriteKey(word, result);
-  const favorites = getFavoritesData();
+  const text = getFavoriteLookupText(word, result);
+  const matches = findActiveFavorites("word", text);
 
-  if (favorites[key]) {
-    if (!confirm(`取消收藏 “${key}” 吗？你写的释义、句子和备注也会一起删除。`)) return;
-    delete favorites[key];
-    setFavoritesData(favorites);
+  if (matches.length > 1) {
+    alert("发现多个相同内容的收藏，请在“我的收藏”中按记录分别操作。");
+    return;
+  }
+
+  if (matches.length === 1) {
+    if (!confirm(`取消收藏 “${matches[0].displayText || matches[0].text}” 吗？你写的释义、句子和备注会保留在最近删除记录中。`)) return;
+    getFavoriteRepository().softDelete(matches[0].id);
+    refreshFavoriteUi();
     return;
   }
 
@@ -3092,32 +3036,38 @@ function renderFavorites() {
   const sortMode = document.getElementById("favoriteSortSelect")?.value || "recent";
 
   const masterFilter = document.getElementById("favoriteMasterFilter")?.value || "all";
+  const learningByFavoriteId = new Map(
+    getFavoriteLearningRepository().list().map(state => [state.favoriteId, state])
+  );
 
-  let items = Object.entries(getFavoritesData())
-    .map(([favoriteKey, item]) => ({ ...item, __favoriteKey: favoriteKey }))
+  let items = getFavoriteRepository().list()
+    .map(item => ({
+      ...item,
+      isMastered: Boolean(learningByFavoriteId.get(item.id)?.mastered)
+    }))
     .filter(item => {
       const matchesText = !filter ||
-        (item.word || "").toLowerCase().includes(filter) ||
+        (item.text || "").toLowerCase().includes(filter) ||
         (item.meaning || "").toLowerCase().includes(filter) ||
-        (item.sentence || "").toLowerCase().includes(filter) ||
+        (item.context || "").toLowerCase().includes(filter) ||
         (item.note || "").toLowerCase().includes(filter) ||
         (item.tags || []).some(tag => String(tag).toLowerCase().includes(filter));
 
       const matchesMaster =
         masterFilter === "all" ||
-        (masterFilter === "mastered" && item.mastered) ||
-        (masterFilter === "learning" && !item.mastered);
+        (masterFilter === "mastered" && item.isMastered) ||
+        (masterFilter === "learning" && !item.isMastered);
 
       return matchesText && matchesMaster;
     });
 
   if (sortMode === "az") {
-    items.sort((a, b) => String(a.word || "").localeCompare(String(b.word || "")));
+    items.sort((a, b) => String(a.text || "").localeCompare(String(b.text || "")));
   } else if (sortMode === "mastered") {
-    items.sort((a, b) => Number(Boolean(b.mastered)) - Number(Boolean(a.mastered)) ||
+    items.sort((a, b) => Number(Boolean(b.isMastered)) - Number(Boolean(a.isMastered)) ||
       new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
   } else if (sortMode === "learning") {
-    items.sort((a, b) => Number(Boolean(a.mastered)) - Number(Boolean(b.mastered)) ||
+    items.sort((a, b) => Number(Boolean(a.isMastered)) - Number(Boolean(b.isMastered)) ||
       new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
   } else {
     items.sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
@@ -3130,18 +3080,18 @@ function renderFavorites() {
   }
 
   box.innerHTML = items.map(item => {
-    const sentence = item.sentence || "";
+    const sentence = item.context || "";
     const note = item.note || "";
-    const favoriteType = getFavoriteType(item);
-    const favoriteKey = item.__favoriteKey || item.word || "";
+    const favoriteType = item.type;
+    const favoriteId = item.id;
 
     return `
-      <div class="favoriteItem" data-favorite-key="${escapeHtml(favoriteKey)}">
+      <div class="favoriteItem" data-favorite-id="${escapeHtml(favoriteId)}">
         <div class="favoriteTop">
           <div>
             <div class="favoriteWord">
               <span class="favoriteTypeBadge ${favoriteType}">${favoriteType === "phrase" ? "PHRASE" : "WORD"}</span>
-              ${escapeHtml(item.word || "")}
+              ${escapeHtml(item.text || "")}
               <span class="favoritePhonetic">${escapeHtml(item.phonetic || "")}</span>
             </div>
             <div class="favoriteMeaning">
@@ -3150,17 +3100,14 @@ function renderFavorites() {
                 : '<span style="color:#999">未填写释义</span>'}
             </div>
             <div class="vocabMeta">
-              ${item.pos
-                ? escapeHtml(item.pos)
+              ${item.partOfSpeech
+                ? escapeHtml(item.partOfSpeech)
                 : '<span style="color:#aaa">词性 / 说明未填写</span>'}
             </div>
-            ${favoriteType === "word" && item.dictionaryFound === false
-              ? '<div class="querySourceMeta">个人词卡 · 本地词库未收录</div>'
-              : ''}
 
             <div class="favoriteBadgeRow">
-              <span class="masterBadge ${item.mastered ? 'mastered' : ''}">
-                ${item.mastered ? '✓ 已掌握' : '学习中'}
+              <span class="masterBadge ${item.isMastered ? 'mastered' : ''}">
+                ${item.isMastered ? '✓ 已掌握' : '学习中'}
               </span>
               ${(item.tags || []).map(tag => `<span class="tagBadge">#${escapeHtml(tag)}</span>`).join("")}
             </div>
@@ -3168,13 +3115,13 @@ function renderFavorites() {
 
           <div class="favoriteTopActions">
             <button class="secondary compactButton favoriteSpeakButton"
-                    onclick="event.stopPropagation(); speakFavoriteWord('${escapeJs(item.displayWord || item.word || "")}', this)"
-                    title="朗读 ${escapeHtml(item.displayWord || item.word || "")}">
+                    onclick="event.stopPropagation(); speakFavoriteWord('${escapeJs(item.displayText || item.text || "")}', this)"
+                    title="朗读 ${escapeHtml(item.displayText || item.text || "")}">
               🔊 发音
             </button>
 
             <button class="secondary compactButton editFavoriteButton"
-                    onclick="editFavorite('${escapeJs(favoriteKey)}', this)">
+                    onclick="editFavorite('${escapeJs(favoriteId)}', this)">
               ✏️ 编辑
             </button>
 
@@ -3184,7 +3131,7 @@ function renderFavorites() {
             </button>
 
             <button class="removeTiny"
-                    onclick="removeFavorite('${escapeJs(favoriteKey)}')">
+                    onclick="removeFavorite('${escapeJs(favoriteId)}')">
               取消收藏
             </button>
           </div>
@@ -3223,7 +3170,7 @@ function renderFavorites() {
             <div>
               <div class="favoriteSectionLabel">词性 / 说明</div>
               <input class="favoriteInlineEditor posEditor"
-                     value="${escapeHtml(item.pos || "")}"
+                     value="${escapeHtml(item.partOfSpeech || "")}"
                      placeholder="例如 noun / verb / 专业术语">
             </div>
           </div>
@@ -3241,7 +3188,7 @@ function renderFavorites() {
             </div>
 
             <label class="masterToggle">
-              <input class="masteredEditor" type="checkbox" ${item.mastered ? "checked" : ""}>
+              <input class="masteredEditor" type="checkbox" ${item.isMastered ? "checked" : ""}>
               <span>标记为已掌握</span>
             </label>
           </div>
@@ -3257,7 +3204,7 @@ function renderFavorites() {
             <div class="favoriteDate">收藏：${formatLearningDate(item.createdAt)}</div>
             <div>
               <button class="secondary compactButton"
-                      onclick="saveFavoriteEdit('${escapeJs(favoriteKey)}', this)">
+                      onclick="saveFavoriteEdit('${escapeJs(favoriteId)}', this)">
                 保存修改
               </button>
               <span class="favoriteSavedHint"></span>
@@ -3269,7 +3216,7 @@ function renderFavorites() {
   }).join("");
 }
 
-function editFavorite(key, button) {
+function editFavorite(favoriteId, button) {
   const card = button.closest(".favoriteItem");
   if (!card) return;
 
@@ -3294,30 +3241,57 @@ function cancelFavoriteEdit(button) {
   renderFavorites();
 }
 
-function saveFavoriteEdit(key, button) {
+function saveFavoriteEdit(favoriteId, button) {
   const card = button.closest(".favoriteItem");
   if (!card) return;
 
-  const favorites = getFavoritesData();
-  if (!favorites[key]) return;
+  const favorite = getFavoriteRepository().getById(favoriteId, { includeDeleted: false });
+  if (!favorite) return;
 
-  favorites[key].phonetic = card.querySelector(".phoneticEditor")?.value || "";
-  favorites[key].pos = card.querySelector(".posEditor")?.value || "";
-  favorites[key].meaning = card.querySelector(".meaningEditor")?.value || "";
-  favorites[key].tags = (card.querySelector(".tagsEditor")?.value || "")
+  const patch = {
+    phonetic: card.querySelector(".phoneticEditor")?.value || "",
+    partOfSpeech: card.querySelector(".posEditor")?.value || "",
+    meaning: card.querySelector(".meaningEditor")?.value || "",
+    tags: (card.querySelector(".tagsEditor")?.value || "")
     .split(/[,，]/)
     .map(x => x.trim())
     .filter(Boolean)
-    .filter((x, i, arr) => arr.indexOf(x) === i);
-  favorites[key].mastered = Boolean(card.querySelector(".masteredEditor")?.checked);
-  favorites[key].sentence = card.querySelector(".contextEditor")?.value || "";
-  favorites[key].note = card.querySelector(".noteEditor")?.value || "";
-  favorites[key].updatedAt = new Date().toISOString();
-
-  setFavoritesData(favorites);
-
+    .filter((x, i, arr) => arr.indexOf(x) === i),
+    context: card.querySelector(".contextEditor")?.value || "",
+    note: card.querySelector(".noteEditor")?.value || ""
+  };
+  const mastered = Boolean(card.querySelector(".masteredEditor")?.checked);
   const hint = card.querySelector(".favoriteSavedHint");
-  if (hint) hint.textContent = "已保存";
+
+  let favoriteSaved = false;
+  try {
+    getFavoriteRepository().update(favoriteId, patch);
+    favoriteSaved = true;
+
+    const learningRepository = getFavoriteLearningRepository();
+    const learningState = learningRepository.get(favoriteId, { includeDeleted: true });
+    if (learningState?.deletedAt) {
+      if (mastered) {
+        const restored = learningRepository.restore(favoriteId);
+        if (!restored.mastered) learningRepository.setMastered(favoriteId, true);
+      }
+    } else if (learningState) {
+      learningRepository.setMastered(favoriteId, mastered);
+    } else if (mastered) {
+      learningRepository.setMastered(favoriteId, true);
+    }
+
+    if (hint) hint.textContent = "已保存";
+    refreshFavoriteUi();
+  } catch (error) {
+    console.error("Favorite save error:", error);
+    if (hint) {
+      hint.textContent = favoriteSaved
+        ? "收藏内容已保存，学习状态保存失败"
+        : "保存失败";
+    }
+    return;
+  }
 
   // 稍微停一下让用户看到保存成功，然后恢复紧凑浏览状态
   setTimeout(() => {
@@ -3325,18 +3299,24 @@ function saveFavoriteEdit(key, button) {
   }, 450);
 }
 
-function removeFavorite(key) {
-  const favorites = getFavoritesData();
-  const label = favorites[key]?.word || key;
+function removeFavorite(favoriteId) {
+  const favorite = getFavoriteRepository().getById(favoriteId, { includeDeleted: false });
+  if (!favorite) return;
+
+  const label = favorite.displayText || favorite.text;
   if (!confirm(`确定取消收藏 “${label}” 吗？`)) return;
 
-  delete favorites[key];
-  setFavoritesData(favorites);
+  getFavoriteRepository().softDelete(favoriteId);
+  refreshFavoriteUi();
   renderFavorites();
 }
 
 function exportFavoritesCSV() {
-  const items = Object.values(getFavoritesData());
+  const items = getFavoriteRepository().list();
+  const learningByFavoriteId = new Map(
+    getFavoriteLearningRepository().list()
+      .map(state => [state.favoriteId, state])
+  );
 
   if (!items.length) {
     alert("收藏还是空的。");
@@ -3348,15 +3328,16 @@ function exportFavoritesCSV() {
   ];
 
   for (const item of items) {
+    const learningState = learningByFavoriteId.get(item.id);
     rows.push([
-      getFavoriteType(item).toUpperCase(),
-      item.word || "",
+      item.type.toUpperCase(),
+      item.text || "",
       item.phonetic || "",
-      item.pos || "",
+      item.partOfSpeech || "",
       item.meaning || "",
       (item.tags || []).join("|"),
-      item.mastered ? "yes" : "no",
-      item.sentence || "",
+      learningState?.mastered ? "yes" : "no",
+      item.context || "",
       item.note || "",
       item.createdAt || "",
       item.updatedAt || ""
@@ -4130,7 +4111,10 @@ function handleReadingScroll() {
 }
 
 function checkBackupReminder() {
-  const total = Object.keys(getVocabData()).length + Object.keys(getFavoritesData()).length;
+  // This reminder belongs to the legacy backup flow and only counts data that
+  // the legacy format can actually preserve.
+  const total = Object.keys(getVocabData()).length +
+    getLegacyFavoriteBackup().countSnapshot();
   const box = document.getElementById("backupReminder");
   if (!box || total < 10) return;
 
@@ -4341,10 +4325,7 @@ function favoriteDirectSearchUnknown(word, button) {
     source: "search"
   };
 
-  const key = getFavoriteKey(word, null);
-  const favorites = getFavoritesData();
-
-  if (!favorites[key]) {
+  if (!isFavorite(word, null)) {
     saveCurrentFavorite();
   }
 
@@ -4357,10 +4338,7 @@ function favoriteDirectSearch(word) {
     return;
   }
 
-  const key = getFavoriteKey(currentLookupState.word, currentLookupState.result);
-  const favorites = getFavoritesData();
-
-  if (!favorites[key]) {
+  if (!isFavorite(currentLookupState.word, currentLookupState.result)) {
     saveCurrentFavorite();
   }
 
@@ -4574,7 +4552,7 @@ async function openSettings() {
       : "未导入";
 
   const vocabCount = Object.keys(getVocabData()).length;
-  const favoriteCount = Object.keys(getFavoritesData()).length;
+  const favoriteCount = getFavoriteRepository().count();
 
   document.getElementById("settingsVocabCount").textContent =
     `${vocabCount.toLocaleString()} 条查询记录`;
@@ -4584,7 +4562,7 @@ async function openSettings() {
   document.getElementById("settingsFavoriteCount").textContent =
     `${favoriteCount.toLocaleString()} 个收藏`;
   document.getElementById("settingsFavoriteSize").textContent =
-    `约 ${formatBytes(window.LingoFlowLocalData.FavoriteData.getStorageBytes())}`;
+    `约 ${formatBytes(getFavoriteStorageBytes())}`;
 
   const dictScan = await getECDICTMeta("scan_entries_bytes");
   const lemmaScan = await getECDICTMeta("scan_lemmas_bytes");
@@ -4607,7 +4585,7 @@ async function openSettings() {
   const overheadBox = document.getElementById("settingsStorageOverhead");
 
   const vocabBytes = window.LingoFlowLocalData.QueryData.getVocabStorageBytes();
-  const favoriteBytes = window.LingoFlowLocalData.FavoriteData.getStorageBytes();
+  const favoriteBytes = getFavoriteStorageBytes();
   const learningBytes = vocabBytes + favoriteBytes;
 
   const cachedKnownBytes =
@@ -4700,7 +4678,7 @@ async function scanStorageBreakdown() {
     await setECDICTMeta("scan_lemmas_bytes", lemma.bytes);
 
     const vocabBytes = window.LingoFlowLocalData.QueryData.getVocabStorageBytes();
-    const favoriteBytes = window.LingoFlowLocalData.FavoriteData.getStorageBytes();
+    const favoriteBytes = getFavoriteStorageBytes();
     const knownTotal = dict.bytes + lemma.bytes + vocabBytes + favoriteBytes;
 
     document.getElementById("settingsKnownTotal").textContent =
@@ -4741,13 +4719,15 @@ function downloadBlob(blob, filename) {
 }
 
 async function exportLearningBackup() {
+  // Legacy V0.5.x backup compatibility only. Current Favorite entities and
+  // Favorite Learning State are intentionally outside this historical format.
   const backup = {
     app: "EnglishReader",
     backupType: "learning",
     version: "0.5.2",
     createdAt: new Date().toISOString(),
     vocab: getVocabData(),
-    favorites: getFavoritesData(),
+    favorites: getLegacyFavoriteBackup().readSnapshot(),
     historyBaselines: getHistoryBaselines(),
     queryEvents: getQueryEvents(),
     preferences: {
@@ -4763,7 +4743,8 @@ async function exportLearningBackup() {
   downloadBlob(blob, `english-reader-learning-${new Date().toISOString().slice(0,10)}.json`);
   localStorage.setItem(LAST_BACKUP_KEY, new Date().toISOString());
   document.getElementById("backupReminder")?.classList.remove("show");
-  document.getElementById("backupStatus").textContent = "✅ 学习数据已导出。";
+  document.getElementById("backupStatus").textContent =
+    "✅ 旧版学习备份（legacy）已导出；当前 Favorite Entity 与 Learning State 不在此格式中。";
 }
 
 async function appendStoreToBackupParts(storeName, type, parts, statusEl, batchSize = 600) {
@@ -4821,7 +4802,10 @@ async function exportFullBackup() {
     }) + "\n");
 
     parts.push(JSON.stringify({ type: "vocab", data: getVocabData() }) + "\n");
-    parts.push(JSON.stringify({ type: "favorites", data: getFavoritesData() }) + "\n");
+    parts.push(JSON.stringify({
+      type: "favorites",
+      data: getLegacyFavoriteBackup().readSnapshot()
+    }) + "\n");
     parts.push(JSON.stringify({ type: "historyBaselines", data: getHistoryBaselines() }) + "\n");
     parts.push(JSON.stringify({ type: "queryEvents", data: getQueryEvents() }) + "\n");
     parts.push(JSON.stringify({
@@ -4846,7 +4830,9 @@ async function exportFullBackup() {
     downloadBlob(blob, `english-reader-full-${new Date().toISOString().slice(0,10)}.erbackup`);
     localStorage.setItem(LAST_BACKUP_KEY, new Date().toISOString());
     document.getElementById("backupReminder")?.classList.remove("show");
-    status.textContent = `✅ 完整备份已生成：ECDICT ${entryCount.toLocaleString()} 条，Lemma ${lemmaCount.toLocaleString()} 条。`;
+    status.textContent =
+      `✅ 旧版完整备份（legacy）已生成：ECDICT ${entryCount.toLocaleString()} 条，` +
+      `Lemma ${lemmaCount.toLocaleString()} 条；当前 Favorite Entity 与 Learning State 不在此格式中。`;
   } catch (error) {
     console.error(error);
     status.textContent = "❌ 完整备份失败：" + (error.message || "未知错误");
@@ -4873,23 +4859,24 @@ async function importBackupFile(file, expectedType = "auto") {
 
     if (mode === "preview") {
       const incomingEventCount = Object.keys(data.queryEvents || {}).length;
-      const incomingFavoriteCount = Object.keys(data.favorites || {}).length;
+      const incomingLegacyFavoriteCount = Object.keys(data.favorites || {}).length;
       const currentEventCount = Object.keys(getQueryEvents()).length;
-      const currentFavoriteCount = Object.keys(getFavoritesData()).length;
+      const currentLegacyFavoriteCount = getLegacyFavoriteBackup().countSnapshot();
 
       const ok = confirm(
         `准备智能合并：\n\n` +
-        `当前：${currentEventCount} 条 V0.5.2 查询事件，${currentFavoriteCount} 个收藏\n` +
-        `导入：${incomingEventCount} 条 V0.5.2 查询事件，${incomingFavoriteCount} 个收藏\n\n` +
-        `相同事件 ID 会自动去重。继续吗？`
+        `当前：${currentEventCount} 条 V0.5.2 查询事件，${currentLegacyFavoriteCount} 个旧格式收藏\n` +
+        `导入：${incomingEventCount} 条 V0.5.2 查询事件，${incomingLegacyFavoriteCount} 个旧格式收藏\n\n` +
+        `相同事件 ID 会自动去重；备份中的阅读／发音设置也会应用。` +
+        `当前 Favorite Entity 与 Learning State 不受影响。继续吗？`
       );
       if (!ok) return;
     }
 
     if (mode === "overwrite") {
-      if (!confirm("完全覆盖会替换当前查询记录和收藏。确定继续吗？")) return;
+      if (!confirm("完全覆盖会替换当前查询记录、阅读／发音设置和旧格式收藏，不影响当前 Favorite Entity 与 Learning State。确定继续吗？")) return;
 
-      setFavoritesData(data.favorites || {});
+      getLegacyFavoriteBackup().replaceSnapshot(data.favorites || {});
       setHistoryBaselines(data.historyBaselines || convertLegacyBackupToBaseline(data, file));
       setQueryEvents(data.queryEvents || {});
       if (!Object.keys(data.historyBaselines || {}).length && !Object.keys(data.queryEvents || {}).length) {
@@ -4906,7 +4893,13 @@ async function importBackupFile(file, expectedType = "auto") {
 
       setHistoryBaselines(mergeUniqueMaps(getHistoryBaselines(), incomingBaselines));
       setQueryEvents(mergeUniqueMaps(getQueryEvents(), data.queryEvents || {}));
-      setFavoritesData(mergeFavoritesMaps(getFavoritesData(), data.favorites || {}));
+      const legacyFavoriteBackup = getLegacyFavoriteBackup();
+      legacyFavoriteBackup.replaceSnapshot(
+        legacyFavoriteBackup.mergeSnapshots(
+          legacyFavoriteBackup.readSnapshot(),
+          data.favorites || {}
+        )
+      );
       rebuildVocabFromMergeData();
     }
 
@@ -4920,18 +4913,18 @@ async function importBackupFile(file, expectedType = "auto") {
     }
 
     const finalEventCount = Object.keys(getQueryEvents()).length;
-    const finalFavoriteCount = Object.keys(getFavoritesData()).length;
+    const finalLegacyFavoriteCount = getLegacyFavoriteBackup().countSnapshot();
 
     if (mode === "overwrite") {
       status.textContent =
-        `✅ 已完全覆盖：当前 ${finalEventCount} 条查询事件，${finalFavoriteCount} 个收藏。`;
+        `✅ 已完全覆盖：当前 ${finalEventCount} 条查询事件，${finalLegacyFavoriteCount} 个旧格式收藏。`;
     } else {
       const incomingEventCount = Object.keys(data.queryEvents || {}).length;
-      const incomingFavoriteCount = Object.keys(data.favorites || {}).length;
+      const incomingLegacyFavoriteCount = Object.keys(data.favorites || {}).length;
 
       status.textContent =
-        `✅ 智能合并完成：导入包包含 ${incomingEventCount} 条查询事件、${incomingFavoriteCount} 个收藏；` +
-        `合并后共有 ${finalEventCount} 条查询事件、${finalFavoriteCount} 个收藏。重复事件已自动去重。`;
+        `✅ 智能合并完成：导入包包含 ${incomingEventCount} 条查询事件、${incomingLegacyFavoriteCount} 个旧格式收藏；` +
+        `合并后共有 ${finalEventCount} 条查询事件、${finalLegacyFavoriteCount} 个旧格式收藏。重复事件已自动去重。`;
     }
     return;
   }
@@ -4956,7 +4949,7 @@ async function importBackupFile(file, expectedType = "auto") {
     throw new Error("不是有效的 English Reader 完整备份。");
   }
 
-  if (!confirm("恢复完整备份会覆盖当前 ECDICT、Lemma、查询记录和收藏。确定继续吗？")) return;
+  if (!confirm("恢复旧版完整备份会覆盖当前 ECDICT、Lemma、查询记录、阅读／发音设置和旧格式收藏，不影响当前 Favorite Entity 与 Learning State。确定继续吗？")) return;
 
   status.textContent = "正在清空旧词库…";
   await clearECDICTEntries();
@@ -4968,7 +4961,7 @@ async function importBackupFile(file, expectedType = "auto") {
   let entryBatch = [];
   let lemmaBatch = [];
   let vocab = null;
-  let favorites = null;
+  let legacyFavorites = null;
   let historyBaselines = null;
   let queryEvents = null;
   let importedPreferences = null;
@@ -5006,7 +4999,7 @@ async function importBackupFile(file, expectedType = "auto") {
     }
 
     if (obj.type === "favorites") {
-      favorites = obj.data || {};
+      legacyFavorites = obj.data || {};
       return;
     }
 
@@ -5057,7 +5050,9 @@ async function importBackupFile(file, expectedType = "auto") {
   await setECDICTMeta("lemma_ready", lemmas > 0);
   await setECDICTMeta("lemma_count", lemmas);
 
-  if (favorites) setFavoritesData(favorites);
+  if (legacyFavorites) {
+    getLegacyFavoriteBackup().replaceSnapshot(legacyFavorites);
+  }
 
   if (historyBaselines || queryEvents) {
     setHistoryBaselines(historyBaselines || {});
@@ -5079,7 +5074,9 @@ async function importBackupFile(file, expectedType = "auto") {
   }
 
   await refreshDictionaryStatus();
-  status.textContent = `✅ 恢复完成：ECDICT ${entries.toLocaleString()} 条，Lemma ${lemmas.toLocaleString()} 条。`;
+  status.textContent =
+    `✅ 旧版恢复完成：ECDICT ${entries.toLocaleString()} 条，Lemma ${lemmas.toLocaleString()} 条；` +
+    "旧格式收藏已恢复到 legacy 兼容存储。";
 }
 
 document.getElementById("learningBackupFileInput").addEventListener("change", async event => {

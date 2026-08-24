@@ -139,8 +139,8 @@ I felt nervous when I asked my friends for advice, but their suggestions helped 
     </div>
 
     <div id="backupReminder" class="backupReminder">
-      <span>💾 你的学习数据已经有一段时间没有备份。</span>
-      <button class="secondary compactButton" onclick="openSettings()">现在备份</button>
+      <span>💾 旧版学习备份（legacy）已经有一段时间没有导出。</span>
+      <button class="secondary compactButton" onclick="openSettings()">查看旧版备份</button>
       <button class="secondary compactButton" onclick="dismissBackupReminder()">今天不提醒</button>
     </div>
   </section>
@@ -564,14 +564,14 @@ I felt nervous when I asked my friends for advice, but their suggestions helped 
         </div>
       </div>
 
-      <div class="settingsSectionTitle">数据迁移与备份</div>
+      <div class="settingsSectionTitle">旧版数据迁移与备份（Legacy）</div>
       <div class="backupPanel backupPanelFinal">
         <div class="backupGroup">
-          <div class="backupGroupTitle">推荐 · 学习数据备份</div>
-          <div class="backupGroupHint">保存收藏、词组、查询记录、释义与备注，以及阅读、显示和发音偏好等个人设置。文件很小，适合日常迁移与恢复。</div>
+          <div class="backupGroupTitle">兼容 · 旧版学习数据备份</div>
+          <div class="backupGroupHint">保留旧格式收藏、查询记录和阅读／发音设置的历史导入导出能力；不包含当前 Favorite Entity、Learning State、我的文章或文章阅读进度。</div>
           <div class="backupButtonRow">
-            <button class="secondary" onclick="exportLearningBackup()">导出学习数据备份</button>
-            <button class="secondary" onclick="document.getElementById('learningBackupFileInput').click()">导入学习数据备份</button>
+            <button class="secondary" onclick="exportLearningBackup()">导出旧版学习备份</button>
+            <button class="secondary" onclick="document.getElementById('learningBackupFileInput').click()">导入旧版学习备份</button>
 
             <select id="learningImportMode" class="settingsSelect compactSelect">
               <option value="merge" selected>导入方式：智能合并（推荐）</option>
@@ -586,11 +586,11 @@ I felt nervous when I asked my friends for advice, but their suggestions helped 
         </div>
 
         <div class="backupGroup">
-          <div class="backupGroupTitle">高级 · 完整备份</div>
-          <div class="backupGroupHint">同时包含本地词典和学习数据，文件较大，适合完整迁移或故障恢复。导入时会整体覆盖当前数据，不做智能合并；日常迁移请优先使用学习数据备份。</div>
+          <div class="backupGroupTitle">Legacy · 旧版完整备份</div>
+          <div class="backupGroupHint">同时包含本地词典、查询记录、阅读／发音设置和旧格式收藏，文件较大。导入会覆盖这些 legacy 数据，但不会迁移或覆盖当前 Favorite Entity 与 Learning State。</div>
           <div class="backupButtonRow">
-            <button class="secondary" onclick="exportFullBackup()">导出完整备份</button>
-            <button class="secondary" onclick="document.getElementById('fullBackupFileInput').click()">导入完整备份</button>
+            <button class="secondary" onclick="exportFullBackup()">导出旧版完整备份</button>
+            <button class="secondary" onclick="document.getElementById('fullBackupFileInput').click()">导入旧版完整备份</button>
           </div>
         </div>
 
@@ -598,7 +598,7 @@ I felt nervous when I asked my friends for advice, but their suggestions helped 
         <input id="fullBackupFileInput" type="file" accept=".erbackup,.txt" hidden>
 
         <div id="backupStatus" class="backupStatus">
-          日常迁移优先使用“学习数据备份 → 智能合并”。当前备份暂不包含“我的文章”及文章阅读进度；换设备或清除浏览器站点数据前请注意。本地词典丢失后，可以重新自动加载或手动导入。
+          这里保留的是旧版兼容备份，不保护当前 Favorite Entity、Learning State、“我的文章”或文章阅读进度。请勿将其视为当前完整个人数据备份。
         </div>
       </div>
 
@@ -684,7 +684,7 @@ I felt nervous when I asked my friends for advice, but their suggestions helped 
         <div class="helpStep"><b>2. 开始阅读</b><span>粘贴英文或导入 TXT，点击“开始阅读”；文章会自动保存到“我的文章”。</span></div>
         <div class="helpStep"><b>3. 我的文章与继续阅读</b><span>阅读进度会自动保存，再次打开可恢复位置；“继续阅读”可快速回到最近阅读中的文章。</span></div>
         <div class="helpStep"><b>4. 管理文章</b><span>可查看阅读状态、按状态筛选、搜索标题或来源文件名，并从“最近删除”恢复文章。</span></div>
-        <div class="helpStep"><b>5. 阅读与学习</b><span>点词查词、朗读并收藏单词或词组；可在设置中备份学习数据，但当前备份暂不包含“我的文章”及文章阅读进度。</span></div>
+        <div class="helpStep"><b>5. 阅读与学习</b><span>点词查词、朗读并收藏单词或词组；设置中的旧版兼容备份不包含当前 Favorite Entity、Learning State、“我的文章”或文章阅读进度。</span></div>
       </div>
 
       <div class="shortcutBox">
@@ -832,6 +832,9 @@ I felt nervous when I asked my friends for advice, but their suggestions helped 
 <script src="js/backup-v2-export.js"></script>
 <script src="js/backup-v2.js"></script>
 <script src="js/local-data.js"></script>
+<script src="js/legacy-favorite-backup.js"></script>
+<script src="js/favorite-repository.js"></script>
+<script src="js/favorite-learning-repository.js"></script>
 <script src="js/main.js"></script>
 
 </body>
