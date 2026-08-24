@@ -249,6 +249,57 @@ test("Article 恢复评估只读且恢复保留原身份、时间和 Reading Pro
   expect(result.stored.reading).toEqual(article.reading);
 });
 
+test("Article reading 更新和文章编辑保留未知 reading 扩展字段", async ({ page }) => {
+  const article = makeRestoreArticle({
+    id: "article:reading-extensions",
+    reading: {
+      progress: 0.24,
+      paragraphIndex: 1,
+      updatedAt: "2026-08-18T03:00:00.000Z",
+      futureAnchor: {
+        paragraphId: "paragraph:1",
+        offset: 12
+      },
+      futureMetadata: {
+        strategy: "anchor-v1",
+        tags: ["reading", "extension"]
+      }
+    }
+  });
+  const nextReading = {
+    progress: 0.73,
+    paragraphIndex: 5,
+    updatedAt: "2026-08-19T03:30:00.000Z"
+  };
+  const nextLastReadAt = "2026-08-19T04:00:00.000Z";
+  const result = await page.evaluate(async ({ incoming, reading, lastReadAt }) => {
+    const library = window.LingoFlowArticleLibrary;
+    const restored = await library.restoreArticle(incoming);
+    const readingUpdated = await library.updateArticleReading(incoming.id, {
+      ...reading,
+      lastReadAt
+    });
+    const articleUpdated = await library.updateArticle(incoming.id, {
+      title: "Reading extensions preserved"
+    });
+    const stored = await library.getArticle(incoming.id);
+    return { restored, readingUpdated, articleUpdated, stored };
+  }, { incoming: article, reading: nextReading, lastReadAt: nextLastReadAt });
+
+  const expectedReading = {
+    ...nextReading,
+    futureAnchor: article.reading.futureAnchor,
+    futureMetadata: article.reading.futureMetadata
+  };
+  expect(result.restored).toMatchObject({ status: "restored", written: true });
+  expect(result.readingUpdated.lastReadAt).toBe(nextLastReadAt);
+  expect(result.readingUpdated.reading).toEqual(expectedReading);
+  expect(result.readingUpdated.reading).not.toHaveProperty("lastReadAt");
+  expect(result.articleUpdated.title).toBe("Reading extensions preserved");
+  expect(result.articleUpdated.reading).toEqual(expectedReading);
+  expect(result.stored.reading).toEqual(expectedReading);
+});
+
 test("Article 恢复保留软删除状态且重复恢复返回 unchanged", async ({ page }) => {
   const article = makeRestoreArticle({
     id: "article:backup-deleted",

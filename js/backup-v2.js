@@ -58,7 +58,7 @@
     }
   }
 
-  function validateBatch(batch) {
+  function validateBatchStructure(batch) {
     if (!batch || typeof batch !== "object" || Array.isArray(batch)) {
       return {
         articles: [],
@@ -78,7 +78,13 @@
       };
     }
 
-    const articles = batch.articles.slice();
+    return {
+      articles: batch.articles.slice(),
+      errors: []
+    };
+  }
+
+  function validateArticleBatch(articles) {
     const errors = [];
     const ids = new Map();
     const sources = new Map();
@@ -118,6 +124,12 @@
     });
 
     return { articles, errors };
+  }
+
+  function validateBatch(batch) {
+    const validation = validateBatchStructure(batch);
+    if (validation.errors.length) return validation;
+    return validateArticleBatch(validation.articles);
   }
 
   function getArticleLibrary() {
@@ -189,15 +201,10 @@
     };
   }
 
-  async function assessArticles(batch) {
-    const validation = validateBatch(batch);
-    if (validation.errors.length) {
-      return rejectAssessment(validation.articles, validation.errors);
-    }
-
+  async function assessValidatedArticles(articles) {
     const library = getArticleLibrary();
     if (!library) {
-      return rejectAssessment(validation.articles, [
+      return rejectAssessment(articles, [
         createError("article-library-unavailable")
       ]);
     }
@@ -205,8 +212,8 @@
     const items = [];
     const errors = [];
 
-    for (let index = 0; index < validation.articles.length; index += 1) {
-      const article = validation.articles[index];
+    for (let index = 0; index < articles.length; index += 1) {
+      const article = articles[index];
       try {
         const result = await library.assessArticleRestore(article);
         if (!isArticleResult(result)) {
@@ -226,8 +233,8 @@
           articleId: article?.id,
           message: error?.message || "Article 评估失败。"
         }));
-        const summary = summarizeAssessment(validation.articles.length, items);
-        summary.rejected += validation.articles.length - items.length;
+        const summary = summarizeAssessment(articles.length, items);
+        summary.rejected += articles.length - items.length;
         return {
           status: "rejected",
           summary,
@@ -237,13 +244,57 @@
       }
     }
 
-    const summary = summarizeAssessment(validation.articles.length, items);
+    const summary = summarizeAssessment(articles.length, items);
     return {
       status: summary.rejected ? "rejected" : "ready",
       summary,
       items,
       errors
     };
+  }
+
+  async function assessArticles(batch) {
+    const snapshot = createBatchSnapshot(batch);
+    if (snapshot.error) {
+      return rejectAssessment([], [snapshot.error]);
+    }
+
+    const validation = validateBatchStructure(snapshot.batch);
+    if (validation.errors.length) {
+      return rejectAssessment(validation.articles, validation.errors);
+    }
+
+    const schema = getBackupSchema();
+    if (!schema) {
+      return rejectAssessment(validation.articles, [
+        createError("backup-schema-unavailable")
+      ]);
+    }
+
+    let schemaValidation;
+    try {
+      schemaValidation = schema.validateArticles(validation.articles);
+    } catch (error) {
+      return rejectAssessment(validation.articles, [
+        createError("backup-schema-validation-failed", {
+          message: error?.message || "Backup Schema 验证失败。"
+        })
+      ]);
+    }
+    if (!schemaValidation || schemaValidation.status !== "valid") {
+      const errors = Array.isArray(schemaValidation?.errors) &&
+        schemaValidation.errors.length
+        ? schemaValidation.errors.slice()
+        : [createError("backup-schema-validation-failed")];
+      return rejectAssessment(validation.articles, errors);
+    }
+
+    const batchValidation = validateArticleBatch(validation.articles);
+    if (batchValidation.errors.length) {
+      return rejectAssessment(batchValidation.articles, batchValidation.errors);
+    }
+
+    return assessValidatedArticles(batchValidation.articles);
   }
 
   function rejectedRestoreResult(assessment) {
@@ -349,7 +400,15 @@
       );
     }
 
-    const assessment = await assessArticles(batchSnapshot);
+    const batchValidation = validateBatch(batchSnapshot);
+    if (batchValidation.errors.length) {
+      return rejectedRestoreResult(rejectAssessment(
+        batchValidation.articles,
+        batchValidation.errors
+      ));
+    }
+
+    const assessment = await assessValidatedArticles(batchValidation.articles);
     if (assessment.status === "rejected") {
       return rejectedRestoreResult(assessment);
     }

@@ -232,8 +232,16 @@ test("restoreBackup 让合法 Envelope 中的非法 Article 被 Schema 拒绝且
 test("Backup v2 在调用 Article Library 前拒绝批内重复 ID", async ({ page }) => {
   const article = makeArticle("article:duplicate-batch");
   const result = await page.evaluate(async incoming => {
+    const schema = window.LingoFlowBackupV2Schema;
+    let schemaCalls = 0;
     let assessCalls = 0;
     let restoreCalls = 0;
+    window.LingoFlowBackupV2Schema = Object.freeze({
+      validateArticles: articles => {
+        schemaCalls += 1;
+        return schema.validateArticles(articles);
+      }
+    });
     window.LingoFlowArticleLibrary = Object.freeze({
       assessArticleRestore: async () => {
         assessCalls += 1;
@@ -251,7 +259,7 @@ test("Backup v2 在调用 Article Library 前拒绝批内重复 ID", async ({ pa
     const restored = await window.LingoFlowBackupV2.restoreArticles({
       articles: [incoming, { ...incoming }]
     });
-    return { assessment, restored, assessCalls, restoreCalls };
+    return { assessment, restored, schemaCalls, assessCalls, restoreCalls };
   }, article);
 
   expect(result.assessment.status).toBe("rejected");
@@ -265,8 +273,128 @@ test("Backup v2 在调用 Article Library 前拒绝批内重复 ID", async ({ pa
     rejected: 1,
     notAttempted: 1
   });
+  expect(result.schemaCalls).toBe(2);
   expect(result.assessCalls).toBe(0);
   expect(result.restoreCalls).toBe(0);
+});
+
+test("assessArticles 在评估前通过 Article Schema 拒绝无效数据", async ({ page }) => {
+  const article = makeArticle("article:assessment-schema-rejected");
+  delete article.title;
+  const result = await page.evaluate(async incoming => {
+    const originalSchema = window.LingoFlowBackupV2Schema;
+    const calls = {
+      schema: 0,
+      assess: 0,
+      restore: 0
+    };
+    window.LingoFlowBackupV2Schema = Object.freeze({
+      validateArticles: articles => {
+        calls.schema += 1;
+        return originalSchema.validateArticles(articles);
+      }
+    });
+    window.LingoFlowArticleLibrary = Object.freeze({
+      assessArticleRestore: async () => {
+        calls.assess += 1;
+        return { status: "restored", written: false };
+      },
+      restoreArticle: async () => {
+        calls.restore += 1;
+        return { status: "restored", written: true };
+      }
+    });
+
+    const assessment = await window.LingoFlowBackupV2.assessArticles({
+      articles: [incoming]
+    });
+    return { assessment, calls };
+  }, article);
+
+  expect(result.calls).toEqual({ schema: 1, assess: 0, restore: 0 });
+  expect(result.assessment).toEqual({
+    status: "rejected",
+    summary: {
+      total: 1,
+      restorable: 0,
+      unchanged: 0,
+      conflicts: 0,
+      rejected: 1
+    },
+    items: [],
+    errors: [{
+      code: "missing-field",
+      path: "title",
+      index: 0,
+      articleId: article.id
+    }]
+  });
+});
+
+test("assessArticles 让 Schema 与异步评估使用同一份批次快照", async ({ page }) => {
+  const articles = [
+    makeArticle("article:assess-snapshot-first", { title: "First snapshot title" }),
+    makeArticle("article:assess-snapshot-second", { title: "Second snapshot title" })
+  ];
+  const result = await page.evaluate(async incoming => {
+    const schema = window.LingoFlowBackupV2Schema;
+    const schemaTitles = [];
+    const assessedTitles = [];
+    let releaseFirst;
+    let notifyFirstStarted;
+    const firstStarted = new Promise(resolve => {
+      notifyFirstStarted = resolve;
+    });
+    const firstGate = new Promise(resolve => {
+      releaseFirst = resolve;
+    });
+
+    window.LingoFlowBackupV2Schema = Object.freeze({
+      validateArticles: candidateArticles => {
+        schemaTitles.push(...candidateArticles.map(article => article.title));
+        return schema.validateArticles(candidateArticles);
+      }
+    });
+    window.LingoFlowArticleLibrary = Object.freeze({
+      assessArticleRestore: async article => {
+        assessedTitles.push(article.title);
+        if (assessedTitles.length === 1) {
+          notifyFirstStarted();
+          await firstGate;
+        }
+        return {
+          status: "restored",
+          articleId: article.id,
+          written: false
+        };
+      },
+      restoreArticle: async () => {
+        throw new Error("只读评估不应调用 restoreArticle。");
+      }
+    });
+
+    const assessmentPromise = window.LingoFlowBackupV2.assessArticles({
+      articles: incoming
+    });
+    await firstStarted;
+    incoming[1].title = "Changed after assessment started";
+    releaseFirst();
+    const assessment = await assessmentPromise;
+    return {
+      assessment,
+      schemaTitles,
+      assessedTitles,
+      callerSecondTitle: incoming[1].title
+    };
+  }, articles);
+
+  expect(result.assessment).toMatchObject({
+    status: "ready",
+    summary: { total: 2, restorable: 2, rejected: 0 }
+  });
+  expect(result.schemaTitles).toEqual(articles.map(article => article.title));
+  expect(result.assessedTitles).toEqual(result.schemaTitles);
+  expect(result.callerSecondTitle).toBe("Changed after assessment started");
 });
 
 test("restoreArticles 在 Schema 验证失败时不调用 Article Library", async ({ page }) => {
@@ -329,6 +457,7 @@ test("restoreArticles 让 Schema 与 Article Library 使用同一份未修改快
   const result = await page.evaluate(async incoming => {
     const schema = window.LingoFlowBackupV2Schema;
     const observations = {
+      schemaCalls: 0,
       schemaBefore: null,
       schemaAfter: null,
       assessedSameArticle: false,
@@ -337,6 +466,7 @@ test("restoreArticles 让 Schema 与 Article Library 使用同一份未修改快
     let schemaArticle = null;
     window.LingoFlowBackupV2Schema = Object.freeze({
       validateArticles: articles => {
+        observations.schemaCalls += 1;
         schemaArticle = articles[0];
         observations.schemaBefore = JSON.stringify(articles);
         const validation = schema.validateArticles(articles);
@@ -379,6 +509,7 @@ test("restoreArticles 让 Schema 与 Article Library 使用同一份未修改快
     status: "completed",
     summary: { total: 1, restored: 1 }
   });
+  expect(result.observations.schemaCalls).toBe(1);
   expect(result.observations.schemaBefore).toBe(JSON.stringify([article]));
   expect(result.observations.schemaAfter).toBe(result.observations.schemaBefore);
   expect(result.observations.assessedSameArticle).toBe(true);
@@ -425,8 +556,16 @@ test("assessArticles 只调用只读评估并准确汇总结果", async ({ page 
     makeArticle("article:assess-conflict")
   ];
   const result = await page.evaluate(async incoming => {
+    const schema = window.LingoFlowBackupV2Schema;
     const assessed = [];
+    let schemaCalls = 0;
     let restoreCalls = 0;
+    window.LingoFlowBackupV2Schema = Object.freeze({
+      validateArticles: candidateArticles => {
+        schemaCalls += 1;
+        return schema.validateArticles(candidateArticles);
+      }
+    });
     window.LingoFlowArticleLibrary = Object.freeze({
       assessArticleRestore: async article => {
         assessed.push(article.id);
@@ -451,10 +590,11 @@ test("assessArticles 只调用只读评估并准确汇总结果", async ({ page 
     });
 
     const assessment = await window.LingoFlowBackupV2.assessArticles({ articles: incoming });
-    return { assessment, assessed, restoreCalls };
+    return { assessment, assessed, schemaCalls, restoreCalls };
   }, articles);
 
   expect(result.assessed).toEqual(articles.map(article => article.id));
+  expect(result.schemaCalls).toBe(1);
   expect(result.restoreCalls).toBe(0);
   expect(result.assessment).toMatchObject({
     status: "ready",

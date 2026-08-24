@@ -27,22 +27,29 @@
   }
 
   function normalizeReading(reading = {}, fallback = null) {
-    const base = fallback || {
+    const defaults = {
       progress: 0,
       paragraphIndex: 0,
       updatedAt: null
     };
+    const base = isPlainObject(fallback) ? fallback : defaults;
+    const readingState = isPlainObject(reading) ? { ...reading } : {};
+    delete readingState.lastReadAt;
 
-    const progress = Number(reading.progress ?? base.progress ?? 0);
-    const paragraphIndex = Number(reading.paragraphIndex ?? base.paragraphIndex ?? 0);
+    const progress = Number(readingState.progress ?? base.progress ?? 0);
+    const paragraphIndex = Number(readingState.paragraphIndex ?? base.paragraphIndex ?? 0);
 
-    return {
+    const normalized = {
+      ...base,
+      ...readingState,
       progress: Number.isFinite(progress) ? Math.min(1, Math.max(0, progress)) : 0,
       paragraphIndex: Number.isFinite(paragraphIndex)
         ? Math.max(0, Math.trunc(paragraphIndex))
         : 0,
-      updatedAt: reading.updatedAt ?? base.updatedAt ?? null
+      updatedAt: readingState.updatedAt ?? base.updatedAt ?? null
     };
+    delete normalized.lastReadAt;
+    return normalized;
   }
 
   function applyOptionalText(target, key, value) {
