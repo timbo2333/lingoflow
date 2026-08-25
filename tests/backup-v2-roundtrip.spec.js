@@ -34,7 +34,7 @@ function createArticleFixture() {
   };
 }
 
-test("Backup v2 Envelope can export and restore Article data roundtrip", async ({ browser }) => {
+test("Backup v2 Envelope can build and restore Article-only data roundtrip", async ({ browser }) => {
   const article = createArticleFixture();
   const exportContext = await browser.newContext();
   let exported;
@@ -42,23 +42,19 @@ test("Backup v2 Envelope can export and restore Article data roundtrip", async (
   try {
     const exportPage = await exportContext.newPage();
     await loadBackupEnvironment(exportPage);
-    const exportResult = await exportPage.evaluate(async incoming => {
-      const seeded = await window.LingoFlowArticleLibrary.restoreArticle(incoming);
-      const backup = await window.LingoFlowBackupV2Export.exportBackup();
-      const validation = backup.payload
-        ? window.LingoFlowBackupV2Envelope.validateEnvelope(backup.payload)
+    const exportResult = await exportPage.evaluate(incoming => {
+      const backup = window.LingoFlowBackupV2Envelope.buildEnvelope({
+        articles: [incoming]
+      });
+      const validation = backup.envelope
+        ? window.LingoFlowBackupV2Envelope.validateEnvelope(backup.envelope)
         : null;
-      return { seeded, backup, validation };
+      return { backup, validation };
     }, article);
 
-    expect(exportResult.seeded).toMatchObject({
-      status: "restored",
-      articleId: article.id,
-      written: true
-    });
     expect(exportResult.backup).toEqual({
       status: "ready",
-      payload: {
+      envelope: {
         format: {
           name: "LingoFlow Backup",
           version: 2
@@ -70,10 +66,13 @@ test("Backup v2 Envelope can export and restore Article data roundtrip", async (
         data: {
           articles: [article]
         }
-      }
+      },
+      errors: []
     });
     expect(exportResult.validation?.status).toBe("valid");
-    exported = exportResult.backup.payload;
+    expect(Object.keys(exportResult.backup.envelope.schema)).toEqual(["articles"]);
+    expect(Object.keys(exportResult.backup.envelope.data)).toEqual(["articles"]);
+    exported = exportResult.backup.envelope;
   } finally {
     await exportContext.close();
   }
@@ -90,7 +89,17 @@ test("Backup v2 Envelope can export and restore Article data roundtrip", async (
       const finalArticle = await window.LingoFlowArticleLibrary.getArticle(
         payload.data.articles[0].id
       );
-      return { beforeRestore, restored, finalArticle };
+      const favorites = window.LingoFlowFavoriteRepository.list({ includeDeleted: true });
+      const favoriteLearningStates = window.LingoFlowFavoriteLearningRepository.list({
+        includeDeleted: true
+      });
+      return {
+        beforeRestore,
+        restored,
+        finalArticle,
+        favorites,
+        favoriteLearningStates
+      };
     }, exported);
 
     expect(restoreResult.beforeRestore).toBeNull();
@@ -107,6 +116,8 @@ test("Backup v2 Envelope can export and restore Article data roundtrip", async (
       }
     });
     expect(restoreResult.finalArticle).toEqual(article);
+    expect(restoreResult.favorites).toEqual([]);
+    expect(restoreResult.favoriteLearningStates).toEqual([]);
   } finally {
     await restoreContext.close();
   }

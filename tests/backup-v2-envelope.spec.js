@@ -97,6 +97,25 @@ test("buildEnvelope 构建文档定义的 Article Envelope 且不修改输入", 
   expect(result.original).toEqual(data);
 });
 
+test("buildEnvelope 为传入的已注册实体生成完全对应的 schema 声明", async ({ page }) => {
+  const data = {
+    articles: [],
+    favorites: [{ id: "favorite:envelope-container" }],
+    favoriteLearningStates: [{ favoriteId: "favorite:envelope-container" }]
+  };
+  const result = await page.evaluate(incoming => (
+    window.LingoFlowBackupV2Envelope.buildEnvelope(incoming)
+  ), data);
+
+  expect(result.status).toBe("ready");
+  expect(result.envelope.schema).toEqual({
+    articles: "1",
+    favorites: "1",
+    favoriteLearningStates: "1"
+  });
+  expect(result.envelope.data).toEqual(data);
+});
+
 test("validateEnvelope 接受空 Article 集合和合法未知字段且不修改输入", async ({ page }) => {
   const envelope = makeEnvelope({
     format: { compatibility: { minimumReader: 2 } },
@@ -261,7 +280,7 @@ test("validateEnvelope 要求 schema 与 data 同时声明 Article", async ({ pa
   });
 });
 
-test("Envelope 明确拒绝当前未支持的实体而不调用其他 Backup 层", async ({ page }) => {
+test("Envelope 接受全部已注册实体，并明确拒绝未注册实体", async ({ page }) => {
   const result = await page.evaluate(() => {
     let schemaCalls = 0;
     let libraryCalls = 0;
@@ -278,24 +297,41 @@ test("Envelope 明确拒绝当前未支持的实体而不调用其他 Backup 层
       }
     });
 
-    const envelope = {
+    const registered = {
       format: { name: "LingoFlow Backup", version: 2 },
       metadata: {},
-      schema: { articles: "1", favorites: "1" },
-      data: { articles: [], favorites: [] }
+      schema: {
+        articles: "1",
+        favorites: "1",
+        favoriteLearningStates: "1"
+      },
+      data: {
+        articles: [],
+        favorites: [],
+        favoriteLearningStates: []
+      }
+    };
+    const unsupported = {
+      format: { name: "LingoFlow Backup", version: 2 },
+      metadata: {},
+      schema: { articles: "1", queryEvents: "1" },
+      data: { articles: [], queryEvents: [] }
     };
     return {
-      validation: window.LingoFlowBackupV2Envelope.validateEnvelope(envelope),
+      registered: window.LingoFlowBackupV2Envelope.validateEnvelope(registered),
+      unsupported: window.LingoFlowBackupV2Envelope.validateEnvelope(unsupported),
       schemaCalls,
       libraryCalls
     };
   });
 
-  expect(result.validation.status).toBe("rejected");
-  expect(result.validation.errors).toContainEqual({
+  expect(result.registered.status).toBe("valid");
+  expect(result.registered.errors).toEqual([]);
+  expect(result.unsupported.status).toBe("rejected");
+  expect(result.unsupported.errors).toContainEqual({
     code: "unsupported-entity",
-    path: "data.favorites",
-    entity: "favorites"
+    path: "data.queryEvents",
+    entity: "queryEvents"
   });
   expect(result.schemaCalls).toBe(0);
   expect(result.libraryCalls).toBe(0);
@@ -314,6 +350,38 @@ test("Envelope 只验证容器，不解释 Article 字段", async ({ page }) => 
 
   expect(result.status).toBe("valid");
   expect(result.envelope.data.articles).toEqual([{ invalidArticleShape: true }]);
+});
+
+test("Envelope 要求每个已注册实体的 schema 与 data key 一一对应", async ({ page }) => {
+  const result = await page.evaluate(() => {
+    const base = {
+      format: { name: "LingoFlow Backup", version: 2 },
+      metadata: {}
+    };
+    return {
+      missingFavoriteData: window.LingoFlowBackupV2Envelope.validateEnvelope({
+        ...base,
+        schema: { articles: "1", favorites: "1" },
+        data: { articles: [] }
+      }),
+      missingLearningSchema: window.LingoFlowBackupV2Envelope.validateEnvelope({
+        ...base,
+        schema: { articles: "1" },
+        data: { articles: [], favoriteLearningStates: [] }
+      })
+    };
+  });
+
+  expect(result.missingFavoriteData.errors).toContainEqual({
+    code: "missing-data",
+    path: "data.favorites",
+    entity: "favorites"
+  });
+  expect(result.missingLearningSchema.errors).toContainEqual({
+    code: "missing-schema",
+    path: "schema.favoriteLearningStates",
+    entity: "favoriteLearningStates"
+  });
 });
 
 test("Envelope 拒绝访问器、Symbol 和循环数据且不执行 getter", async ({ page }) => {

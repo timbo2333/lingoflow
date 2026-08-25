@@ -4,6 +4,19 @@ const LEGACY_STORAGE_KEY = "EnglishReaderV051Favorites";
 const ENTITY_STORAGE_KEY = "LingoFlowFavoriteEntities";
 const projectErrors = new WeakMap();
 
+function makeBackupFavorite(overrides = {}) {
+  return {
+    id: "favorite:backup-default",
+    type: "word",
+    text: "backup favorite",
+    meaning: "A preserved Favorite snapshot.",
+    createdAt: "2026-08-20T01:00:00.000Z",
+    updatedAt: "2026-08-20T02:00:00.000Z",
+    deletedAt: null,
+    ...overrides
+  };
+}
+
 test.beforeEach(async ({ page }) => {
   const errors = [];
   projectErrors.set(page, errors);
@@ -317,11 +330,17 @@ test("实体边界拒绝生命周期注入、学习状态、派生状态和同�
       { type: "word", text: "id injection", id: "favorite:provided" },
       { type: "word", text: "time injection", createdAt: "2020-01-01T00:00:00.000Z" },
       { type: "word", text: "learning", mastered: true },
+      { type: "word", text: "learning count", reviewCount: 3 },
       { type: "word", text: "derived", dictionaryFound: true },
+      { type: "word", text: "derived dictionary", dictionaryVersion: "v2" },
+      { type: "word", text: "derived lemma", lemma: "derived" },
+      { type: "word", text: "local index", normalizedKey: "local-index" },
       { type: "word", text: "sync", syncStatus: "dirty" },
       { type: "word", text: "nested learning", futureMetadata: { mastered: true } },
+      { type: "word", text: "nested lemma", futureMetadata: { lemma: "derived" } },
       { type: "word", text: "tags", tags: ["ok", 1] },
-      { type: "word", text: "origin", origin: { kind: "" } }
+      { type: "word", text: "origin", origin: { kind: "" } },
+      { type: "word", text: "origin id", origin: { articleId: " article:space " } }
     ];
     const errors = cases.map(input => {
       try {
@@ -577,4 +596,312 @@ test("删除时间早于创建时间的 tombstone 会被拒绝且不会覆盖原
   expect(result.readError).toContain("生命周期时间顺序无效");
   expect(result.createError).toContain("生命周期时间顺序无效");
   expect(result.rawUnchanged).toBe(true);
+});
+
+test("Backup Domain 原样恢复 active 与 tombstone，并允许不同 ID 的相同内容", async ({ page }) => {
+  const active = makeBackupFavorite({
+    id: "favorite:backup-active",
+    futureMetadata: { preserved: ["active"] }
+  });
+  const tombstone = makeBackupFavorite({
+    id: "favorite:backup-tombstone",
+    updatedAt: "2026-08-20T03:00:00.000Z",
+    deletedAt: "2026-08-20T02:30:00.000Z",
+    futureMetadata: { preserved: ["deleted"] }
+  });
+
+  const result = await page.evaluate(({ activeRecord, deletedRecord }) => {
+    const repository = window.LingoFlowFavoriteRepository;
+    const input = [activeRecord, deletedRecord];
+    const before = JSON.stringify(input);
+    const assessment = repository.assessBackupRestore(activeRecord);
+    const restored = repository.restoreBackupRecords(input);
+    const after = JSON.stringify(input);
+    return {
+      assessment,
+      restored,
+      stored: repository.list({ includeDeleted: true }),
+      active: repository.getById(activeRecord.id, { includeDeleted: true }),
+      tombstone: repository.getById(deletedRecord.id, { includeDeleted: true }),
+      inputUnchanged: before === after,
+      methods: {
+        assessBackupRestore: typeof repository.assessBackupRestore,
+        restoreBackupRecords: typeof repository.restoreBackupRecords
+      }
+    };
+  }, { activeRecord: active, deletedRecord: tombstone });
+
+  expect(result.methods).toEqual({
+    assessBackupRestore: "function",
+    restoreBackupRecords: "function"
+  });
+  expect(result.assessment).toEqual({
+    status: "restored",
+    favoriteId: active.id,
+    written: false,
+    conflicts: [],
+    conflictFields: []
+  });
+  expect(result.restored.status).toBe("completed");
+  expect(result.restored.summary).toEqual({
+    total: 2,
+    restored: 2,
+    unchanged: 0,
+    conflicts: 0,
+    rejected: 0,
+    failed: 0,
+    notAttempted: 0
+  });
+  expect(result.active).toEqual(active);
+  expect(result.tombstone).toEqual(tombstone);
+  expect(result.stored).toHaveLength(2);
+  expect(result.inputUnchanged).toBe(true);
+});
+
+test("Favorite Backup exact match 返回 unchanged，重复恢复保持幂等", async ({ page }) => {
+  const incoming = makeBackupFavorite({
+    id: "favorite:backup-idempotent",
+    type: "phrase",
+    text: "stay idempotent",
+    origin: {
+      kind: "article",
+      articleId: "article:not-required",
+      futureSourceField: { paragraph: 3 }
+    },
+    futureMetadata: { version: 2 }
+  });
+
+  const result = await page.evaluate(({ record, entityKey }) => {
+    const repository = window.LingoFlowFavoriteRepository;
+    const first = repository.restoreBackupRecords([record]);
+    const rawAfterFirst = localStorage.getItem(entityKey);
+    const assessment = repository.assessBackupRestore(record);
+    const second = repository.restoreBackupRecords([record]);
+    return {
+      first,
+      assessment,
+      second,
+      stored: repository.getById(record.id, { includeDeleted: true }),
+      rawUnchanged: localStorage.getItem(entityKey) === rawAfterFirst
+    };
+  }, { record: incoming, entityKey: ENTITY_STORAGE_KEY });
+
+  expect(result.first.items[0]).toMatchObject({
+    status: "restored",
+    favoriteId: incoming.id,
+    written: true
+  });
+  expect(result.assessment).toMatchObject({
+    status: "unchanged",
+    favoriteId: incoming.id,
+    written: false
+  });
+  expect(result.second.status).toBe("completed");
+  expect(result.second.summary).toMatchObject({ restored: 0, unchanged: 1, conflicts: 0 });
+  expect(result.second.items[0]).toMatchObject({ status: "unchanged", written: false });
+  expect(result.stored).toEqual(incoming);
+  expect(result.rawUnchanged).toBe(true);
+});
+
+test("Favorite Backup 同 ID 差异返回 conflict，且不阻止不同 ID 同内容恢复", async ({ page }) => {
+  const localContent = makeBackupFavorite({ id: "favorite:backup-content-conflict" });
+  const localLifecycle = makeBackupFavorite({ id: "favorite:backup-lifecycle-conflict" });
+  const incomingContent = {
+    ...localContent,
+    meaning: "Conflicting backup meaning."
+  };
+  const incomingLifecycle = {
+    ...localLifecycle,
+    updatedAt: "2026-08-20T04:00:00.000Z",
+    deletedAt: "2026-08-20T03:00:00.000Z"
+  };
+  const sameContentNewId = makeBackupFavorite({ id: "favorite:backup-same-content-new-id" });
+
+  const result = await page.evaluate(records => {
+    const repository = window.LingoFlowFavoriteRepository;
+    repository.restoreBackupRecords([records.localContent, records.localLifecycle]);
+    const contentAssessment = repository.assessBackupRestore(records.incomingContent);
+    const lifecycleAssessment = repository.assessBackupRestore(records.incomingLifecycle);
+    const restored = repository.restoreBackupRecords([
+      records.incomingContent,
+      records.incomingLifecycle,
+      records.sameContentNewId
+    ]);
+    return {
+      contentAssessment,
+      lifecycleAssessment,
+      restored,
+      contentStored: repository.getById(records.localContent.id, { includeDeleted: true }),
+      lifecycleStored: repository.getById(records.localLifecycle.id, { includeDeleted: true }),
+      newStored: repository.getById(records.sameContentNewId.id, { includeDeleted: true })
+    };
+  }, { localContent, localLifecycle, incomingContent, incomingLifecycle, sameContentNewId });
+
+  expect(result.contentAssessment).toMatchObject({
+    status: "conflict",
+    written: false,
+    conflicts: ["content"],
+    conflictFields: ["meaning"]
+  });
+  expect(result.lifecycleAssessment).toMatchObject({
+    status: "conflict",
+    written: false,
+    conflicts: ["lifecycle"],
+    conflictFields: ["deletedAt", "updatedAt"]
+  });
+  expect(result.restored.status).toBe("completed-with-conflicts");
+  expect(result.restored.summary).toMatchObject({ restored: 1, unchanged: 0, conflicts: 2 });
+  expect(result.contentStored).toEqual(localContent);
+  expect(result.lifecycleStored).toEqual(localLifecycle);
+  expect(result.newStored).toEqual(sameContentNewId);
+});
+
+test("Favorite Backup 批次任一记录非法或 identity 重复时整批零写入", async ({ page }) => {
+  const valid = makeBackupFavorite({ id: "favorite:backup-valid-not-written" });
+  const invalid = makeBackupFavorite({
+    id: "favorite:backup-invalid",
+    type: "invalid"
+  });
+
+  const result = await page.evaluate(({ validRecord, invalidRecord, entityKey }) => {
+    const repository = window.LingoFlowFavoriteRepository;
+    const invalidBatch = repository.restoreBackupRecords([validRecord, invalidRecord]);
+    const rawAfterInvalid = localStorage.getItem(entityKey);
+    const duplicateBatch = repository.restoreBackupRecords([validRecord, { ...validRecord }]);
+    return {
+      invalidBatch,
+      duplicateBatch,
+      rawAfterInvalid,
+      rawAfterDuplicate: localStorage.getItem(entityKey),
+      all: repository.list({ includeDeleted: true })
+    };
+  }, { validRecord: valid, invalidRecord: invalid, entityKey: ENTITY_STORAGE_KEY });
+
+  expect(result.invalidBatch.status).toBe("rejected");
+  expect(result.invalidBatch.summary).toMatchObject({ restored: 0, rejected: 1, notAttempted: 1 });
+  expect(result.duplicateBatch.status).toBe("rejected");
+  expect(result.duplicateBatch.errors).toContainEqual(expect.objectContaining({
+    code: "duplicate-favorite-id",
+    favoriteId: valid.id
+  }));
+  expect(result.rawAfterInvalid).toBeNull();
+  expect(result.rawAfterDuplicate).toBeNull();
+  expect(result.all).toEqual([]);
+});
+
+test("Favorite Backup 批次递归拒绝 lemma 且整批零写入", async ({ page }) => {
+  const valid = makeBackupFavorite({ id: "favorite:backup-valid-before-lemma" });
+  const invalid = makeBackupFavorite({
+    id: "favorite:backup-nested-lemma",
+    futureMetadata: { nested: { lemma: "derived" } }
+  });
+
+  const result = await page.evaluate(({ records, entityKey }) => {
+    const restored = window.LingoFlowFavoriteRepository.restoreBackupRecords(records);
+    return {
+      restored,
+      raw: localStorage.getItem(entityKey)
+    };
+  }, { records: [valid, invalid], entityKey: ENTITY_STORAGE_KEY });
+
+  expect(result.restored.status).toBe("rejected");
+  expect(result.restored.summary).toMatchObject({
+    restored: 0,
+    rejected: 1,
+    notAttempted: 1
+  });
+  expect(result.restored.items[1]).toMatchObject({
+    favoriteId: invalid.id,
+    status: "rejected",
+    reason: "invalid-favorite",
+    written: false
+  });
+  expect(result.raw).toBeNull();
+});
+
+test("Favorite Backup 初始存储读取失败时保留每项 identity 与具体错误", async ({ page }) => {
+  const records = [
+    makeBackupFavorite({ id: "favorite:backup-read-failure-a" }),
+    makeBackupFavorite({ id: "favorite:backup-read-failure-b" })
+  ];
+
+  const result = await page.evaluate(({ incoming, entityKey }) => {
+    const originalGetItem = Storage.prototype.getItem;
+    Storage.prototype.getItem = function(key) {
+      if (key === entityKey) throw new DOMException("read blocked", "SecurityError");
+      return originalGetItem.call(this, key);
+    };
+    try {
+      const repository = window.LingoFlowFavoriteRepository;
+      return {
+        assessment: repository.assessBackupRestore(incoming[0]),
+        restored: repository.restoreBackupRecords(incoming)
+      };
+    } finally {
+      Storage.prototype.getItem = originalGetItem;
+    }
+  }, { incoming: records, entityKey: ENTITY_STORAGE_KEY });
+
+  expect(result.assessment).toMatchObject({
+    status: "rejected",
+    favoriteId: records[0].id,
+    written: false,
+    reason: "favorite-storage-read-failed"
+  });
+  expect(result.restored.status).toBe("interrupted");
+  expect(result.restored.summary).toMatchObject({
+    total: 2,
+    restored: 0,
+    failed: 0,
+    notAttempted: 2
+  });
+  expect(result.restored.items).toEqual([
+    expect.objectContaining({
+      index: 0,
+      favoriteId: records[0].id,
+      status: "not-attempted",
+      written: false
+    }),
+    expect.objectContaining({
+      index: 1,
+      favoriteId: records[1].id,
+      status: "not-attempted",
+      written: false
+    })
+  ]);
+  expect(result.restored.errors).toContainEqual(expect.objectContaining({
+    code: "favorite-storage-read-failed",
+    message: "read blocked"
+  }));
+});
+
+test("Favorite Backup 存储写入失败时返回 interrupted 且不报告成功", async ({ page }) => {
+  const incoming = makeBackupFavorite({ id: "favorite:backup-write-failure" });
+  const result = await page.evaluate(({ record, entityKey }) => {
+    const repository = window.LingoFlowFavoriteRepository;
+    const originalSetItem = Storage.prototype.setItem;
+    Storage.prototype.setItem = function(key, value) {
+      if (key === entityKey) throw new DOMException("quota", "QuotaExceededError");
+      return originalSetItem.call(this, key, value);
+    };
+    try {
+      const restored = repository.restoreBackupRecords([record]);
+      return {
+        restored,
+        raw: localStorage.getItem(entityKey)
+      };
+    } finally {
+      Storage.prototype.setItem = originalSetItem;
+    }
+  }, { record: incoming, entityKey: ENTITY_STORAGE_KEY });
+
+  expect(result.restored.status).toBe("interrupted");
+  expect(result.restored.summary).toMatchObject({ restored: 0, failed: 1 });
+  expect(result.restored.items[0]).toMatchObject({
+    favoriteId: incoming.id,
+    status: "failed",
+    written: false
+  });
+  expect(result.restored.errors[0]).toMatchObject({ code: "favorite-storage-write-failed" });
+  expect(result.raw).toBeNull();
 });

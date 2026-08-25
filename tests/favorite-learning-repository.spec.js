@@ -5,6 +5,17 @@ const FAVORITE_STORAGE_KEY = "LingoFlowFavoriteEntities";
 const LEGACY_FAVORITE_STORAGE_KEY = "EnglishReaderV051Favorites";
 const projectErrors = new WeakMap();
 
+function makeBackupLearningState(overrides = {}) {
+  return {
+    favoriteId: "favorite:learning-backup-default",
+    mastered: false,
+    createdAt: "2026-08-20T01:00:00.000Z",
+    updatedAt: "2026-08-20T02:00:00.000Z",
+    deletedAt: null,
+    ...overrides
+  };
+}
+
 test.beforeEach(async ({ page }) => {
   const errors = [];
   projectErrors.set(page, errors);
@@ -336,4 +347,235 @@ test("Learning State 在页面刷新后保持独立持久化", async ({ page }) 
   ), favoriteId);
 
   expect(afterReload).toEqual(beforeReload);
+});
+
+test("Learning Backup Domain 原样恢复 active 与 tombstone，且不要求 Favorite 已存在", async ({ page }) => {
+  const active = makeBackupLearningState({
+    favoriteId: "favorite:learning-backup-active",
+    mastered: true
+  });
+  const tombstone = makeBackupLearningState({
+    favoriteId: "favorite:learning-backup-tombstone",
+    updatedAt: "2026-08-20T04:00:00.000Z",
+    deletedAt: "2026-08-20T03:00:00.000Z"
+  });
+
+  const result = await page.evaluate(({ activeState, deletedState }) => {
+    const repository = window.LingoFlowFavoriteLearningRepository;
+    const input = [activeState, deletedState];
+    const before = JSON.stringify(input);
+    const assessment = repository.assessBackupRestore(activeState);
+    const restored = repository.restoreBackupRecords(input);
+    return {
+      assessment,
+      restored,
+      active: repository.get(activeState.favoriteId, { includeDeleted: true }),
+      tombstone: repository.get(deletedState.favoriteId, { includeDeleted: true }),
+      inputUnchanged: JSON.stringify(input) === before,
+      methods: {
+        assessBackupRestore: typeof repository.assessBackupRestore,
+        restoreBackupRecords: typeof repository.restoreBackupRecords
+      }
+    };
+  }, { activeState: active, deletedState: tombstone });
+
+  expect(result.methods).toEqual({
+    assessBackupRestore: "function",
+    restoreBackupRecords: "function"
+  });
+  expect(result.assessment).toEqual({
+    status: "restored",
+    favoriteId: active.favoriteId,
+    written: false,
+    conflicts: [],
+    conflictFields: []
+  });
+  expect(result.restored.status).toBe("completed");
+  expect(result.restored.summary).toEqual({
+    total: 2,
+    restored: 2,
+    unchanged: 0,
+    conflicts: 0,
+    rejected: 0,
+    failed: 0,
+    notAttempted: 0
+  });
+  expect(result.active).toEqual(active);
+  expect(result.tombstone).toEqual(tombstone);
+  expect(result.inputUnchanged).toBe(true);
+});
+
+test("Learning Backup exact match 返回 unchanged，重复恢复保持幂等", async ({ page }) => {
+  const incoming = makeBackupLearningState({
+    favoriteId: "favorite:learning-backup-idempotent",
+    mastered: true,
+    updatedAt: "2026-08-20T04:00:00.000Z",
+    deletedAt: "2026-08-20T03:00:00.000Z"
+  });
+
+  const result = await page.evaluate(({ state, prefix }) => {
+    const repository = window.LingoFlowFavoriteLearningRepository;
+    const first = repository.restoreBackupRecords([state]);
+    const rawAfterFirst = localStorage.getItem(`${prefix}${state.favoriteId}`);
+    const assessment = repository.assessBackupRestore(state);
+    const second = repository.restoreBackupRecords([state]);
+    return {
+      first,
+      assessment,
+      second,
+      stored: repository.get(state.favoriteId, { includeDeleted: true }),
+      rawUnchanged: localStorage.getItem(`${prefix}${state.favoriteId}`) === rawAfterFirst
+    };
+  }, { state: incoming, prefix: LEARNING_STORAGE_PREFIX });
+
+  expect(result.first.items[0]).toMatchObject({ status: "restored", written: true });
+  expect(result.assessment).toMatchObject({ status: "unchanged", written: false });
+  expect(result.second.status).toBe("completed");
+  expect(result.second.summary).toMatchObject({ restored: 0, unchanged: 1, conflicts: 0 });
+  expect(result.second.items[0]).toMatchObject({ status: "unchanged", written: false });
+  expect(result.stored).toEqual(incoming);
+  expect(result.rawUnchanged).toBe(true);
+});
+
+test("Learning Backup 同 favoriteId 的 mastered 与生命周期差异返回 conflict", async ({ page }) => {
+  const localMastered = makeBackupLearningState({
+    favoriteId: "favorite:learning-mastered-conflict",
+    mastered: false
+  });
+  const localLifecycle = makeBackupLearningState({
+    favoriteId: "favorite:learning-lifecycle-conflict",
+    mastered: true
+  });
+  const incomingMastered = { ...localMastered, mastered: true };
+  const incomingLifecycle = {
+    ...localLifecycle,
+    updatedAt: "2026-08-20T04:00:00.000Z",
+    deletedAt: "2026-08-20T03:00:00.000Z"
+  };
+  const independent = makeBackupLearningState({
+    favoriteId: "favorite:learning-independent",
+    mastered: true
+  });
+
+  const result = await page.evaluate(states => {
+    const repository = window.LingoFlowFavoriteLearningRepository;
+    repository.restoreBackupRecords([states.localMastered, states.localLifecycle]);
+    const masteredAssessment = repository.assessBackupRestore(states.incomingMastered);
+    const lifecycleAssessment = repository.assessBackupRestore(states.incomingLifecycle);
+    const restored = repository.restoreBackupRecords([
+      states.incomingMastered,
+      states.incomingLifecycle,
+      states.independent
+    ]);
+    return {
+      masteredAssessment,
+      lifecycleAssessment,
+      restored,
+      masteredStored: repository.get(states.localMastered.favoriteId, { includeDeleted: true }),
+      lifecycleStored: repository.get(states.localLifecycle.favoriteId, { includeDeleted: true }),
+      independentStored: repository.get(states.independent.favoriteId, { includeDeleted: true })
+    };
+  }, { localMastered, localLifecycle, incomingMastered, incomingLifecycle, independent });
+
+  expect(result.masteredAssessment).toMatchObject({
+    status: "conflict",
+    written: false,
+    conflicts: ["mastered"],
+    conflictFields: ["mastered"]
+  });
+  expect(result.lifecycleAssessment).toMatchObject({
+    status: "conflict",
+    written: false,
+    conflicts: ["lifecycle"],
+    conflictFields: ["updatedAt", "deletedAt"]
+  });
+  expect(result.restored.status).toBe("completed-with-conflicts");
+  expect(result.restored.summary).toMatchObject({ restored: 1, unchanged: 0, conflicts: 2 });
+  expect(result.masteredStored).toEqual(localMastered);
+  expect(result.lifecycleStored).toEqual(localLifecycle);
+  expect(result.independentStored).toEqual(independent);
+});
+
+test("Learning Backup 批次任一记录非法或 identity 重复时整批零写入", async ({ page }) => {
+  const valid = makeBackupLearningState({
+    favoriteId: "favorite:learning-valid-not-written"
+  });
+  const invalid = {
+    ...makeBackupLearningState({ favoriteId: "favorite:learning-invalid" }),
+    mastered: "false"
+  };
+
+  const result = await page.evaluate(({ validState, invalidState, prefix }) => {
+    const repository = window.LingoFlowFavoriteLearningRepository;
+    const invalidBatch = repository.restoreBackupRecords([validState, invalidState]);
+    const rawAfterInvalid = localStorage.getItem(`${prefix}${validState.favoriteId}`);
+    const duplicateBatch = repository.restoreBackupRecords([validState, { ...validState }]);
+    return {
+      invalidBatch,
+      duplicateBatch,
+      rawAfterInvalid,
+      rawAfterDuplicate: localStorage.getItem(`${prefix}${validState.favoriteId}`),
+      all: repository.list({ includeDeleted: true })
+    };
+  }, { validState: valid, invalidState: invalid, prefix: LEARNING_STORAGE_PREFIX });
+
+  expect(result.invalidBatch.status).toBe("rejected");
+  expect(result.invalidBatch.summary).toMatchObject({ restored: 0, rejected: 1, notAttempted: 1 });
+  expect(result.duplicateBatch.status).toBe("rejected");
+  expect(result.duplicateBatch.errors).toContainEqual(expect.objectContaining({
+    code: "duplicate-favorite-id",
+    favoriteId: valid.favoriteId
+  }));
+  expect(result.rawAfterInvalid).toBeNull();
+  expect(result.rawAfterDuplicate).toBeNull();
+  expect(result.all).toEqual([]);
+});
+
+test("Learning Backup 写入中断时标记 failed 与 not-attempted", async ({ page }) => {
+  const first = makeBackupLearningState({
+    favoriteId: "favorite:learning-write-failure-first"
+  });
+  const second = makeBackupLearningState({
+    favoriteId: "favorite:learning-write-failure-second",
+    mastered: true
+  });
+  const result = await page.evaluate(({ states, prefix }) => {
+    const repository = window.LingoFlowFavoriteLearningRepository;
+    const originalSetItem = Storage.prototype.setItem;
+    Storage.prototype.setItem = function(key, value) {
+      if (key.startsWith(prefix)) throw new DOMException("quota", "QuotaExceededError");
+      return originalSetItem.call(this, key, value);
+    };
+    try {
+      const restored = repository.restoreBackupRecords(states);
+      return {
+        restored,
+        firstRaw: localStorage.getItem(`${prefix}${states[0].favoriteId}`),
+        secondRaw: localStorage.getItem(`${prefix}${states[1].favoriteId}`)
+      };
+    } finally {
+      Storage.prototype.setItem = originalSetItem;
+    }
+  }, { states: [first, second], prefix: LEARNING_STORAGE_PREFIX });
+
+  expect(result.restored.status).toBe("interrupted");
+  expect(result.restored.summary).toMatchObject({
+    restored: 0,
+    failed: 1,
+    notAttempted: 1
+  });
+  expect(result.restored.items).toEqual([
+    expect.objectContaining({
+      favoriteId: first.favoriteId,
+      status: "failed",
+      written: false
+    }),
+    expect.objectContaining({
+      favoriteId: second.favoriteId,
+      status: "not-attempted",
+      written: false
+    })
+  ]);
+  expect(result.firstRaw).toBeNull();
+  expect(result.secondRaw).toBeNull();
 });

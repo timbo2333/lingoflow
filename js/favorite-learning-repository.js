@@ -23,7 +23,10 @@
 
   function isValidTimestamp(value, nullable = false) {
     if (nullable && value === null) return true;
-    if (typeof value !== "string" || !value) return false;
+    if (typeof value !== "string" ||
+        !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)) {
+      return false;
+    }
     const timestamp = Date.parse(value);
     return Number.isFinite(timestamp) && new Date(timestamp).toISOString() === value;
   }
@@ -75,6 +78,319 @@
 
   function cloneState(state) {
     return state ? structuredClone(state) : null;
+  }
+
+  function getBackupCandidateFavoriteId(value) {
+    if (!isPlainObject(value)) return null;
+    const descriptor = Object.getOwnPropertyDescriptor(value, "favoriteId");
+    return descriptor &&
+      descriptor.enumerable &&
+      !descriptor.get &&
+      !descriptor.set &&
+      normalizeFavoriteId(descriptor.value)
+      ? descriptor.value
+      : null;
+  }
+
+  function createBackupRestoreResult(status, favoriteId, details = {}) {
+    return {
+      status,
+      favoriteId: favoriteId || null,
+      written: Boolean(details.written),
+      conflicts: details.conflicts || [],
+      conflictFields: details.conflictFields || [],
+      ...(details.reason ? { reason: details.reason } : {})
+    };
+  }
+
+  function classifyBackupRestore(current, incoming) {
+    if (!current) return createBackupRestoreResult("restored", incoming.favoriteId);
+
+    const conflictFields = Array.from(STATE_FIELDS)
+      .filter(field => !Object.is(current[field], incoming[field]));
+    if (!conflictFields.length) {
+      return createBackupRestoreResult("unchanged", incoming.favoriteId);
+    }
+
+    const conflicts = [];
+    if (conflictFields.includes("mastered")) conflicts.push("mastered");
+    if (conflictFields.some(field => ["createdAt", "updatedAt", "deletedAt"].includes(field))) {
+      conflicts.push("lifecycle");
+    }
+    return createBackupRestoreResult("conflict", incoming.favoriteId, {
+      conflicts: conflicts.sort(),
+      conflictFields
+    });
+  }
+
+  function snapshotBackupState(value) {
+    validateState(value);
+    return cloneState(value);
+  }
+
+  function assessBackupRestore(value) {
+    let incoming;
+    try {
+      incoming = snapshotBackupState(value);
+    } catch {
+      return createBackupRestoreResult("rejected", getBackupCandidateFavoriteId(value), {
+        reason: "invalid-favorite-learning-state"
+      });
+    }
+    return classifyBackupRestore(readState(incoming.favoriteId), incoming);
+  }
+
+  function createRestoreSummary(total = 0) {
+    return {
+      total,
+      restored: 0,
+      unchanged: 0,
+      conflicts: 0,
+      rejected: 0,
+      failed: 0,
+      notAttempted: 0
+    };
+  }
+
+  function summarizeRestoreItems(total, items) {
+    const summary = createRestoreSummary(total);
+    for (const item of items) {
+      if (item.status === "restored" && item.written) summary.restored += 1;
+      else if (item.status === "unchanged") summary.unchanged += 1;
+      else if (item.status === "conflict") summary.conflicts += 1;
+      else if (item.status === "rejected") summary.rejected += 1;
+      else if (item.status === "failed") summary.failed += 1;
+      else if (item.status === "not-attempted") summary.notAttempted += 1;
+    }
+    return summary;
+  }
+
+  function rejectBackupBatch(total, invalidItems, errors, candidates = []) {
+    const items = Array.from({ length: total }, (_, index) => {
+      const invalid = invalidItems.find(item => item.index === index);
+      if (invalid) return invalid;
+      return {
+        index,
+        favoriteId: getBackupCandidateFavoriteId(candidates[index]),
+        status: "not-attempted",
+        written: false,
+        conflicts: [],
+        conflictFields: []
+      };
+    });
+    return {
+      status: "rejected",
+      summary: summarizeRestoreItems(total, items),
+      items,
+      errors
+    };
+  }
+
+  function snapshotBackupStates(values) {
+    if (!Array.isArray(values)) {
+      return {
+        rejection: rejectBackupBatch(0, [], [{ code: "invalid-favorite-learning-states" }])
+      };
+    }
+
+    const expectedKeys = new Set(
+      Array.from({ length: values.length }, (_, index) => String(index))
+    );
+    const snapshots = [];
+    for (const key of Reflect.ownKeys(values)) {
+      if (key === "length") continue;
+      if (typeof key !== "string" || !expectedKeys.has(key)) {
+        return {
+          rejection: rejectBackupBatch(values.length, [], [{
+            code: "invalid-favorite-learning-states"
+          }])
+        };
+      }
+      const descriptor = Object.getOwnPropertyDescriptor(values, key);
+      if (!descriptor || !descriptor.enumerable || descriptor.get || descriptor.set || !("value" in descriptor)) {
+        return {
+          rejection: rejectBackupBatch(values.length, [], [{
+            code: "invalid-favorite-learning-states"
+          }])
+        };
+      }
+      expectedKeys.delete(key);
+    }
+    if (expectedKeys.size) {
+      return {
+        rejection: rejectBackupBatch(values.length, [], [{
+          code: "invalid-favorite-learning-states"
+        }])
+      };
+    }
+
+    const invalidItems = [];
+    const errors = [];
+    const identities = new Map();
+    for (let index = 0; index < values.length; index += 1) {
+      const descriptor = Object.getOwnPropertyDescriptor(values, String(index));
+      const value = descriptor.value;
+      const favoriteId = getBackupCandidateFavoriteId(value);
+      try {
+        const snapshot = snapshotBackupState(value);
+        snapshots.push(snapshot);
+        if (identities.has(snapshot.favoriteId)) {
+          invalidItems.push({
+            index,
+            favoriteId: snapshot.favoriteId,
+            status: "rejected",
+            written: false,
+            conflicts: [],
+            conflictFields: [],
+            reason: "duplicate-favorite-id"
+          });
+          errors.push({
+            code: "duplicate-favorite-id",
+            index,
+            favoriteId: snapshot.favoriteId,
+            conflictingIndex: identities.get(snapshot.favoriteId)
+          });
+        } else {
+          identities.set(snapshot.favoriteId, index);
+        }
+      } catch (error) {
+        snapshots.push(null);
+        invalidItems.push({
+          index,
+          favoriteId,
+          status: "rejected",
+          written: false,
+          conflicts: [],
+          conflictFields: [],
+          reason: "invalid-favorite-learning-state"
+        });
+        errors.push({
+          code: "invalid-favorite-learning-state",
+          index,
+          ...(favoriteId ? { favoriteId } : {}),
+          message: error.message
+        });
+      }
+    }
+
+    return invalidItems.length
+      ? { rejection: rejectBackupBatch(values.length, invalidItems, errors, snapshots) }
+      : { snapshots };
+  }
+
+  function interruptBackupRestore(snapshots, assessedItems, failedIndex, error) {
+    const items = snapshots.map((state, index) => {
+      const assessment = assessedItems[index];
+      if (index < failedIndex && assessment &&
+          ["unchanged", "conflict"].includes(assessment.status)) {
+        return assessment;
+      }
+      if (index === failedIndex) {
+        return {
+          index,
+          favoriteId: state.favoriteId,
+          status: "failed",
+          written: false,
+          conflicts: [],
+          conflictFields: []
+        };
+      }
+      return {
+        index,
+        favoriteId: state.favoriteId,
+        status: "not-attempted",
+        written: false,
+        conflicts: [],
+        conflictFields: []
+      };
+    });
+    return {
+      status: "interrupted",
+      summary: summarizeRestoreItems(snapshots.length, items),
+      items,
+      errors: [{
+        code: "favorite-learning-state-storage-read-failed",
+        index: failedIndex,
+        favoriteId: snapshots[failedIndex].favoriteId,
+        message: error.message
+      }]
+    };
+  }
+
+  function restoreBackupRecords(values) {
+    const batch = snapshotBackupStates(values);
+    if (batch.rejection) return batch.rejection;
+
+    const assessedItems = [];
+    for (let index = 0; index < batch.snapshots.length; index += 1) {
+      const state = batch.snapshots[index];
+      try {
+        assessedItems.push({
+          index,
+          ...classifyBackupRestore(readState(state.favoriteId), state)
+        });
+      } catch (error) {
+        return interruptBackupRestore(batch.snapshots, assessedItems, index, error);
+      }
+    }
+    const items = assessedItems.map(item => ({ ...item }));
+    const errors = [];
+
+    for (let index = 0; index < batch.snapshots.length; index += 1) {
+      if (assessedItems[index].status !== "restored") continue;
+      try {
+        const currentAssessment = classifyBackupRestore(
+          readState(batch.snapshots[index].favoriteId),
+          batch.snapshots[index]
+        );
+        if (currentAssessment.status !== "restored") {
+          items[index] = { index, ...currentAssessment };
+          continue;
+        }
+        writeState(batch.snapshots[index]);
+        items[index] = { ...items[index], written: true };
+      } catch (error) {
+        items[index] = {
+          index,
+          favoriteId: batch.snapshots[index].favoriteId,
+          status: "failed",
+          written: false,
+          conflicts: [],
+          conflictFields: []
+        };
+        errors.push({
+          code: "favorite-learning-state-restore-failed",
+          index,
+          favoriteId: batch.snapshots[index].favoriteId,
+          message: error.message
+        });
+        for (let pendingIndex = index + 1; pendingIndex < assessedItems.length; pendingIndex += 1) {
+          if (assessedItems[pendingIndex].status !== "restored") continue;
+          items[pendingIndex] = {
+            index: pendingIndex,
+            favoriteId: batch.snapshots[pendingIndex].favoriteId,
+            status: "not-attempted",
+            written: false,
+            conflicts: [],
+            conflictFields: []
+          };
+        }
+        return {
+          status: "interrupted",
+          summary: summarizeRestoreItems(batch.snapshots.length, items),
+          items,
+          errors
+        };
+      }
+    }
+
+    const summary = summarizeRestoreItems(batch.snapshots.length, items);
+    return {
+      status: summary.conflicts ? "completed-with-conflicts" : "completed",
+      summary,
+      items,
+      errors
+    };
   }
 
   function readState(favoriteId) {
@@ -243,6 +559,8 @@
     setMastered,
     remove,
     restore,
+    assessBackupRestore,
+    restoreBackupRecords,
     list,
     getStorageBytes
   });

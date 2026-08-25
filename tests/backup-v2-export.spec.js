@@ -109,7 +109,7 @@ test("Backup v2 Export 接受空 Article 集合", async ({ page }) => {
   });
 });
 
-test("exportBackup 将 Article 导出结果封装为完整 Backup Envelope", async ({ page }) => {
+test("exportBackup 将全部已注册实体导出结果封装为完整 Backup Envelope", async ({ page }) => {
   const article = makeArticle("article:export-envelope");
   const result = await page.evaluate(async incoming => {
     await window.LingoFlowArticleLibrary.restoreArticle(incoming);
@@ -129,14 +129,313 @@ test("exportBackup 将 Article 导出结果封装为完整 Backup Envelope", asy
       },
       metadata: {},
       schema: {
-        articles: "1"
+        articles: "1",
+        favorites: "1",
+        favoriteLearningStates: "1"
       },
       data: {
-        articles: [article]
+        articles: [article],
+        favorites: [],
+        favoriteLearningStates: []
       }
     }
   });
   expect(result.validation?.status).toBe("valid");
+});
+
+test("exportBackup 按 Article、Favorite、Learning 顺序成功后才构建 Envelope", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    const calls = [];
+    window.LingoFlowArticleLibrary = Object.freeze({
+      listArticles: async options => {
+        calls.push(["articles", options]);
+        return [];
+      }
+    });
+    window.LingoFlowBackupV2Schema = Object.freeze({
+      validateArticles: articles => ({ status: "valid", articles })
+    });
+    window.LingoFlowFavoriteBackupExport = Object.freeze({
+      exportFavorites: async () => {
+        calls.push(["favorites"]);
+        return { status: "ready", payload: { favorites: [] } };
+      }
+    });
+    window.LingoFlowFavoriteLearningBackupExport = Object.freeze({
+      exportFavoriteLearningStates: async () => {
+        calls.push(["favoriteLearningStates"]);
+        return {
+          status: "ready",
+          payload: { favoriteLearningStates: [] }
+        };
+      }
+    });
+    window.LingoFlowBackupV2Envelope = Object.freeze({
+      buildEnvelope: data => {
+        calls.push(["envelope", Object.keys(data)]);
+        return { status: "ready", envelope: { data } };
+      }
+    });
+
+    return {
+      exported: await window.LingoFlowBackupV2Export.exportBackup(),
+      calls
+    };
+  });
+
+  expect(result.exported).toEqual({
+    status: "ready",
+    payload: {
+      data: {
+        articles: [],
+        favorites: [],
+        favoriteLearningStates: []
+      }
+    }
+  });
+  expect(result.calls).toEqual([
+    ["articles", { includeDeleted: true }],
+    ["favorites"],
+    ["favoriteLearningStates"],
+    ["articles", { includeDeleted: true }],
+    ["favorites"],
+    ["favoriteLearningStates"],
+    ["envelope", ["articles", "favorites", "favoriteLearningStates"]]
+  ]);
+});
+
+test("exportBackup 拒绝无法解析到同次导出 Favorite 的 Learning State", async ({ page }) => {
+  const favoriteLearningState = {
+    favoriteId: "favorite:orphan-export",
+    mastered: false,
+    createdAt: "2026-08-24T01:00:00.000Z",
+    updatedAt: "2026-08-24T02:00:00.000Z",
+    deletedAt: null
+  };
+  const result = await page.evaluate(async incoming => {
+    const seeded = window.LingoFlowFavoriteLearningRepository
+      .restoreBackupRecords([incoming]);
+    const originalEnvelope = window.LingoFlowBackupV2Envelope;
+    let envelopeCalls = 0;
+    window.LingoFlowBackupV2Envelope = Object.freeze({
+      buildEnvelope: data => {
+        envelopeCalls += 1;
+        return originalEnvelope.buildEnvelope(data);
+      }
+    });
+
+    return {
+      seeded,
+      exported: await window.LingoFlowBackupV2Export.exportBackup(),
+      envelopeCalls,
+      stored: window.LingoFlowFavoriteLearningRepository.get(
+        incoming.favoriteId,
+        { includeDeleted: true }
+      )
+    };
+  }, favoriteLearningState);
+
+  expect(result.seeded.status).toBe("completed");
+  expect(result.exported).toEqual({
+    status: "rejected",
+    payload: null,
+    reason: "unresolved-favorite-reference",
+    unresolvedFavoriteIds: [favoriteLearningState.favoriteId]
+  });
+  expect(result.envelopeCalls).toBe(0);
+  expect(result.stored).toEqual(favoriteLearningState);
+});
+
+test("exportBackup 在有限二次读取发现数据变化时拒绝且不修改读取结果", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    const firstFavorites = [
+      {
+        id: "favorite:snapshot-active",
+        type: "word",
+        text: "stable",
+        createdAt: "2026-08-24T01:00:00.000Z",
+        updatedAt: "2026-08-24T02:00:00.000Z",
+        deletedAt: null
+      },
+      {
+        id: "favorite:snapshot-tombstone",
+        type: "phrase",
+        text: "in time",
+        createdAt: "2026-08-24T01:00:00.000Z",
+        updatedAt: "2026-08-24T03:00:00.000Z",
+        deletedAt: "2026-08-24T03:00:00.000Z"
+      }
+    ];
+    const secondFavorites = structuredClone(firstFavorites);
+    secondFavorites[0].text = "changed during export";
+    const learningStates = [{
+      favoriteId: firstFavorites[0].id,
+      mastered: false,
+      createdAt: "2026-08-24T01:00:00.000Z",
+      updatedAt: "2026-08-24T02:00:00.000Z",
+      deletedAt: null
+    }];
+    const inputsBefore = structuredClone({
+      firstFavorites,
+      secondFavorites,
+      learningStates
+    });
+    let articleCalls = 0;
+    let favoriteCalls = 0;
+    let learningCalls = 0;
+    let envelopeCalls = 0;
+
+    window.LingoFlowArticleLibrary = Object.freeze({
+      listArticles: async () => {
+        articleCalls += 1;
+        return [];
+      }
+    });
+    window.LingoFlowBackupV2Schema = Object.freeze({
+      validateArticles: articles => ({ status: "valid", articles })
+    });
+    window.LingoFlowFavoriteBackupExport = Object.freeze({
+      exportFavorites: async () => {
+        favoriteCalls += 1;
+        return {
+          status: "ready",
+          payload: {
+            favorites: favoriteCalls === 1 ? firstFavorites : secondFavorites
+          }
+        };
+      }
+    });
+    window.LingoFlowFavoriteLearningBackupExport = Object.freeze({
+      exportFavoriteLearningStates: async () => {
+        learningCalls += 1;
+        return {
+          status: "ready",
+          payload: { favoriteLearningStates: learningStates }
+        };
+      }
+    });
+    window.LingoFlowBackupV2Envelope = Object.freeze({
+      buildEnvelope: () => {
+        envelopeCalls += 1;
+        return { status: "ready", envelope: {} };
+      }
+    });
+
+    const exported = await window.LingoFlowBackupV2Export.exportBackup();
+    return {
+      exported,
+      articleCalls,
+      favoriteCalls,
+      learningCalls,
+      envelopeCalls,
+      inputsBefore,
+      inputsAfter: { firstFavorites, secondFavorites, learningStates }
+    };
+  });
+
+  expect(result.exported).toEqual({
+    status: "rejected",
+    payload: null,
+    reason: "inconsistent-export-snapshot"
+  });
+  expect(result.articleCalls).toBe(2);
+  expect(result.favoriteCalls).toBe(2);
+  expect(result.learningCalls).toBe(2);
+  expect(result.envelopeCalls).toBe(0);
+  expect(result.inputsAfter).toEqual(result.inputsBefore);
+});
+
+test("exportBackup 在任一实体导出失败时不构建部分 Envelope", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    const originalFavoriteExport = window.LingoFlowFavoriteBackupExport;
+    let favoriteCalls = 0;
+    let learningCalls = 0;
+    let envelopeCalls = 0;
+
+    window.LingoFlowFavoriteBackupExport = Object.freeze({
+      exportFavorites: async () => {
+        favoriteCalls += 1;
+        return { status: "rejected", payload: null };
+      }
+    });
+    window.LingoFlowFavoriteLearningBackupExport = Object.freeze({
+      exportFavoriteLearningStates: async () => {
+        learningCalls += 1;
+        return { status: "ready", payload: { favoriteLearningStates: [] } };
+      }
+    });
+    window.LingoFlowBackupV2Envelope = Object.freeze({
+      buildEnvelope: () => {
+        envelopeCalls += 1;
+        return { status: "ready", envelope: {} };
+      }
+    });
+    const favoriteRejected = await window.LingoFlowBackupV2Export.exportBackup();
+
+    window.LingoFlowFavoriteBackupExport = originalFavoriteExport;
+    window.LingoFlowFavoriteLearningBackupExport = Object.freeze({
+      exportFavoriteLearningStates: async () => {
+        learningCalls += 1;
+        return { status: "failed", payload: null };
+      }
+    });
+    const learningFailed = await window.LingoFlowBackupV2Export.exportBackup();
+
+    return {
+      favoriteRejected,
+      learningFailed,
+      favoriteCalls,
+      learningCalls,
+      envelopeCalls
+    };
+  });
+
+  expect(result.favoriteRejected).toEqual({ status: "rejected", payload: null });
+  expect(result.learningFailed).toEqual({ status: "failed", payload: null });
+  expect(result.favoriteCalls).toBe(1);
+  expect(result.learningCalls).toBe(1);
+  expect(result.envelopeCalls).toBe(0);
+});
+
+test("exportBackup 在 Article 被拒绝时不调用后续实体导出", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    let favoriteCalls = 0;
+    let learningCalls = 0;
+    let envelopeCalls = 0;
+    window.LingoFlowArticleLibrary = Object.freeze({
+      listArticles: async () => [{ id: "article:invalid-aggregate-export" }]
+    });
+    window.LingoFlowFavoriteBackupExport = Object.freeze({
+      exportFavorites: async () => {
+        favoriteCalls += 1;
+        return { status: "ready", payload: { favorites: [] } };
+      }
+    });
+    window.LingoFlowFavoriteLearningBackupExport = Object.freeze({
+      exportFavoriteLearningStates: async () => {
+        learningCalls += 1;
+        return { status: "ready", payload: { favoriteLearningStates: [] } };
+      }
+    });
+    window.LingoFlowBackupV2Envelope = Object.freeze({
+      buildEnvelope: () => {
+        envelopeCalls += 1;
+        return { status: "ready", envelope: {} };
+      }
+    });
+
+    return {
+      exported: await window.LingoFlowBackupV2Export.exportBackup(),
+      favoriteCalls,
+      learningCalls,
+      envelopeCalls
+    };
+  });
+
+  expect(result.exported).toEqual({ status: "rejected", payload: null });
+  expect(result.favoriteCalls).toBe(0);
+  expect(result.learningCalls).toBe(0);
+  expect(result.envelopeCalls).toBe(0);
 });
 
 test("exportBackup 在 Envelope 构建被拒绝时不返回 payload", async ({ page }) => {

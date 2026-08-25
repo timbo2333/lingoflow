@@ -3,7 +3,12 @@
 
   const FORMAT_NAME = "LingoFlow Backup";
   const FORMAT_VERSION = 2;
-  const ARTICLE_SCHEMA_VERSION = "1";
+  const ENTITY_SCHEMA_VERSIONS = Object.freeze({
+    articles: "1",
+    favorites: "1",
+    favoriteLearningStates: "1"
+  });
+  const REQUIRED_ENTITIES = new Set(["articles"]);
   const REQUIRED_FIELDS = ["format", "metadata", "schema", "data"];
 
   function createError(code, path, details = {}) {
@@ -146,9 +151,11 @@
     }
     if (!isPlainObject(schema) || !isPlainObject(data)) return;
 
-    const entityNames = new Set([...Object.keys(schema), ...Object.keys(data)]);
+    const schemaEntities = new Set(Object.keys(schema));
+    const dataEntities = new Set(Object.keys(data));
+    const entityNames = new Set([...schemaEntities, ...dataEntities]);
     for (const entity of entityNames) {
-      if (entity !== "articles") {
+      if (!Object.prototype.hasOwnProperty.call(ENTITY_SCHEMA_VERSIONS, entity)) {
         const path = hasOwnDataProperty(data, entity)
           ? `data.${entity}`
           : `schema.${entity}`;
@@ -156,24 +163,31 @@
       }
     }
 
-    if (!hasOwnDataProperty(schema, "articles")) {
-      errors.push(createError("missing-schema", "schema.articles", { entity: "articles" }));
-    } else if (getOwnDataValue(schema, "articles") !== ARTICLE_SCHEMA_VERSION) {
-      errors.push(createError(
-        "unsupported-schema-version",
-        "schema.articles",
-        { entity: "articles" }
-      ));
-    }
+    for (const [entity, schemaVersion] of Object.entries(ENTITY_SCHEMA_VERSIONS)) {
+      const hasSchema = schemaEntities.has(entity);
+      const hasData = dataEntities.has(entity);
 
-    if (!hasOwnDataProperty(data, "articles")) {
-      errors.push(createError("missing-data", "data.articles", { entity: "articles" }));
-    } else if (!Array.isArray(getOwnDataValue(data, "articles"))) {
-      errors.push(createError(
-        "invalid-entity-collection",
-        "data.articles",
-        { entity: "articles" }
-      ));
+      if (!hasSchema && (hasData || REQUIRED_ENTITIES.has(entity))) {
+        errors.push(createError("missing-schema", `schema.${entity}`, { entity }));
+      }
+      if (!hasData && (hasSchema || REQUIRED_ENTITIES.has(entity))) {
+        errors.push(createError("missing-data", `data.${entity}`, { entity }));
+      }
+
+      if (hasSchema && getOwnDataValue(schema, entity) !== schemaVersion) {
+        errors.push(createError(
+          "unsupported-schema-version",
+          `schema.${entity}`,
+          { entity }
+        ));
+      }
+      if (hasData && !Array.isArray(getOwnDataValue(data, entity))) {
+        errors.push(createError(
+          "invalid-entity-collection",
+          `data.${entity}`,
+          { entity }
+        ));
+      }
     }
   }
 
@@ -217,17 +231,28 @@
   }
 
   function buildEnvelope(data) {
-    const candidate = {
-      format: {
-        name: FORMAT_NAME,
-        version: FORMAT_VERSION
-      },
-      metadata: {},
-      schema: {
-        articles: ARTICLE_SCHEMA_VERSION
-      },
-      data
-    };
+    let candidate;
+    try {
+      const schema = {};
+      if (isPlainObject(data)) {
+        for (const entity of Object.keys(data)) {
+          if (Object.prototype.hasOwnProperty.call(ENTITY_SCHEMA_VERSIONS, entity)) {
+            schema[entity] = ENTITY_SCHEMA_VERSIONS[entity];
+          }
+        }
+      }
+      candidate = {
+        format: {
+          name: FORMAT_NAME,
+          version: FORMAT_VERSION
+        },
+        metadata: {},
+        schema,
+        data
+      };
+    } catch (error) {
+      return rejectedEnvelope([createError("invalid-envelope", "data")]);
+    }
     const validation = validateEnvelope(candidate);
     if (validation.status !== "valid") {
       return {
