@@ -5,8 +5,13 @@
   const QUERY_EVENTS_KEY = "EnglishReaderV052QueryEvents";
   const VOCAB_STORAGE_KEY = "EnglishReaderV05Vocab";
   const HISTORY_BASELINES_KEY = "EnglishReaderV052HistoryBaselines";
+  const HISTORY_MIGRATION_STATE_KEY = "EnglishReaderV052HistoryMigrationState";
   const DEVICE_ID_KEY = "EnglishReaderV052DeviceId";
   const READING_PREFS_KEY = "EnglishReaderV052ReadingPrefs";
+  const HISTORY_MIGRATION_COMPLETED_STATE = Object.freeze({
+    version: 1,
+    status: "completed"
+  });
 
   function readJson(key) {
     try {
@@ -19,6 +24,30 @@
   function writeJson(key, data) {
     localStorage.setItem(key, JSON.stringify(data));
     return data;
+  }
+
+  function readJsonObjectStrict(key) {
+    const raw = localStorage.getItem(key);
+    if (raw === null) return {};
+
+    const value = JSON.parse(raw);
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      throw new Error(`Stored value for ${key} must be a JSON object.`);
+    }
+    return value;
+  }
+
+  function hasStoredJsonObjectEntries(key) {
+    const raw = localStorage.getItem(key);
+    if (raw === null) return false;
+
+    try {
+      const value = JSON.parse(raw);
+      if (!value || typeof value !== "object" || Array.isArray(value)) return true;
+      return Object.keys(value).length > 0;
+    } catch {
+      return true;
+    }
   }
 
   function makeId(prefix) {
@@ -77,6 +106,29 @@
 
     setHistoryBaselines(data) {
       return writeJson(HISTORY_BASELINES_KEY, data || {});
+    },
+
+    hasEventsStorage() {
+      return localStorage.getItem(QUERY_EVENTS_KEY) !== null;
+    },
+
+    hasHistoryBaselineRecords() {
+      return hasStoredJsonObjectEntries(HISTORY_BASELINES_KEY);
+    },
+
+    hasHistoryMigrationState() {
+      return localStorage.getItem(HISTORY_MIGRATION_STATE_KEY) !== null;
+    },
+
+    getVocabForHistoryMigration() {
+      return readJsonObjectStrict(VOCAB_STORAGE_KEY);
+    },
+
+    markHistoryMigrationCompleted() {
+      return writeJson(
+        HISTORY_MIGRATION_STATE_KEY,
+        HISTORY_MIGRATION_COMPLETED_STATE
+      );
     },
 
     clearHistory() {

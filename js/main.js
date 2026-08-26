@@ -2435,33 +2435,61 @@ function setHistoryBaselines(data) {
 }
 
 function ensureHistoryMigration() {
-  const baselines = getHistoryBaselines();
+  const queryData = window.LingoFlowLocalData.QueryData;
+  if (queryData.hasHistoryMigrationState()) return;
 
-  if (!Object.keys(baselines).length) {
-    const current = getVocabData();
-
-    if (Object.keys(current).length) {
-      const entries = Object.entries(current)
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(([key, item]) => [
-          key,
-          Number(item?.count || 0),
-          Number(item?.articleCount || 0),
-          Number(item?.searchCount || 0),
-          item?.firstSeen || "",
-          item?.lastSeen || ""
-        ]);
-
-      const baselineId = `legacy-local:${simpleStableHash(JSON.stringify(entries))}`;
-      baselines[baselineId] = {
-        id: baselineId,
-        createdAt: new Date().toISOString(),
-        deviceId: "legacy-local",
-        records: current
-      };
-      setHistoryBaselines(baselines);
-    }
+  if (queryData.hasHistoryBaselineRecords() || queryData.hasEventsStorage()) {
+    queryData.markHistoryMigrationCompleted();
+    return;
   }
+
+  let current;
+  try {
+    current = queryData.getVocabForHistoryMigration();
+  } catch {
+    // An unreadable aggregate is not safe evidence of legacy history. Leave the
+    // migration open so a future call can retry after the storage is repaired.
+    return;
+  }
+
+  // Another tab may have crossed the QueryEvent boundary while this tab was
+  // inspecting the legacy aggregate. Never turn that newer aggregate into a
+  // baseline.
+  if (
+    queryData.hasHistoryMigrationState() ||
+    queryData.hasHistoryBaselineRecords() ||
+    queryData.hasEventsStorage()
+  ) {
+    if (!queryData.hasHistoryMigrationState()) {
+      queryData.markHistoryMigrationCompleted();
+    }
+    return;
+  }
+
+  if (!Object.keys(current).length) return;
+
+  const entries = Object.entries(current)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, item]) => [
+      key,
+      Number(item?.count || 0),
+      Number(item?.articleCount || 0),
+      Number(item?.searchCount || 0),
+      item?.firstSeen || "",
+      item?.lastSeen || ""
+    ]);
+
+  const baselineId = `legacy-local:${simpleStableHash(JSON.stringify(entries))}`;
+  setHistoryBaselines({
+    [baselineId]: {
+      id: baselineId,
+      createdAt: new Date().toISOString(),
+      deviceId: "legacy-local",
+      records: current
+    }
+  });
+
+  queryData.markHistoryMigrationCompleted();
 }
 
 function createQueryEvent(word, result, sourceType) {
@@ -2550,6 +2578,7 @@ function recordQueryEvent(word, result, sourceType) {
   const event = createQueryEvent(word, result, sourceType);
   events[event.id] = event;
   setQueryEvents(events);
+  window.LingoFlowLocalData.QueryData.markHistoryMigrationCompleted();
 }
 
 function mergeUniqueMaps(current, incoming) {

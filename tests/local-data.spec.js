@@ -3,8 +3,56 @@ const { test, expect } = require("@playwright/test");
 const FAVORITES_STORAGE_KEY = "EnglishReaderV051Favorites";
 const VOCAB_STORAGE_KEY = "EnglishReaderV05Vocab";
 const QUERY_EVENTS_KEY = "EnglishReaderV052QueryEvents";
+const HISTORY_BASELINES_KEY = "EnglishReaderV052HistoryBaselines";
+const HISTORY_MIGRATION_STATE_KEY = "EnglishReaderV052HistoryMigrationState";
 const READING_PREFS_KEY = "EnglishReaderV052ReadingPrefs";
 const projectErrors = new WeakMap();
+
+async function waitForAppReady(page) {
+  await expect(page.locator("#inputText")).toBeVisible();
+  await expect(page.locator("#dictionarySetupStatus")).not.toHaveAttribute(
+    "data-state",
+    "checking"
+  );
+}
+
+async function replaceHistoryStorageAndReload(page, seed = {}) {
+  await page.evaluate(({ keys, values }) => {
+    for (const key of Object.values(keys)) localStorage.removeItem(key);
+    for (const [name, value] of Object.entries(values)) {
+      localStorage.setItem(keys[name], JSON.stringify(value));
+    }
+  }, {
+    keys: {
+      vocab: VOCAB_STORAGE_KEY,
+      events: QUERY_EVENTS_KEY,
+      baselines: HISTORY_BASELINES_KEY,
+      migrationState: HISTORY_MIGRATION_STATE_KEY
+    },
+    values: seed
+  });
+  await page.reload();
+  await waitForAppReady(page);
+}
+
+async function readHistoryStorage(page) {
+  return page.evaluate(keys => {
+    const readObject = key => JSON.parse(localStorage.getItem(key) || "{}");
+    const migrationStateRaw = localStorage.getItem(keys.migrationState);
+    return {
+      vocab: readObject(keys.vocab),
+      events: readObject(keys.events),
+      baselines: readObject(keys.baselines),
+      migrationStateRaw,
+      migrationState: migrationStateRaw ? JSON.parse(migrationStateRaw) : null
+    };
+  }, {
+    vocab: VOCAB_STORAGE_KEY,
+    events: QUERY_EVENTS_KEY,
+    baselines: HISTORY_BASELINES_KEY,
+    migrationState: HISTORY_MIGRATION_STATE_KEY
+  });
+}
 
 test.beforeEach(async ({ page }) => {
   const errors = [];
@@ -28,11 +76,7 @@ test.beforeEach(async ({ page }) => {
   });
 
   await page.goto("/");
-  await expect(page.locator("#inputText")).toBeVisible();
-  await expect(page.locator("#dictionarySetupStatus")).not.toHaveAttribute(
-    "data-state",
-    "checking"
-  );
+  await waitForAppReady(page);
 });
 
 test.afterEach(async ({ page }) => {
@@ -532,6 +576,357 @@ test("查询会创建事件并更新 vocab 聚合", async ({ page }) => {
     meaning: "发展",
     source: "search"
   });
+});
+
+test("全新用户连续查询两次不会把现代事件包装为 Migration Baseline", async ({ page }) => {
+  await page.evaluate(() => {
+    const result = {
+      baseWord: "develop",
+      phonetic: "/dɪˈveləp/",
+      pos: "verb",
+      meaning: "发展"
+    };
+    addToVocab("Develop", result, "article");
+    addToVocab("develop", result, "search");
+    rebuildVocabFromMergeData();
+  });
+
+  const stored = await readHistoryStorage(page);
+  expect(Object.keys(stored.events)).toHaveLength(2);
+  expect(stored.vocab.develop).toMatchObject({
+    count: 2,
+    articleCount: 1,
+    searchCount: 1
+  });
+  expect(stored.baselines).toEqual({});
+  expect(stored.migrationState).toEqual({ version: 1, status: "completed" });
+});
+
+test("全新用户连续查询多次时重建 count 始终等于 QueryEvent 数", async ({ page }) => {
+  const snapshots = await page.evaluate(() => {
+    const result = {
+      baseWord: "develop",
+      phonetic: "/dɪˈveləp/",
+      pos: "verb",
+      meaning: "发展"
+    };
+    const values = [];
+    for (let index = 0; index < 5; index += 1) {
+      addToVocab("Develop", result, index % 2 ? "search" : "article");
+      rebuildVocabFromMergeData();
+      values.push({
+        eventCount: Object.keys(getQueryEvents()).length,
+        count: getVocabData().develop?.count || 0,
+        baselineCount: Object.keys(getHistoryBaselines()).length
+      });
+    }
+    return values;
+  });
+
+  expect(snapshots).toEqual([
+    { eventCount: 1, count: 1, baselineCount: 0 },
+    { eventCount: 2, count: 2, baselineCount: 0 },
+    { eventCount: 3, count: 3, baselineCount: 0 },
+    { eventCount: 4, count: 4, baselineCount: 0 },
+    { eventCount: 5, count: 5, baselineCount: 0 }
+  ]);
+});
+
+test("只有 legacy Vocab 的旧用户首次启动会创建一次 Baseline 并保留历史", async ({ page }) => {
+  const legacyVocab = {
+    develop: {
+      word: "develop",
+      displayWord: "Develop",
+      phonetic: "/dɪˈveləp/",
+      pos: "verb",
+      meaning: "发展",
+      dictionaryFound: true,
+      source: "article",
+      count: 7,
+      articleCount: 5,
+      searchCount: 2,
+      firstSeen: "2026-08-01T10:00:00.000Z",
+      lastSeen: "2026-08-02T10:00:00.000Z"
+    }
+  };
+  await replaceHistoryStorageAndReload(page, { vocab: legacyVocab });
+
+  const result = await page.evaluate(() => {
+    rebuildVocabFromMergeData();
+    return true;
+  });
+  expect(result).toBe(true);
+
+  const stored = await readHistoryStorage(page);
+  const baselines = Object.values(stored.baselines);
+  expect(baselines).toHaveLength(1);
+  expect(baselines[0]).toMatchObject({
+    id: expect.stringMatching(/^legacy-local:/),
+    deviceId: "legacy-local",
+    records: legacyVocab
+  });
+  expect(stored.events).toEqual({});
+  expect(stored.vocab.develop).toMatchObject({
+    count: 7,
+    articleCount: 5,
+    searchCount: 2
+  });
+  expect(stored.migrationState).toEqual({ version: 1, status: "completed" });
+});
+
+test("已有 Migration Baseline 再启动不会重复或改写迁移事实", async ({ page }) => {
+  const baseline = {
+    "legacy-local:existing": {
+      id: "legacy-local:existing",
+      createdAt: "2026-08-03T10:00:00.000Z",
+      deviceId: "legacy-local",
+      records: {
+        develop: {
+          word: "develop",
+          count: 3,
+          articleCount: 2,
+          searchCount: 1,
+          firstSeen: "2026-08-01T10:00:00.000Z",
+          lastSeen: "2026-08-03T10:00:00.000Z"
+        }
+      }
+    }
+  };
+  await replaceHistoryStorageAndReload(page, { baselines: baseline });
+  const first = await readHistoryStorage(page);
+
+  await page.reload();
+  await waitForAppReady(page);
+  const second = await readHistoryStorage(page);
+
+  expect(first.baselines).toEqual(baseline);
+  expect(second.baselines).toEqual(baseline);
+  expect(second.migrationState).toEqual({ version: 1, status: "completed" });
+});
+
+test("已有 QueryEvent 和 Vocab 的混合状态不会重新包装 Vocab", async ({ page }) => {
+  const event = {
+    id: "query:mixed-existing",
+    deviceId: "device:mixed-existing",
+    word: "develop",
+    displayWord: "Develop",
+    phonetic: "/dɪˈveləp/",
+    pos: "verb",
+    meaning: "发展",
+    dictionaryFound: true,
+    source: "article",
+    timestamp: "2026-08-04T10:00:00.000Z"
+  };
+  await replaceHistoryStorageAndReload(page, {
+    events: { [event.id]: event },
+    vocab: {
+      develop: {
+        word: "develop",
+        count: 9,
+        articleCount: 9,
+        searchCount: 0,
+        firstSeen: event.timestamp,
+        lastSeen: event.timestamp
+      }
+    }
+  });
+
+  const beforeRebuild = await readHistoryStorage(page);
+  expect(beforeRebuild.baselines).toEqual({});
+
+  await page.evaluate(() => rebuildVocabFromMergeData());
+  const stored = await readHistoryStorage(page);
+  expect(Object.keys(stored.events)).toHaveLength(1);
+  expect(stored.vocab.develop).toMatchObject({
+    count: 1,
+    articleCount: 1,
+    searchCount: 0
+  });
+  expect(stored.baselines).toEqual({});
+  expect(stored.migrationState).toEqual({ version: 1, status: "completed" });
+});
+
+test("重复调用 ensureHistoryMigration 保持 Baseline 与 migration state 幂等", async ({ page }) => {
+  await replaceHistoryStorageAndReload(page, {
+    vocab: {
+      protect: {
+        word: "protect",
+        count: 4,
+        articleCount: 3,
+        searchCount: 1,
+        firstSeen: "2026-07-01T10:00:00.000Z",
+        lastSeen: "2026-07-02T10:00:00.000Z"
+      }
+    }
+  });
+  const first = await readHistoryStorage(page);
+
+  await page.evaluate(() => {
+    ensureHistoryMigration();
+    ensureHistoryMigration();
+  });
+  await page.reload();
+  await waitForAppReady(page);
+  const second = await readHistoryStorage(page);
+
+  expect(Object.keys(first.baselines)).toHaveLength(1);
+  expect(second.baselines).toEqual(first.baselines);
+  expect(second.migrationStateRaw).toBe(first.migrationStateRaw);
+});
+
+test("清空历史保留一次性 migration state，后续现代查询不会重新迁移", async ({ page }) => {
+  const result = await page.evaluate(() => {
+    const queryData = window.LingoFlowLocalData.QueryData;
+    addToVocab("Before clear", {
+      baseWord: "before",
+      pos: "adverb",
+      meaning: "之前"
+    }, "search");
+    const stateBefore = localStorage.getItem("EnglishReaderV052HistoryMigrationState");
+    queryData.clearHistory();
+    const stateAfter = localStorage.getItem("EnglishReaderV052HistoryMigrationState");
+    const lookup = {
+      baseWord: "develop",
+      phonetic: "/dɪˈveləp/",
+      pos: "verb",
+      meaning: "发展"
+    };
+    addToVocab("Develop", lookup, "article");
+    addToVocab("Develop", lookup, "search");
+    rebuildVocabFromMergeData();
+    return {
+      stateBefore,
+      stateAfter,
+      eventCount: Object.keys(getQueryEvents()).length,
+      count: getVocabData().develop?.count || 0,
+      baselines: getHistoryBaselines()
+    };
+  });
+
+  expect(result.stateBefore).toBe(JSON.stringify({ version: 1, status: "completed" }));
+  expect(result.stateAfter).toBe(result.stateBefore);
+  expect(result.eventCount).toBe(2);
+  expect(result.count).toBe(2);
+  expect(result.baselines).toEqual({});
+});
+
+test("空 Baseline 占位不会阻止明确的 legacy Vocab 首次迁移", async ({ page }) => {
+  await replaceHistoryStorageAndReload(page, {
+    vocab: {
+      legacy: {
+        word: "legacy",
+        count: 3,
+        articleCount: 2,
+        searchCount: 1,
+        firstSeen: "2026-07-01T10:00:00.000Z",
+        lastSeen: "2026-07-02T10:00:00.000Z"
+      }
+    },
+    baselines: {}
+  });
+
+  const stored = await readHistoryStorage(page);
+  const baselines = Object.values(stored.baselines);
+  expect(baselines).toHaveLength(1);
+  expect(baselines[0]).toMatchObject({
+    id: expect.stringMatching(/^legacy-local:/),
+    deviceId: "legacy-local",
+    records: {
+      legacy: expect.objectContaining({ count: 3 })
+    }
+  });
+  expect(stored.migrationState).toEqual({ version: 1, status: "completed" });
+});
+
+test("损坏的旧 Vocab 不会中断启动或被误建为 Baseline", async ({ page }) => {
+  await page.evaluate(keys => {
+    localStorage.removeItem(keys.events);
+    localStorage.removeItem(keys.baselines);
+    localStorage.removeItem(keys.migrationState);
+    localStorage.setItem(keys.vocab, "not-json");
+  }, {
+    vocab: VOCAB_STORAGE_KEY,
+    events: QUERY_EVENTS_KEY,
+    baselines: HISTORY_BASELINES_KEY,
+    migrationState: HISTORY_MIGRATION_STATE_KEY
+  });
+
+  await page.reload();
+  await waitForAppReady(page);
+
+  const result = await page.evaluate(keys => ({
+    baselines: window.LingoFlowLocalData.QueryData.getHistoryBaselines(),
+    migrationState: localStorage.getItem(keys.migrationState),
+    vocabRaw: localStorage.getItem(keys.vocab)
+  }), {
+    vocab: VOCAB_STORAGE_KEY,
+    migrationState: HISTORY_MIGRATION_STATE_KEY
+  });
+
+  expect(result.baselines).toEqual({});
+  expect(result.migrationState).toBeNull();
+  expect(result.vocabRaw).toBe("not-json");
+});
+
+test("迁移读取期间出现 QueryEvent 时保守放弃 Baseline", async ({ page }) => {
+  const result = await page.evaluate(keys => {
+    const queryData = window.LingoFlowLocalData.QueryData;
+    queryData.clearHistory();
+    localStorage.removeItem(keys.migrationState);
+    queryData.setVocab({
+      develop: {
+        word: "develop",
+        count: 1,
+        articleCount: 1,
+        searchCount: 0,
+        firstSeen: "2026-08-05T10:00:00.000Z",
+        lastSeen: "2026-08-05T10:00:00.000Z"
+      }
+    });
+
+    const originalGetItem = Storage.prototype.getItem;
+    let injected = false;
+    const event = {
+      id: "query:concurrent",
+      deviceId: "device:concurrent",
+      word: "develop",
+      displayWord: "Develop",
+      phonetic: "",
+      pos: "verb",
+      meaning: "发展",
+      dictionaryFound: true,
+      source: "article",
+      timestamp: "2026-08-05T10:00:00.000Z"
+    };
+    Storage.prototype.getItem = function(key) {
+      const value = originalGetItem.call(this, key);
+      if (key === keys.vocab && !injected) {
+        injected = true;
+        queryData.setEvents({ [event.id]: event });
+      }
+      return value;
+    };
+
+    try {
+      ensureHistoryMigration();
+    } finally {
+      Storage.prototype.getItem = originalGetItem;
+    }
+    return {
+      baselines: queryData.getHistoryBaselines(),
+      events: queryData.getEvents(),
+      migrationState: JSON.parse(
+        localStorage.getItem(keys.migrationState) || "null"
+      )
+    };
+  }, {
+    vocab: VOCAB_STORAGE_KEY,
+    migrationState: HISTORY_MIGRATION_STATE_KEY
+  });
+
+  expect(result.baselines).toEqual({});
+  expect(Object.keys(result.events)).toEqual(["query:concurrent"]);
+  expect(result.migrationState).toEqual({ version: 1, status: "completed" });
 });
 
 test("修改单个阅读设置时保留其他偏好", async ({ page }) => {
