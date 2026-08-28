@@ -233,6 +233,26 @@
     writeSerializedRecords(serializeRecords(records));
   }
 
+  function removeStoredRecords() {
+    try {
+      localStorage.removeItem(STORAGE_KEY);
+    } catch (error) {
+      throw createRepositoryError(
+        "query-event-storage-write-failed",
+        error?.message || "QueryEvent 存储清除失败。"
+      );
+    }
+  }
+
+  function assertStorageUnchanged(expectedRaw, message) {
+    if (readStorageRaw() !== expectedRaw) {
+      throw createRepositoryError(
+        "query-event-storage-changed",
+        message
+      );
+    }
+  }
+
   function getOwnRecord(records, id) {
     return Object.prototype.hasOwnProperty.call(records, id) ? records[id] : null;
   }
@@ -383,13 +403,66 @@
 
   function removeById(id) {
     if (typeof id !== "string" || !id.trim() || id !== id.trim()) return null;
-    const records = readRecordsSnapshot().records;
+    const storageSnapshot = readRecordsSnapshot();
+    const records = storageSnapshot.records;
     const current = getOwnRecord(records, id);
     if (!current) return null;
 
     delete records[id];
+    assertStorageUnchanged(
+      storageSnapshot.raw,
+      "QueryEvent 存储在按 ID 删除期间发生变化。"
+    );
     writeRecords(records);
     return validateAndSnapshotQueryEvent(current);
+  }
+
+  function removeByWord(word) {
+    if (typeof word !== "string") {
+      return { word: null, removedCount: 0, queryEventIds: [] };
+    }
+
+    const storageSnapshot = readRecordsSnapshot();
+    const records = storageSnapshot.records;
+    const queryEventIds = [];
+    for (const [id, event] of Object.entries(records)) {
+      if (event.word === word) queryEventIds.push(id);
+    }
+    queryEventIds.sort();
+    if (!queryEventIds.length) {
+      return { word, removedCount: 0, queryEventIds: [] };
+    }
+
+    for (const id of queryEventIds) delete records[id];
+    assertStorageUnchanged(
+      storageSnapshot.raw,
+      "QueryEvent 存储在按 word 删除期间发生变化。"
+    );
+    writeRecords(records);
+    return {
+      word,
+      removedCount: queryEventIds.length,
+      queryEventIds: queryEventIds.slice()
+    };
+  }
+
+  function clear() {
+    const storageSnapshot = readRecordsSnapshot();
+    const queryEventIds = Object.keys(storageSnapshot.records).sort();
+    if (storageSnapshot.raw === null) {
+      return { removedCount: 0, queryEventIds: [], written: false };
+    }
+
+    assertStorageUnchanged(
+      storageSnapshot.raw,
+      "QueryEvent 存储在清除期间发生变化。"
+    );
+    removeStoredRecords();
+    return {
+      removedCount: queryEventIds.length,
+      queryEventIds,
+      written: true
+    };
   }
 
   function valuesEqual(left, right) {
@@ -639,6 +712,8 @@
     get,
     list,
     removeById,
+    removeByWord,
+    clear,
     assessBackupRestore,
     restoreBackupRecords
   });

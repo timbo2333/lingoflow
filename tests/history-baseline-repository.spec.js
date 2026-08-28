@@ -67,6 +67,7 @@ test("Repository API 冻结，missing storage 是合法空集合", async ({ page
         list: typeof repository.list,
         findRecordLocatorsByWord: typeof repository.findRecordLocatorsByWord,
         removeRecordsByWord: typeof repository.removeRecordsByWord,
+        clear: typeof repository.clear,
         assessBackupRestore: typeof repository.assessBackupRestore,
         restoreBackupRecords: typeof repository.restoreBackupRecords,
         updateBaseline: typeof repository.updateBaseline
@@ -84,6 +85,7 @@ test("Repository API 冻结，missing storage 是合法空集合", async ({ page
       list: "function",
       findRecordLocatorsByWord: "function",
       removeRecordsByWord: "function",
+      clear: "function",
       assessBackupRestore: "function",
       restoreBackupRecords: "function",
       updateBaseline: "undefined"
@@ -397,6 +399,159 @@ test("删除不存在 word 不写 storage、不生成事实", async ({ page }) =
   });
 });
 
+test("clear 严格清除完整 Baseline namespace，missing storage 不写", async ({ page }) => {
+  const records = [
+    makeBaseline("baseline:clear-b", {
+      createdAt: "2026-08-24T10:00:01.000Z"
+    }),
+    makeBaseline("baseline:clear-a")
+  ];
+  const result = await page.evaluate(({ storageKey, incoming }) => {
+    localStorage.setItem(storageKey, JSON.stringify(Object.fromEntries(
+      incoming.map(record => [record.id, record])
+    )));
+    const repository = window.LingoFlowHistoryBaselineRepository;
+    const originalRemove = Storage.prototype.removeItem;
+    let removes = 0;
+    Storage.prototype.removeItem = function(key) {
+      if (key === storageKey) removes += 1;
+      return originalRemove.call(this, key);
+    };
+    try {
+      const cleared = repository.clear();
+      const missing = repository.clear();
+      localStorage.setItem(storageKey, "{}");
+      const storedEmpty = repository.clear();
+      return {
+        cleared,
+        missing,
+        storedEmpty,
+        removes,
+        raw: localStorage.getItem(storageKey),
+        list: repository.list()
+      };
+    } finally {
+      Storage.prototype.removeItem = originalRemove;
+    }
+  }, { storageKey: STORAGE_KEY, incoming: records });
+
+  expect(result).toEqual({
+    cleared: {
+      removedCount: 2,
+      historyBaselineIds: [records[1].id, records[0].id],
+      written: true
+    },
+    missing: { removedCount: 0, historyBaselineIds: [], written: false },
+    storedEmpty: { removedCount: 0, historyBaselineIds: [], written: true },
+    removes: 2,
+    raw: null,
+    list: []
+  });
+});
+
+test("clear 拒绝损坏数据，报告并发变化和 removeItem 写入失败", async ({ page }) => {
+  const initial = makeBaseline("baseline:clear-initial");
+  const competing = makeBaseline("baseline:clear-competing", {
+    createdAt: "2026-08-24T10:00:01.000Z"
+  });
+  const result = await page.evaluate(({ storageKey, initialRecord, competingRecord }) => {
+    const repository = window.LingoFlowHistoryBaselineRepository;
+    localStorage.setItem(storageKey, JSON.stringify({
+      [initialRecord.id]: initialRecord
+    }));
+    const originalGetForFailure = Storage.prototype.getItem;
+    Storage.prototype.getItem = function(key) {
+      if (key === storageKey) throw new DOMException("read blocked", "SecurityError");
+      return originalGetForFailure.call(this, key);
+    };
+    let readFailure = null;
+    try {
+      repository.clear();
+    } catch (error) {
+      readFailure = { code: error.code, message: error.message };
+    } finally {
+      Storage.prototype.getItem = originalGetForFailure;
+    }
+    const readFailurePreserved = JSON.parse(localStorage.getItem(storageKey));
+
+    const malformedRaw = "{broken-history-baselines";
+    localStorage.setItem(storageKey, malformedRaw);
+    let malformed = null;
+    try {
+      repository.clear();
+    } catch (error) {
+      malformed = error.code;
+    }
+    const malformedUnchanged = localStorage.getItem(storageKey) === malformedRaw;
+
+    localStorage.setItem(storageKey, JSON.stringify({
+      [initialRecord.id]: initialRecord
+    }));
+    const originalGet = Storage.prototype.getItem;
+    const originalSet = Storage.prototype.setItem;
+    let reads = 0;
+    Storage.prototype.getItem = function(key) {
+      if (key === storageKey) {
+        reads += 1;
+        if (reads === 2) {
+          const changed = JSON.stringify({ [competingRecord.id]: competingRecord });
+          originalSet.call(this, key, changed);
+          return changed;
+        }
+      }
+      return originalGet.call(this, key);
+    };
+    let changed = null;
+    try {
+      repository.clear();
+    } catch (error) {
+      changed = error.code;
+    } finally {
+      Storage.prototype.getItem = originalGet;
+    }
+    const competingPreserved = JSON.parse(localStorage.getItem(storageKey));
+
+    const originalRemove = Storage.prototype.removeItem;
+    Storage.prototype.removeItem = function(key) {
+      if (key === storageKey) throw new DOMException("remove blocked", "SecurityError");
+      return originalRemove.call(this, key);
+    };
+    let writeFailure = null;
+    try {
+      repository.clear();
+    } catch (error) {
+      writeFailure = { code: error.code, message: error.message };
+    } finally {
+      Storage.prototype.removeItem = originalRemove;
+    }
+    return {
+      readFailure,
+      readFailurePreserved,
+      malformed,
+      malformedUnchanged,
+      changed,
+      competingPreserved,
+      writeFailure,
+      finalRaw: JSON.parse(localStorage.getItem(storageKey))
+    };
+  }, { storageKey: STORAGE_KEY, initialRecord: initial, competingRecord: competing });
+
+  expect(result.readFailure).toEqual({
+    code: "history-baseline-storage-read-failed",
+    message: "read blocked"
+  });
+  expect(result.readFailurePreserved).toEqual({ [initial.id]: initial });
+  expect(result.malformed).toBe("history-baseline-storage-malformed");
+  expect(result.malformedUnchanged).toBe(true);
+  expect(result.changed).toBe("history-baseline-storage-changed");
+  expect(result.competingPreserved).toEqual({ [competing.id]: competing });
+  expect(result.writeFailure).toEqual({
+    code: "history-baseline-storage-write-failed",
+    message: "remove blocked"
+  });
+  expect(result.finalRaw).toEqual({ [competing.id]: competing });
+});
+
 test("Backup assessment 保守比较完整实体和 locator 关系", async ({ page }) => {
   const local = makeBaseline("baseline:assessment", {
     futureFact: { version: 1 },
@@ -703,12 +858,14 @@ test("Repository 的 read/restore/delete 不读取或写入 Migration State", as
       window.LingoFlowHistoryBaselineRepository.list();
       window.LingoFlowHistoryBaselineRepository
         .removeRecordsByWord("missing");
+      const cleared = window.LingoFlowHistoryBaselineRepository.clear();
       return {
         before,
         after: originalGet.call(localStorage, migrationKey),
         migrationReads,
         migrationWrites,
         restored,
+        cleared,
         baselineRaw: originalGet.call(localStorage, storageKey)
       };
     } finally {
@@ -722,5 +879,10 @@ test("Repository 的 read/restore/delete 不读取或写入 Migration State", as
   expect(result.migrationReads).toBe(0);
   expect(result.migrationWrites).toBe(0);
   expect(result.restored.status).toBe("completed");
-  expect(JSON.parse(result.baselineRaw)[baseline.id]).toEqual(baseline);
+  expect(result.cleared).toEqual({
+    removedCount: 1,
+    historyBaselineIds: [baseline.id],
+    written: true
+  });
+  expect(result.baselineRaw).toBeNull();
 });

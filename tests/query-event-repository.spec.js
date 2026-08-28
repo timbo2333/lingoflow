@@ -75,6 +75,8 @@ test("Repository API 冻结，missing storage 是合法空集合", async ({ page
         get: typeof repository.get,
         list: typeof repository.list,
         removeById: typeof repository.removeById,
+        removeByWord: typeof repository.removeByWord,
+        clear: typeof repository.clear,
         assessBackupRestore: typeof repository.assessBackupRestore,
         restoreBackupRecords: typeof repository.restoreBackupRecords,
         update: typeof repository.update
@@ -92,6 +94,8 @@ test("Repository API 冻结，missing storage 是合法空集合", async ({ page
       get: "function",
       list: "function",
       removeById: "function",
+      removeByWord: "function",
+      clear: "function",
       assessBackupRestore: "function",
       restoreBackupRecords: "function",
       update: "undefined"
@@ -445,6 +449,318 @@ test("removeById 是 current-set hard delete，不修改事件也不生成 tombs
   expect(result.get).toBeNull();
   expect(result.list).toEqual([]);
   expect(JSON.parse(result.raw)).toEqual({});
+});
+
+test("removeByWord 精确匹配已保存 word，跨事件删除且不 normalize", async ({ page }) => {
+  const records = [
+    makeEvent("query:word-b", { timestamp: "2026-08-24T10:00:01.000Z" }),
+    makeEvent("query:word-a"),
+    makeEvent("query:uppercase", { word: "Develop" }),
+    makeEvent("query:keep", { word: "apple", displayWord: "Apple" })
+  ];
+  const result = await page.evaluate(({ storageKey, incoming }) => {
+    localStorage.setItem(storageKey, JSON.stringify(Object.fromEntries(
+      incoming.map(record => [record.id, record])
+    )));
+    const repository = window.LingoFlowQueryEventRepository;
+    const invalid = repository.removeByWord(Symbol("develop"));
+    const padded = repository.removeByWord(" develop ");
+    const removed = repository.removeByWord("develop");
+    return {
+      invalid,
+      padded,
+      removed,
+      remaining: repository.list(),
+      raw: JSON.parse(localStorage.getItem(storageKey))
+    };
+  }, { storageKey: STORAGE_KEY, incoming: records });
+
+  expect(result.invalid).toEqual({
+    word: null,
+    removedCount: 0,
+    queryEventIds: []
+  });
+  expect(result.padded).toEqual({
+    word: " develop ",
+    removedCount: 0,
+    queryEventIds: []
+  });
+  expect(result.removed).toEqual({
+    word: "develop",
+    removedCount: 2,
+    queryEventIds: [records[1].id, records[0].id]
+  });
+  expect(result.remaining).toEqual([records[2], records[3]]);
+  expect(result.raw).toEqual({
+    [records[2].id]: records[2],
+    [records[3].id]: records[3]
+  });
+});
+
+test("removeByWord 无匹配时不写 storage，删除写入前检查 storage-changed", async ({ page }) => {
+  const first = makeEvent("query:remove-word-race");
+  const competing = makeEvent("query:competing", { word: "banana" });
+  const result = await page.evaluate(({ storageKey, firstRecord, competingRecord }) => {
+    const repository = window.LingoFlowQueryEventRepository;
+    localStorage.setItem(storageKey, JSON.stringify({ [firstRecord.id]: firstRecord }));
+
+    const originalSet = Storage.prototype.setItem;
+    let writes = 0;
+    Storage.prototype.setItem = function(key, value) {
+      if (key === storageKey) writes += 1;
+      return originalSet.call(this, key, value);
+    };
+    const missing = repository.removeByWord("missing");
+    Storage.prototype.setItem = originalSet;
+
+    const originalGet = Storage.prototype.getItem;
+    let reads = 0;
+    Storage.prototype.getItem = function(key) {
+      if (key === storageKey) {
+        reads += 1;
+        if (reads === 2) {
+          const changed = JSON.stringify({ [competingRecord.id]: competingRecord });
+          originalSet.call(this, key, changed);
+          return changed;
+        }
+      }
+      return originalGet.call(this, key);
+    };
+    let raceError = null;
+    try {
+      repository.removeByWord(firstRecord.word);
+    } catch (error) {
+      raceError = { code: error.code, message: error.message };
+    } finally {
+      Storage.prototype.getItem = originalGet;
+    }
+    const competingPreserved = JSON.parse(localStorage.getItem(storageKey));
+
+    originalSet.call(localStorage, storageKey, JSON.stringify({
+      [firstRecord.id]: firstRecord
+    }));
+    Storage.prototype.setItem = function(key, value) {
+      if (key === storageKey) throw new DOMException("quota", "QuotaExceededError");
+      return originalSet.call(this, key, value);
+    };
+    let writeFailure = null;
+    try {
+      repository.removeByWord(firstRecord.word);
+    } catch (error) {
+      writeFailure = { code: error.code, message: error.message };
+    } finally {
+      Storage.prototype.setItem = originalSet;
+    }
+    return {
+      missing,
+      writes,
+      raceError,
+      competingPreserved,
+      writeFailure,
+      storedAfterWriteFailure: JSON.parse(localStorage.getItem(storageKey))
+    };
+  }, { storageKey: STORAGE_KEY, firstRecord: first, competingRecord: competing });
+
+  expect(result.missing).toEqual({
+    word: "missing",
+    removedCount: 0,
+    queryEventIds: []
+  });
+  expect(result.writes).toBe(0);
+  expect(result.raceError?.code).toBe("query-event-storage-changed");
+  expect(result.competingPreserved).toEqual({ [competing.id]: competing });
+  expect(result.writeFailure).toEqual({
+    code: "query-event-storage-write-failed",
+    message: "quota"
+  });
+  expect(result.storedAfterWriteFailure).toEqual({ [first.id]: first });
+});
+
+test("removeById 写入前检查 storage-changed，不覆盖并发数据", async ({ page }) => {
+  const first = makeEvent("query:remove-id-race");
+  const competing = makeEvent("query:remove-id-competing", { word: "banana" });
+  const result = await page.evaluate(({ storageKey, firstRecord, competingRecord }) => {
+    const repository = window.LingoFlowQueryEventRepository;
+    localStorage.setItem(storageKey, JSON.stringify({ [firstRecord.id]: firstRecord }));
+    const originalGet = Storage.prototype.getItem;
+    const originalSet = Storage.prototype.setItem;
+    let reads = 0;
+    Storage.prototype.getItem = function(key) {
+      if (key === storageKey) {
+        reads += 1;
+        if (reads === 2) {
+          const changed = JSON.stringify({ [competingRecord.id]: competingRecord });
+          originalSet.call(this, key, changed);
+          return changed;
+        }
+      }
+      return originalGet.call(this, key);
+    };
+    let error = null;
+    try {
+      repository.removeById(firstRecord.id);
+    } catch (caught) {
+      error = { code: caught.code, message: caught.message };
+    } finally {
+      Storage.prototype.getItem = originalGet;
+    }
+    return {
+      error,
+      stored: JSON.parse(localStorage.getItem(storageKey))
+    };
+  }, { storageKey: STORAGE_KEY, firstRecord: first, competingRecord: competing });
+
+  expect(result.error?.code).toBe("query-event-storage-changed");
+  expect(result.stored).toEqual({ [competing.id]: competing });
+});
+
+test("clear 严格清除完整 QueryEvent namespace，missing storage 不写", async ({ page }) => {
+  const records = [makeEvent("query:clear-b"), makeEvent("query:clear-a")];
+  const result = await page.evaluate(({ storageKey, deviceKey, incoming }) => {
+    localStorage.setItem(storageKey, JSON.stringify(Object.fromEntries(
+      incoming.map(record => [record.id, record])
+    )));
+    localStorage.setItem(deviceKey, "device:must-remain");
+    const repository = window.LingoFlowQueryEventRepository;
+    const originalRemove = Storage.prototype.removeItem;
+    let removes = 0;
+    Storage.prototype.removeItem = function(key) {
+      if (key === storageKey) removes += 1;
+      return originalRemove.call(this, key);
+    };
+    try {
+      const cleared = repository.clear();
+      const missing = repository.clear();
+      localStorage.setItem(storageKey, "{}");
+      const storedEmpty = repository.clear();
+      return {
+        cleared,
+        missing,
+        storedEmpty,
+        removes,
+        raw: localStorage.getItem(storageKey),
+        deviceId: localStorage.getItem(deviceKey),
+        list: repository.list()
+      };
+    } finally {
+      Storage.prototype.removeItem = originalRemove;
+    }
+  }, { storageKey: STORAGE_KEY, deviceKey: DEVICE_ID_KEY, incoming: records });
+
+  expect(result).toEqual({
+    cleared: {
+      removedCount: 2,
+      queryEventIds: [records[1].id, records[0].id],
+      written: true
+    },
+    missing: { removedCount: 0, queryEventIds: [], written: false },
+    storedEmpty: { removedCount: 0, queryEventIds: [], written: true },
+    removes: 2,
+    raw: null,
+    deviceId: "device:must-remain",
+    list: []
+  });
+});
+
+test("clear 拒绝损坏数据，报告并发变化和 removeItem 写入失败", async ({ page }) => {
+  const initial = makeEvent("query:clear-initial");
+  const competing = makeEvent("query:clear-competing", { word: "banana" });
+  const result = await page.evaluate(({ storageKey, initialRecord, competingRecord }) => {
+    const repository = window.LingoFlowQueryEventRepository;
+    localStorage.setItem(storageKey, JSON.stringify({
+      [initialRecord.id]: initialRecord
+    }));
+    const originalGetForFailure = Storage.prototype.getItem;
+    Storage.prototype.getItem = function(key) {
+      if (key === storageKey) throw new DOMException("read blocked", "SecurityError");
+      return originalGetForFailure.call(this, key);
+    };
+    let readFailure = null;
+    try {
+      repository.clear();
+    } catch (error) {
+      readFailure = { code: error.code, message: error.message };
+    } finally {
+      Storage.prototype.getItem = originalGetForFailure;
+    }
+    const readFailurePreserved = JSON.parse(localStorage.getItem(storageKey));
+
+    const malformedRaw = "{broken-query-events";
+    localStorage.setItem(storageKey, malformedRaw);
+    let malformed = null;
+    try {
+      repository.clear();
+    } catch (error) {
+      malformed = error.code;
+    }
+    const malformedUnchanged = localStorage.getItem(storageKey) === malformedRaw;
+
+    localStorage.setItem(storageKey, JSON.stringify({
+      [initialRecord.id]: initialRecord
+    }));
+    const originalGet = Storage.prototype.getItem;
+    const originalSet = Storage.prototype.setItem;
+    let reads = 0;
+    Storage.prototype.getItem = function(key) {
+      if (key === storageKey) {
+        reads += 1;
+        if (reads === 2) {
+          const changed = JSON.stringify({ [competingRecord.id]: competingRecord });
+          originalSet.call(this, key, changed);
+          return changed;
+        }
+      }
+      return originalGet.call(this, key);
+    };
+    let changed = null;
+    try {
+      repository.clear();
+    } catch (error) {
+      changed = error.code;
+    } finally {
+      Storage.prototype.getItem = originalGet;
+    }
+    const competingPreserved = JSON.parse(localStorage.getItem(storageKey));
+
+    const originalRemove = Storage.prototype.removeItem;
+    Storage.prototype.removeItem = function(key) {
+      if (key === storageKey) throw new DOMException("remove blocked", "SecurityError");
+      return originalRemove.call(this, key);
+    };
+    let writeFailure = null;
+    try {
+      repository.clear();
+    } catch (error) {
+      writeFailure = { code: error.code, message: error.message };
+    } finally {
+      Storage.prototype.removeItem = originalRemove;
+    }
+    return {
+      readFailure,
+      readFailurePreserved,
+      malformed,
+      malformedUnchanged,
+      changed,
+      competingPreserved,
+      writeFailure,
+      finalRaw: JSON.parse(localStorage.getItem(storageKey))
+    };
+  }, { storageKey: STORAGE_KEY, initialRecord: initial, competingRecord: competing });
+
+  expect(result.readFailure).toEqual({
+    code: "query-event-storage-read-failed",
+    message: "read blocked"
+  });
+  expect(result.readFailurePreserved).toEqual({ [initial.id]: initial });
+  expect(result.malformed).toBe("query-event-storage-malformed");
+  expect(result.malformedUnchanged).toBe(true);
+  expect(result.changed).toBe("query-event-storage-changed");
+  expect(result.competingPreserved).toEqual({ [competing.id]: competing });
+  expect(result.writeFailure).toEqual({
+    code: "query-event-storage-write-failed",
+    message: "remove blocked"
+  });
+  expect(result.finalRaw).toEqual({ [competing.id]: competing });
 });
 
 test("Backup assessment 区分 restorable、unchanged 和完整内容 conflict", async ({ page }) => {

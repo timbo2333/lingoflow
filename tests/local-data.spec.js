@@ -538,7 +538,7 @@ test("收藏数量和设置页统计只使用新 Repository", async ({ page }) =
   });
 });
 
-test("查询会创建事件并更新 vocab 聚合", async ({ page }) => {
+test("查询会通过 Repository 创建事件并由 Projector 更新 vocab 聚合", async ({ page }) => {
   await page.evaluate(() => {
     const result = {
       baseWord: "develop",
@@ -547,9 +547,8 @@ test("查询会创建事件并更新 vocab 聚合", async ({ page }) => {
       meaning: "发展"
     };
 
-    recordQueryEvent("Develop", result, "article");
-    recordQueryEvent("develop", result, "search");
-    rebuildVocabFromMergeData();
+    addToVocab("Develop", result, "article");
+    addToVocab("develop", result, "search");
   });
 
   const stored = await page.evaluate(({ eventsKey, vocabKey }) => ({
@@ -567,6 +566,9 @@ test("查询会创建事件并更新 vocab 聚合", async ({ page }) => {
   expect(events.every(event => event.word === "develop")).toBe(true);
   expect(events.every(event => Boolean(event.deviceId))).toBe(true);
   expect(events.map(event => event.source).sort()).toEqual(["article", "search"]);
+  const latestEvent = events.slice().sort((left, right) => (
+    left.timestamp.localeCompare(right.timestamp) || left.id.localeCompare(right.id)
+  )).at(-1);
 
   expect(stored.vocab.develop).toMatchObject({
     word: "develop",
@@ -574,7 +576,8 @@ test("查询会创建事件并更新 vocab 聚合", async ({ page }) => {
     articleCount: 1,
     searchCount: 1,
     meaning: "发展",
-    source: "search"
+    source: latestEvent.source,
+    displayWord: latestEvent.displayWord
   });
 });
 
@@ -615,9 +618,9 @@ test("全新用户连续查询多次时重建 count 始终等于 QueryEvent 数"
       addToVocab("Develop", result, index % 2 ? "search" : "article");
       rebuildVocabFromMergeData();
       values.push({
-        eventCount: Object.keys(getQueryEvents()).length,
+        eventCount: window.LingoFlowQueryEventRepository.list().length,
         count: getVocabData().develop?.count || 0,
-        baselineCount: Object.keys(getHistoryBaselines()).length
+        baselineCount: window.LingoFlowHistoryBaselineRepository.list().length
       });
     }
     return values;
@@ -776,14 +779,19 @@ test("重复调用 ensureHistoryMigration 保持 Baseline 与 migration state �
 
 test("清空历史保留一次性 migration state，后续现代查询不会重新迁移", async ({ page }) => {
   const result = await page.evaluate(() => {
-    const queryData = window.LingoFlowLocalData.QueryData;
     addToVocab("Before clear", {
       baseWord: "before",
       pos: "adverb",
       meaning: "之前"
     }, "search");
     const stateBefore = localStorage.getItem("EnglishReaderV052HistoryMigrationState");
-    queryData.clearHistory();
+    const originalConfirm = window.confirm;
+    window.confirm = () => true;
+    try {
+      clearVocabBook();
+    } finally {
+      window.confirm = originalConfirm;
+    }
     const stateAfter = localStorage.getItem("EnglishReaderV052HistoryMigrationState");
     const lookup = {
       baseWord: "develop",
@@ -797,9 +805,9 @@ test("清空历史保留一次性 migration state，后续现代查询不会重�
     return {
       stateBefore,
       stateAfter,
-      eventCount: Object.keys(getQueryEvents()).length,
+      eventCount: window.LingoFlowQueryEventRepository.list().length,
       count: getVocabData().develop?.count || 0,
-      baselines: getHistoryBaselines()
+      baselines: window.LingoFlowHistoryBaselineRepository.list()
     };
   });
 
@@ -807,7 +815,7 @@ test("清空历史保留一次性 migration state，后续现代查询不会重�
   expect(result.stateAfter).toBe(result.stateBefore);
   expect(result.eventCount).toBe(2);
   expect(result.count).toBe(2);
-  expect(result.baselines).toEqual({});
+  expect(result.baselines).toEqual([]);
 });
 
 test("空 Baseline 占位不会阻止明确的 legacy Vocab 首次迁移", async ({ page }) => {

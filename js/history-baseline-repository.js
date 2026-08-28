@@ -154,6 +154,26 @@
     }
   }
 
+  function removeStoredBaselines() {
+    try {
+      localStorage.removeItem(STORAGE_KEY);
+    } catch (error) {
+      throw createRepositoryError(
+        "history-baseline-storage-write-failed",
+        error?.message || "History Baseline 存储清除失败。"
+      );
+    }
+  }
+
+  function assertStorageUnchanged(expectedRaw, message) {
+    if (readStorageRaw() !== expectedRaw) {
+      throw createRepositoryError(
+        "history-baseline-storage-changed",
+        message
+      );
+    }
+  }
+
   function getOwnBaseline(baselines, id) {
     return Object.prototype.hasOwnProperty.call(baselines, id)
       ? baselines[id]
@@ -210,15 +230,31 @@
 
     if (!removedCount) return { word, removedCount: 0, items: [] };
 
-    const currentRaw = readStorageRaw();
-    if (currentRaw !== storageSnapshot.raw) {
-      throw createRepositoryError(
-        "history-baseline-storage-changed",
-        "History Baseline 存储在 records 删除期间发生变化。"
-      );
-    }
+    assertStorageUnchanged(
+      storageSnapshot.raw,
+      "History Baseline 存储在 records 删除期间发生变化。"
+    );
     writeSerializedBaselines(serializeBaselines(baselines));
     return { word, removedCount, items };
+  }
+
+  function clear() {
+    const storageSnapshot = readBaselinesSnapshot();
+    const historyBaselineIds = Object.keys(storageSnapshot.baselines).sort();
+    if (storageSnapshot.raw === null) {
+      return { removedCount: 0, historyBaselineIds: [], written: false };
+    }
+
+    assertStorageUnchanged(
+      storageSnapshot.raw,
+      "History Baseline 存储在清除期间发生变化。"
+    );
+    removeStoredBaselines();
+    return {
+      removedCount: historyBaselineIds.length,
+      historyBaselineIds,
+      written: true
+    };
   }
 
   function valuesEqual(left, right) {
@@ -473,6 +509,7 @@
     list,
     findRecordLocatorsByWord,
     removeRecordsByWord,
+    clear,
     assessBackupRestore,
     restoreBackupRecords
   });

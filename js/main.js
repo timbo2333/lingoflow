@@ -2409,38 +2409,62 @@ const LAST_BACKUP_KEY = "EnglishReaderV052LastBackup";
 const BACKUP_DISMISS_KEY = "EnglishReaderV052BackupDismiss";
 
 
-function makeId(prefix = "id") {
-  if (crypto?.randomUUID) return `${prefix}:${crypto.randomUUID()}`;
-  return `${prefix}:${Date.now()}:${Math.random().toString(36).slice(2)}:${Math.random().toString(36).slice(2)}`;
-}
-
-function getDeviceId() {
-  return window.LingoFlowLocalData.QueryData.getDeviceId();
-}
-
-function getQueryEvents() {
+// Raw map access is retained only for the one-time migration and the V0.5.x
+// legacy backup format. Modern Query History uses the repositories below.
+function getCompatibilityQueryEventsMap() {
   return window.LingoFlowLocalData.QueryData.getEvents();
 }
 
-function setQueryEvents(data) {
+function setCompatibilityQueryEventsMap(data) {
   window.LingoFlowLocalData.QueryData.setEvents(data);
 }
 
-function getHistoryBaselines() {
+function getCompatibilityHistoryBaselinesMap() {
   return window.LingoFlowLocalData.QueryData.getHistoryBaselines();
 }
 
-function setHistoryBaselines(data) {
+function setCompatibilityHistoryBaselinesMap(data) {
   window.LingoFlowLocalData.QueryData.setHistoryBaselines(data);
 }
 
-function ensureHistoryMigration() {
-  const queryData = window.LingoFlowLocalData.QueryData;
-  if (queryData.hasHistoryMigrationState()) return;
+function getQueryEventRepository() {
+  return window.LingoFlowQueryEventRepository;
+}
 
-  if (queryData.hasHistoryBaselineRecords() || queryData.hasEventsStorage()) {
+function getHistoryBaselineRepository() {
+  return window.LingoFlowHistoryBaselineRepository;
+}
+
+function getQueryHistoryProjector() {
+  return window.LingoFlowQueryHistoryProjector;
+}
+
+function inspectExistingHistoryMigrationBoundary(queryData) {
+  try {
+    const queryEvents = getQueryEventRepository().list();
+    const historyBaselines = getHistoryBaselineRepository().list();
+    const hasEventsStorage = queryData.hasEventsStorage();
+    return {
+      exists: hasEventsStorage || queryEvents.length > 0 || historyBaselines.length > 0,
+      readable: true
+    };
+  } catch {
+    return { exists: true, readable: false };
+  }
+}
+
+function ensureHistoryMigration({ completeEmptyBoundary = false } = {}) {
+  const queryData = window.LingoFlowLocalData.QueryData;
+  if (queryData.hasHistoryMigrationState()) return true;
+
+  const existingBoundary = inspectExistingHistoryMigrationBoundary(queryData);
+  if (existingBoundary.exists) {
+    // Presence is a migration boundary only when the existing fact namespaces
+    // can be read strictly. Corruption must not permanently close migration
+    // before legacy Vocab can be recovered.
+    if (!existingBoundary.readable) return false;
     queryData.markHistoryMigrationCompleted();
-    return;
+    return true;
   }
 
   let current;
@@ -2449,24 +2473,25 @@ function ensureHistoryMigration() {
   } catch {
     // An unreadable aggregate is not safe evidence of legacy history. Leave the
     // migration open so a future call can retry after the storage is repaired.
-    return;
+    return false;
   }
 
   // Another tab may have crossed the QueryEvent boundary while this tab was
   // inspecting the legacy aggregate. Never turn that newer aggregate into a
   // baseline.
-  if (
-    queryData.hasHistoryMigrationState() ||
-    queryData.hasHistoryBaselineRecords() ||
-    queryData.hasEventsStorage()
-  ) {
-    if (!queryData.hasHistoryMigrationState()) {
-      queryData.markHistoryMigrationCompleted();
-    }
-    return;
+  if (queryData.hasHistoryMigrationState()) return true;
+
+  const racedBoundary = inspectExistingHistoryMigrationBoundary(queryData);
+  if (racedBoundary.exists) {
+    if (!racedBoundary.readable) return false;
+    queryData.markHistoryMigrationCompleted();
+    return true;
   }
 
-  if (!Object.keys(current).length) return;
+  if (!Object.keys(current).length) {
+    if (completeEmptyBoundary) queryData.markHistoryMigrationCompleted();
+    return true;
+  }
 
   const entries = Object.entries(current)
     .sort(([a], [b]) => a.localeCompare(b))
@@ -2480,7 +2505,7 @@ function ensureHistoryMigration() {
     ]);
 
   const baselineId = `legacy-local:${simpleStableHash(JSON.stringify(entries))}`;
-  setHistoryBaselines({
+  setCompatibilityHistoryBaselinesMap({
     [baselineId]: {
       id: baselineId,
       createdAt: new Date().toISOString(),
@@ -2490,95 +2515,15 @@ function ensureHistoryMigration() {
   });
 
   queryData.markHistoryMigrationCompleted();
-}
-
-function createQueryEvent(word, result, sourceType) {
-  return {
-    id: makeId("query"),
-    deviceId: getDeviceId(),
-    word: normalizeWord(result?.baseWord || word),
-    displayWord: word,
-    phonetic: result?.phonetic || "",
-    pos: result?.pos || "",
-    meaning: result?.meaning || "",
-    dictionaryFound: Boolean(result),
-    source: sourceType,
-    timestamp: new Date().toISOString()
-  };
-}
-
-function mergeQueryAggregate(target, incoming) {
-  const key = incoming.word;
-  if (!key) return;
-
-  const old = target[key] || {
-    word: key,
-    count: 0,
-    articleCount: 0,
-    searchCount: 0,
-    firstSeen: incoming.firstSeen || incoming.timestamp || new Date().toISOString()
-  };
-
-  old.count += Number(incoming.count || 0);
-  old.articleCount += Number(incoming.articleCount || 0);
-  old.searchCount += Number(incoming.searchCount || 0);
-
-  const first = incoming.firstSeen || incoming.timestamp;
-  const last = incoming.lastSeen || incoming.timestamp;
-
-  if (first && (!old.firstSeen || new Date(first) < new Date(old.firstSeen))) old.firstSeen = first;
-  if (last && (!old.lastSeen || new Date(last) > new Date(old.lastSeen))) old.lastSeen = last;
-
-  if (incoming.displayWord) old.displayWord = incoming.displayWord;
-  if (incoming.phonetic) old.phonetic = incoming.phonetic;
-  if (incoming.pos) old.pos = incoming.pos;
-  if (incoming.meaning) old.meaning = incoming.meaning;
-  if (typeof incoming.dictionaryFound === "boolean") old.dictionaryFound = incoming.dictionaryFound;
-  if (incoming.source) old.source = incoming.source;
-
-  target[key] = old;
+  return true;
 }
 
 function rebuildVocabFromMergeData() {
-  const rebuilt = {};
-  const baselines = getHistoryBaselines();
-  const events = getQueryEvents();
-
-  for (const baseline of Object.values(baselines)) {
-    for (const record of Object.values(baseline.records || {})) {
-      mergeQueryAggregate(rebuilt, {
-        ...record,
-        count: Number(record.count || 0),
-        articleCount: Number(record.articleCount || 0),
-        searchCount: Number(record.searchCount || 0)
-      });
-    }
-  }
-
-  const sortedEvents = Object.values(events).sort((a,b) =>
-    new Date(a.timestamp || 0) - new Date(b.timestamp || 0)
-  );
-
-  for (const event of sortedEvents) {
-    mergeQueryAggregate(rebuilt, {
-      ...event,
-      count: 1,
-      articleCount: event.source === "article" ? 1 : 0,
-      searchCount: event.source === "search" ? 1 : 0,
-      firstSeen: event.timestamp,
-      lastSeen: event.timestamp
-    });
-  }
-
+  const queryEvents = getQueryEventRepository().list();
+  const historyBaselines = getHistoryBaselineRepository().list();
+  const rebuilt = getQueryHistoryProjector().project(queryEvents, historyBaselines);
   setVocabData(rebuilt);
-}
-
-function recordQueryEvent(word, result, sourceType) {
-  const events = getQueryEvents();
-  const event = createQueryEvent(word, result, sourceType);
-  events[event.id] = event;
-  setQueryEvents(events);
-  window.LingoFlowLocalData.QueryData.markHistoryMigrationCompleted();
+  return rebuilt;
 }
 
 function mergeUniqueMaps(current, incoming) {
@@ -2659,39 +2604,20 @@ function getLegacyFavoriteBackup() {
 function addToVocab(word, result, sourceType = "article") {
   if (!word) return;
 
-  ensureHistoryMigration();
-  recordQueryEvent(word, result, sourceType);
-
-  const key = normalizeWord(result?.baseWord || word);
-  if (!key) return;
-
-  const data = getVocabData();
-  const old = data[key] || {
-    word: key,
-    count: 0,
-    firstSeen: new Date().toISOString(),
-    articleCount: 0,
-    searchCount: 0
-  };
-
-  old.count = (old.count || 0) + 1;
-  old.lastSeen = new Date().toISOString();
-  old.displayWord = word;
-  old.phonetic = result?.phonetic || old.phonetic || "";
-  old.pos = result?.pos || old.pos || "";
-  old.meaning = result?.meaning || old.meaning || "";
-  old.dictionaryFound = Boolean(result);
-
-  if (sourceType === "search") {
-    old.searchCount = (old.searchCount || 0) + 1;
-  } else {
-    old.articleCount = (old.articleCount || 0) + 1;
+  if (!ensureHistoryMigration({ completeEmptyBoundary: true })) {
+    const error = new Error("Query History migration prerequisite could not be completed.");
+    error.code = "query-history-migration-prerequisite-failed";
+    throw error;
   }
 
-  old.source = sourceType;
-
-  data[key] = old;
-  setVocabData(data);
+  // A broken fact namespace must stop the query before a new immutable fact is
+  // appended. Repository.append() strictly rechecks QueryEvent storage itself;
+  // this preflight also protects the independent Baseline namespace.
+  getQueryEventRepository().list();
+  getHistoryBaselineRepository().list();
+  const event = getQueryEventRepository().append(word, result, sourceType);
+  rebuildVocabFromMergeData();
+  return event;
 }
 
 function updateVocabBadges() {
@@ -2794,34 +2720,48 @@ function renderVocabBook() {
 }
 
 function removeVocabWord(word) {
-  const normalized = normalizeWord(word);
-  if (!normalized) return;
+  if (typeof word !== "string" || !word) return;
 
-  const events = getQueryEvents();
-  for (const [id, event] of Object.entries(events)) {
-    if (normalizeWord(event?.word || "") === normalized) {
-      delete events[id];
+  try {
+    // Preflight both strict stores before the first destructive write.
+    getQueryEventRepository().list();
+    getHistoryBaselineRepository().list();
+    getQueryEventRepository().removeByWord(word);
+    getHistoryBaselineRepository().removeRecordsByWord(word);
+    rebuildVocabFromMergeData();
+    renderVocabBook();
+  } catch (error) {
+    // The two namespaces are independently atomic. If the second operation
+    // fails, refresh from the facts that actually remain without hiding the
+    // original failure.
+    try {
+      rebuildVocabFromMergeData();
+      renderVocabBook();
+    } catch {
+      // A strict read failure must leave the existing derived view untouched.
     }
+    throw error;
   }
-  setQueryEvents(events);
-
-  const baselines = getHistoryBaselines();
-  for (const baseline of Object.values(baselines)) {
-    if (baseline?.records && Object.prototype.hasOwnProperty.call(baseline.records, normalized)) {
-      delete baseline.records[normalized];
-    }
-  }
-  setHistoryBaselines(baselines);
-
-  rebuildVocabFromMergeData();
-  renderVocabBook();
 }
 
 function clearVocabBook() {
   if (!confirm("确定清空全部查询记录吗？收藏内容不会被删除。")) return;
-  window.LingoFlowLocalData.QueryData.clearHistory();
-  updateVocabBadges();
-  renderVocabBook();
+  try {
+    getQueryEventRepository().list();
+    getHistoryBaselineRepository().list();
+    getQueryEventRepository().clear();
+    getHistoryBaselineRepository().clear();
+    rebuildVocabFromMergeData();
+    renderVocabBook();
+  } catch (error) {
+    try {
+      rebuildVocabFromMergeData();
+      renderVocabBook();
+    } catch {
+      // Preserve the last usable Vocab view when facts cannot be read safely.
+    }
+    throw error;
+  }
 }
 
 function exportVocabCSV() {
@@ -4757,8 +4697,8 @@ async function exportLearningBackup() {
     createdAt: new Date().toISOString(),
     vocab: getVocabData(),
     favorites: getLegacyFavoriteBackup().readSnapshot(),
-    historyBaselines: getHistoryBaselines(),
-    queryEvents: getQueryEvents(),
+    historyBaselines: getCompatibilityHistoryBaselinesMap(),
+    queryEvents: getCompatibilityQueryEventsMap(),
     preferences: {
       speed: getSpeechRate(),
       reading: getReadingPreferences()
@@ -4835,8 +4775,14 @@ async function exportFullBackup() {
       type: "favorites",
       data: getLegacyFavoriteBackup().readSnapshot()
     }) + "\n");
-    parts.push(JSON.stringify({ type: "historyBaselines", data: getHistoryBaselines() }) + "\n");
-    parts.push(JSON.stringify({ type: "queryEvents", data: getQueryEvents() }) + "\n");
+    parts.push(JSON.stringify({
+      type: "historyBaselines",
+      data: getCompatibilityHistoryBaselinesMap()
+    }) + "\n");
+    parts.push(JSON.stringify({
+      type: "queryEvents",
+      data: getCompatibilityQueryEventsMap()
+    }) + "\n");
     parts.push(JSON.stringify({
       type: "preferences",
       data: {
@@ -4889,7 +4835,7 @@ async function importBackupFile(file, expectedType = "auto") {
     if (mode === "preview") {
       const incomingEventCount = Object.keys(data.queryEvents || {}).length;
       const incomingLegacyFavoriteCount = Object.keys(data.favorites || {}).length;
-      const currentEventCount = Object.keys(getQueryEvents()).length;
+      const currentEventCount = Object.keys(getCompatibilityQueryEventsMap()).length;
       const currentLegacyFavoriteCount = getLegacyFavoriteBackup().countSnapshot();
 
       const ok = confirm(
@@ -4906,8 +4852,10 @@ async function importBackupFile(file, expectedType = "auto") {
       if (!confirm("完全覆盖会替换当前查询记录、阅读／发音设置和旧格式收藏，不影响当前 Favorite Entity 与 Learning State。确定继续吗？")) return;
 
       getLegacyFavoriteBackup().replaceSnapshot(data.favorites || {});
-      setHistoryBaselines(data.historyBaselines || convertLegacyBackupToBaseline(data, file));
-      setQueryEvents(data.queryEvents || {});
+      setCompatibilityHistoryBaselinesMap(
+        data.historyBaselines || convertLegacyBackupToBaseline(data, file)
+      );
+      setCompatibilityQueryEventsMap(data.queryEvents || {});
       if (!Object.keys(data.historyBaselines || {}).length && !Object.keys(data.queryEvents || {}).length) {
         setVocabData(data.vocab || {});
       } else {
@@ -4920,8 +4868,14 @@ async function importBackupFile(file, expectedType = "auto") {
         ? data.historyBaselines
         : convertLegacyBackupToBaseline(data, file);
 
-      setHistoryBaselines(mergeUniqueMaps(getHistoryBaselines(), incomingBaselines));
-      setQueryEvents(mergeUniqueMaps(getQueryEvents(), data.queryEvents || {}));
+      setCompatibilityHistoryBaselinesMap(mergeUniqueMaps(
+        getCompatibilityHistoryBaselinesMap(),
+        incomingBaselines
+      ));
+      setCompatibilityQueryEventsMap(mergeUniqueMaps(
+        getCompatibilityQueryEventsMap(),
+        data.queryEvents || {}
+      ));
       const legacyFavoriteBackup = getLegacyFavoriteBackup();
       legacyFavoriteBackup.replaceSnapshot(
         legacyFavoriteBackup.mergeSnapshots(
@@ -4941,7 +4895,7 @@ async function importBackupFile(file, expectedType = "auto") {
       applyReadingPreferences();
     }
 
-    const finalEventCount = Object.keys(getQueryEvents()).length;
+    const finalEventCount = Object.keys(getCompatibilityQueryEventsMap()).length;
     const finalLegacyFavoriteCount = getLegacyFavoriteBackup().countSnapshot();
 
     if (mode === "overwrite") {
@@ -5084,13 +5038,23 @@ async function importBackupFile(file, expectedType = "auto") {
   }
 
   if (historyBaselines || queryEvents) {
-    setHistoryBaselines(historyBaselines || {});
-    setQueryEvents(queryEvents || {});
+    setCompatibilityHistoryBaselinesMap(historyBaselines || {});
+    setCompatibilityQueryEventsMap(queryEvents || {});
     rebuildVocabFromMergeData();
   } else if (vocab) {
-    setVocabData(vocab);
-    setHistoryBaselines({});
-    ensureHistoryMigration();
+    // Older full backups carried only the derived Vocab map. Preserve those
+    // legacy facts explicitly before the modern Projector becomes authoritative.
+    const importedBaselines = convertLegacyBackupToBaseline({
+      createdAt: headerPreview.createdAt || "",
+      vocab
+    }, file);
+    setCompatibilityHistoryBaselinesMap(importedBaselines);
+    setCompatibilityQueryEventsMap({});
+    const queryData = window.LingoFlowLocalData.QueryData;
+    if (!queryData.hasHistoryMigrationState()) {
+      queryData.markHistoryMigrationCompleted();
+    }
+    rebuildVocabFromMergeData();
   }
 
   if (importedPreferences?.reading || importedPreferences?.speed) {
