@@ -2409,8 +2409,8 @@ const LAST_BACKUP_KEY = "EnglishReaderV052LastBackup";
 const BACKUP_DISMISS_KEY = "EnglishReaderV052BackupDismiss";
 
 
-// Raw map access is retained only for the one-time migration and the V0.5.x
-// legacy backup format. Modern Query History uses the repositories below.
+// Raw map access is retained only for the V0.5.x legacy backup format. Modern
+// Query History and its one-time local migration use data-layer boundaries.
 function getCompatibilityQueryEventsMap() {
   return window.LingoFlowLocalData.QueryData.getEvents();
 }
@@ -2439,83 +2439,14 @@ function getQueryHistoryProjector() {
   return window.LingoFlowQueryHistoryProjector;
 }
 
-function inspectExistingHistoryMigrationBoundary(queryData) {
-  try {
-    const queryEvents = getQueryEventRepository().list();
-    const historyBaselines = getHistoryBaselineRepository().list();
-    const hasEventsStorage = queryData.hasEventsStorage();
-    return {
-      exists: hasEventsStorage || queryEvents.length > 0 || historyBaselines.length > 0,
-      readable: true
-    };
-  } catch {
-    return { exists: true, readable: false };
-  }
+function getQueryHistoryMigrationCoordinator() {
+  return window.LingoFlowQueryHistoryMigrationCoordinator;
 }
 
-function ensureHistoryMigration({ completeEmptyBoundary = false } = {}) {
-  const queryData = window.LingoFlowLocalData.QueryData;
-  if (queryData.hasHistoryMigrationState()) return true;
-
-  const existingBoundary = inspectExistingHistoryMigrationBoundary(queryData);
-  if (existingBoundary.exists) {
-    // Presence is a migration boundary only when the existing fact namespaces
-    // can be read strictly. Corruption must not permanently close migration
-    // before legacy Vocab can be recovered.
-    if (!existingBoundary.readable) return false;
-    queryData.markHistoryMigrationCompleted();
-    return true;
-  }
-
-  let current;
-  try {
-    current = queryData.getVocabForHistoryMigration();
-  } catch {
-    // An unreadable aggregate is not safe evidence of legacy history. Leave the
-    // migration open so a future call can retry after the storage is repaired.
-    return false;
-  }
-
-  // Another tab may have crossed the QueryEvent boundary while this tab was
-  // inspecting the legacy aggregate. Never turn that newer aggregate into a
-  // baseline.
-  if (queryData.hasHistoryMigrationState()) return true;
-
-  const racedBoundary = inspectExistingHistoryMigrationBoundary(queryData);
-  if (racedBoundary.exists) {
-    if (!racedBoundary.readable) return false;
-    queryData.markHistoryMigrationCompleted();
-    return true;
-  }
-
-  if (!Object.keys(current).length) {
-    if (completeEmptyBoundary) queryData.markHistoryMigrationCompleted();
-    return true;
-  }
-
-  const entries = Object.entries(current)
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([key, item]) => [
-      key,
-      Number(item?.count || 0),
-      Number(item?.articleCount || 0),
-      Number(item?.searchCount || 0),
-      item?.firstSeen || "",
-      item?.lastSeen || ""
-    ]);
-
-  const baselineId = `legacy-local:${simpleStableHash(JSON.stringify(entries))}`;
-  setCompatibilityHistoryBaselinesMap({
-    [baselineId]: {
-      id: baselineId,
-      createdAt: new Date().toISOString(),
-      deviceId: "legacy-local",
-      records: current
-    }
-  });
-
-  queryData.markHistoryMigrationCompleted();
-  return true;
+function ensureHistoryMigration(options = {}) {
+  const coordinator = getQueryHistoryMigrationCoordinator();
+  if (!coordinator || typeof coordinator.ensureCompleted !== "function") return false;
+  return coordinator.ensureCompleted(options)?.status === "completed";
 }
 
 function rebuildVocabFromMergeData() {
@@ -5050,9 +4981,12 @@ async function importBackupFile(file, expectedType = "auto") {
     }, file);
     setCompatibilityHistoryBaselinesMap(importedBaselines);
     setCompatibilityQueryEventsMap({});
-    const queryData = window.LingoFlowLocalData.QueryData;
-    if (!queryData.hasHistoryMigrationState()) {
-      queryData.markHistoryMigrationCompleted();
+    if (!ensureHistoryMigration()) {
+      const error = new Error(
+        "Query History migration prerequisite could not be completed."
+      );
+      error.code = "query-history-migration-prerequisite-failed";
+      throw error;
     }
     rebuildVocabFromMergeData();
   }

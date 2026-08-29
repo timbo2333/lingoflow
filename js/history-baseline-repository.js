@@ -300,6 +300,56 @@
       : createRestoreResult("unchanged", incoming.id);
   }
 
+  function storeMigrationBaseline(value) {
+    const incoming = validateAndSnapshotBaseline(value);
+    const storageSnapshot = readBaselinesSnapshot();
+    const baselines = storageSnapshot.baselines;
+    const current = getOwnBaseline(baselines, incoming.id);
+
+    if (current) {
+      const classification = classifyBackupRestore(current, incoming);
+      assertStorageUnchanged(
+        storageSnapshot.raw,
+        "History Baseline 存储在 migration 写入检查期间发生变化。"
+      );
+      return {
+        status: classification.status,
+        historyBaselineId: incoming.id,
+        written: false,
+        conflictFields: classification.conflictFields.slice()
+      };
+    }
+
+    const existingHistoryBaselineIds = Object.keys(baselines).sort();
+    if (existingHistoryBaselineIds.length) {
+      assertStorageUnchanged(
+        storageSnapshot.raw,
+        "History Baseline 存储在 migration boundary 检查期间发生变化。"
+      );
+      return {
+        status: "boundary-exists",
+        historyBaselineId: incoming.id,
+        written: false,
+        conflictFields: [],
+        existingHistoryBaselineIds
+      };
+    }
+
+    defineDataProperty(baselines, incoming.id, incoming);
+    const serialized = serializeBaselines(baselines);
+    assertStorageUnchanged(
+      storageSnapshot.raw,
+      "History Baseline 存储在 migration 写入期间发生变化。"
+    );
+    writeSerializedBaselines(serialized);
+    return {
+      status: "stored",
+      historyBaselineId: incoming.id,
+      written: true,
+      conflictFields: []
+    };
+  }
+
   function assessBackupRestore(value) {
     let incoming;
     try {
@@ -510,6 +560,7 @@
     findRecordLocatorsByWord,
     removeRecordsByWord,
     clear,
+    storeMigrationBaseline,
     assessBackupRestore,
     restoreBackupRecords
   });

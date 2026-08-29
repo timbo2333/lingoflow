@@ -68,6 +68,7 @@ test("Repository API 冻结，missing storage 是合法空集合", async ({ page
         findRecordLocatorsByWord: typeof repository.findRecordLocatorsByWord,
         removeRecordsByWord: typeof repository.removeRecordsByWord,
         clear: typeof repository.clear,
+        storeMigrationBaseline: typeof repository.storeMigrationBaseline,
         assessBackupRestore: typeof repository.assessBackupRestore,
         restoreBackupRecords: typeof repository.restoreBackupRecords,
         updateBaseline: typeof repository.updateBaseline
@@ -86,11 +87,87 @@ test("Repository API 冻结，missing storage 是合法空集合", async ({ page
       findRecordLocatorsByWord: "function",
       removeRecordsByWord: "function",
       clear: "function",
+      storeMigrationBaseline: "function",
       assessBackupRestore: "function",
       restoreBackupRecords: "function",
       updateBaseline: "undefined"
     }
   });
+});
+
+test("storeMigrationBaseline 使用严格 migration-only create 边界", async ({ page }) => {
+  const first = makeBaseline("baseline:migration-store", {
+    records: {
+      "opaque/legacy": {
+        word: "apple",
+        count: 4,
+        futureCompatibilityFact: { sourceVersion: 1 }
+      }
+    }
+  });
+  const conflict = {
+    ...first,
+    records: {
+      "opaque/legacy": {
+        ...first.records["opaque/legacy"],
+        count: 5
+      }
+    }
+  };
+  const second = makeBaseline("baseline:second-migration");
+  const result = await page.evaluate(({ storageKey, migrationKey, firstRecord, conflictRecord, secondRecord }) => {
+    const repository = window.LingoFlowHistoryBaselineRepository;
+    localStorage.setItem(migrationKey, "opaque-control-state");
+    const stored = repository.storeMigrationBaseline(firstRecord);
+    firstRecord.records["opaque/legacy"].count = 99;
+    const unchanged = repository.storeMigrationBaseline(
+      JSON.parse(localStorage.getItem(storageKey))[stored.historyBaselineId]
+    );
+    const conflicted = repository.storeMigrationBaseline(conflictRecord);
+    const boundary = repository.storeMigrationBaseline(secondRecord);
+    return {
+      stored,
+      unchanged,
+      conflicted,
+      boundary,
+      baselines: repository.list(),
+      migrationState: localStorage.getItem(migrationKey)
+    };
+  }, {
+    storageKey: STORAGE_KEY,
+    migrationKey: MIGRATION_STATE_KEY,
+    firstRecord: first,
+    conflictRecord: conflict,
+    secondRecord: second
+  });
+
+  expect(result.stored).toEqual({
+    status: "stored",
+    historyBaselineId: first.id,
+    written: true,
+    conflictFields: []
+  });
+  expect(result.unchanged).toEqual({
+    status: "unchanged",
+    historyBaselineId: first.id,
+    written: false,
+    conflictFields: []
+  });
+  expect(result.conflicted).toMatchObject({
+    status: "conflict",
+    historyBaselineId: first.id,
+    written: false,
+    conflictFields: ["records"]
+  });
+  expect(result.boundary).toEqual({
+    status: "boundary-exists",
+    historyBaselineId: second.id,
+    written: false,
+    conflictFields: [],
+    existingHistoryBaselineIds: [first.id]
+  });
+  expect(result.baselines).toEqual([first]);
+  expect(result.migrationState).toBe("opaque-control-state");
 });
 
 test("malformed JSON、非法根结构和非法 Baseline 都严格失败且不覆盖原数据", async ({ page }) => {

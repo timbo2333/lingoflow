@@ -119,8 +119,10 @@ test("页面按依赖顺序加载 Query History Schema、Repository 与 Projecto
     const positions = Object.fromEntries([
       "/js/query-event-backup-schema.js",
       "/js/history-baseline-backup-schema.js",
+      "/js/local-data.js",
       "/js/query-event-repository.js",
       "/js/history-baseline-repository.js",
+      "/js/query-history-migration-coordinator.js",
       "/js/query-history-projector.js",
       "/js/main.js"
     ].map(path => [path, scripts.indexOf(path)]));
@@ -130,6 +132,8 @@ test("页面按依赖顺序加载 Query History Schema、Repository 与 Projecto
       globals: {
         queryRepository: typeof window.LingoFlowQueryEventRepository?.append,
         baselineRepository: typeof window.LingoFlowHistoryBaselineRepository?.list,
+        migrationCoordinator: typeof window.LingoFlowQueryHistoryMigrationCoordinator
+          ?.ensureCompleted,
         projector: typeof window.LingoFlowQueryHistoryProjector?.project
       },
       removedModernHelpers: {
@@ -143,6 +147,7 @@ test("页面按依赖顺序加载 Query History Schema、Repository 与 Projecto
   expect(result.globals).toEqual({
     queryRepository: "function",
     baselineRepository: "function",
+    migrationCoordinator: "function",
     projector: "function"
   });
   expect(result.removedModernHelpers).toEqual({
@@ -155,9 +160,16 @@ test("页面按依赖顺序加载 Query History Schema、Repository 与 Projecto
     .toBeLessThan(result.positions["/js/query-event-repository.js"]);
   expect(result.positions["/js/history-baseline-backup-schema.js"])
     .toBeLessThan(result.positions["/js/history-baseline-repository.js"]);
+  expect(result.positions["/js/local-data.js"])
+    .toBeLessThan(result.positions["/js/query-history-migration-coordinator.js"]);
+  expect(result.positions["/js/query-event-repository.js"])
+    .toBeLessThan(result.positions["/js/query-history-migration-coordinator.js"]);
+  expect(result.positions["/js/history-baseline-repository.js"])
+    .toBeLessThan(result.positions["/js/query-history-migration-coordinator.js"]);
   for (const dependency of [
     "/js/query-event-repository.js",
     "/js/history-baseline-repository.js",
+    "/js/query-history-migration-coordinator.js",
     "/js/query-history-projector.js"
   ]) {
     expect(result.positions[dependency]).toBeLessThan(result.positions["/js/main.js"]);
@@ -167,7 +179,9 @@ test("页面按依赖顺序加载 Query History Schema、Repository 与 Projecto
 test("首次查询先收口 Migration，再调用 append，并只由 Projector 生成 Vocab", async ({ page }) => {
   const result = await page.evaluate(migrationKey => {
     const originalEvents = window.LingoFlowQueryEventRepository;
+    const originalCoordinator = window.LingoFlowQueryHistoryMigrationCoordinator;
     const originalProjector = window.LingoFlowQueryHistoryProjector;
+    let migrationCalls = 0;
     let appendCalls = 0;
     let projectCalls = 0;
     let stateAtAppend = null;
@@ -178,6 +192,13 @@ test("首次查询先收口 Migration，再调用 append，并只由 Projector �
         appendCalls += 1;
         stateAtAppend = JSON.parse(localStorage.getItem(migrationKey) || "null");
         return originalEvents.append(...args);
+      }
+    });
+    window.LingoFlowQueryHistoryMigrationCoordinator = Object.freeze({
+      ...originalCoordinator,
+      ensureCompleted(...args) {
+        migrationCalls += 1;
+        return originalCoordinator.ensureCompleted(...args);
       }
     });
     window.LingoFlowQueryHistoryProjector = Object.freeze({
@@ -197,10 +218,12 @@ test("首次查询先收口 Migration，再调用 append，并只由 Projector �
       }, "article");
     } finally {
       window.LingoFlowQueryEventRepository = originalEvents;
+      window.LingoFlowQueryHistoryMigrationCoordinator = originalCoordinator;
       window.LingoFlowQueryHistoryProjector = originalProjector;
     }
 
     return {
+      migrationCalls,
       appendCalls,
       projectCalls,
       stateAtAppend,
@@ -211,6 +234,7 @@ test("首次查询先收口 Migration，再调用 append，并只由 Projector �
     };
   }, MIGRATION_STATE_KEY);
 
+  expect(result.migrationCalls).toBe(1);
   expect(result.appendCalls).toBe(1);
   expect(result.projectCalls).toBe(1);
   expect(result.stateAtAppend).toEqual(MIGRATION_COMPLETED);

@@ -26,15 +26,93 @@
     return data;
   }
 
-  function readJsonObjectStrict(key) {
-    const raw = localStorage.getItem(key);
-    if (raw === null) return {};
+  function createLocalDataError(code, message) {
+    const error = new Error(message);
+    error.code = code;
+    return error;
+  }
 
-    const value = JSON.parse(raw);
-    if (!value || typeof value !== "object" || Array.isArray(value)) {
-      throw new Error(`Stored value for ${key} must be a JSON object.`);
+  function isPlainObject(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+    const prototype = Object.getPrototypeOf(value);
+    return prototype === Object.prototype || prototype === null;
+  }
+
+  function readStorageValue(key, failureCode, label) {
+    try {
+      return localStorage.getItem(key);
+    } catch (error) {
+      throw createLocalDataError(
+        failureCode,
+        error?.message || `${label} storage read failed.`
+      );
     }
-    return value;
+  }
+
+  function parseStoredJson(raw, malformedCode, label) {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      throw createLocalDataError(malformedCode, `${label} storage is malformed JSON.`);
+    }
+  }
+
+  function readHistoryMigrationState() {
+    const raw = readStorageValue(
+      HISTORY_MIGRATION_STATE_KEY,
+      "history-migration-state-storage-read-failed",
+      "Query History migration state"
+    );
+    if (raw === null) return { status: "missing", state: null, raw: null };
+
+    const value = parseStoredJson(
+      raw,
+      "history-migration-state-malformed",
+      "Query History migration state"
+    );
+    const keys = isPlainObject(value) ? Object.keys(value).sort() : [];
+    if (!isPlainObject(value) ||
+        keys.length !== 2 ||
+        keys[0] !== "status" ||
+        keys[1] !== "version" ||
+        value.version !== HISTORY_MIGRATION_COMPLETED_STATE.version ||
+        value.status !== HISTORY_MIGRATION_COMPLETED_STATE.status) {
+      throw createLocalDataError(
+        "history-migration-state-invalid",
+        "Query History migration state has an unsupported shape or value."
+      );
+    }
+
+    return {
+      status: "completed",
+      state: {
+        version: HISTORY_MIGRATION_COMPLETED_STATE.version,
+        status: HISTORY_MIGRATION_COMPLETED_STATE.status
+      },
+      raw
+    };
+  }
+
+  function readVocabForHistoryMigration() {
+    const raw = readStorageValue(
+      VOCAB_STORAGE_KEY,
+      "history-migration-vocab-storage-read-failed",
+      "Legacy Vocab"
+    );
+    if (raw === null) return { status: "missing", vocab: {}, raw: null };
+
+    const value = parseStoredJson(
+      raw,
+      "history-migration-vocab-malformed",
+      "Legacy Vocab"
+    );
+    if (!isPlainObject(value)) {
+      throw createLocalDataError(
+        "history-migration-vocab-invalid-root",
+        "Legacy Vocab storage root must be a plain JSON object."
+      );
+    }
+    return { status: "present", vocab: value, raw };
   }
 
   function hasStoredJsonObjectEntries(key) {
@@ -116,19 +194,48 @@
       return hasStoredJsonObjectEntries(HISTORY_BASELINES_KEY);
     },
 
+    readHistoryMigrationState,
+
     hasHistoryMigrationState() {
-      return localStorage.getItem(HISTORY_MIGRATION_STATE_KEY) !== null;
+      return readHistoryMigrationState().status === "completed";
     },
 
     getVocabForHistoryMigration() {
-      return readJsonObjectStrict(VOCAB_STORAGE_KEY);
+      return readVocabForHistoryMigration().vocab;
     },
 
-    markHistoryMigrationCompleted() {
-      return writeJson(
-        HISTORY_MIGRATION_STATE_KEY,
-        HISTORY_MIGRATION_COMPLETED_STATE
-      );
+    readVocabForHistoryMigration,
+
+    markHistoryMigrationCompleted(expectedRaw) {
+      if (arguments.length > 0) {
+        const currentRaw = readStorageValue(
+          HISTORY_MIGRATION_STATE_KEY,
+          "history-migration-state-storage-read-failed",
+          "Query History migration state"
+        );
+        if (currentRaw !== expectedRaw) {
+          throw createLocalDataError(
+            "history-migration-state-storage-changed",
+            "Query History migration state changed before completion."
+          );
+        }
+      }
+
+      try {
+        localStorage.setItem(
+          HISTORY_MIGRATION_STATE_KEY,
+          JSON.stringify(HISTORY_MIGRATION_COMPLETED_STATE)
+        );
+      } catch (error) {
+        throw createLocalDataError(
+          "history-migration-state-storage-write-failed",
+          error?.message || "Query History migration state storage write failed."
+        );
+      }
+      return {
+        version: HISTORY_MIGRATION_COMPLETED_STATE.version,
+        status: HISTORY_MIGRATION_COMPLETED_STATE.status
+      };
     },
 
     clearHistory() {

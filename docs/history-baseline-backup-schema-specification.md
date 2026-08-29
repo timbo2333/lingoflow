@@ -224,15 +224,18 @@ Schema validation 可以验证两个集合各自的字段结构，但不能从�
 
 以下顺序发生在 Backup 输入已经通过 Envelope、各 Entity Schema，以及所有不依赖迁移后本地事实快照的输入预检与关系检查之后；它不授权无效输入触发本地迁移写入。安全顺序为：
 
-1. 在取得供本轮所有 Query History Domain Assessment 使用的稳定本地事实快照之前，并在首次写入来自 Backup 输入的 QueryEvent 或 History Baseline facts 之前，先处理当前本地尚未完成的 legacy migration boundary。若该边界无法安全完成，不得继续 Query History Restore，也不得提前标记 migration completed。
-2. Restore QueryEvent facts。
-3. Restore History Baseline facts。
-4. 在事实恢复成功并达到可用状态后，收口本地 Migration State，防止恢复出来的 facts 或随后重建的 Vocab 再次被当成 legacy 数据迁移。
-5. 最后根据 QueryEvent 与 History Baseline facts 重建 Vocab。
+1. 在取得供本轮所有 Query History Domain Assessment 使用的稳定本地事实快照之前，先处理当前本地尚未完成的 legacy migration prerequisite，安全保存需要保留的本地 legacy facts。若该 prerequisite 无法安全准备，不得继续 Query History Restore，也不得提前标记 migration completed。
+2. 重新取得迁移后的稳定本地事实 snapshot，并完成本轮所有 Backup Domain Assessment。
+3. 只有全部 Domain Assessment 已达到可执行状态，且尚未写入任何来自 Backup 输入的 Query History fact 时，才收口本地 Migration State。第一笔 QueryEvent 或 History Baseline Backup fact 写入前，Migration State 必须已经处于安全 completed 状态。
+4. Restore QueryEvent facts。
+5. Restore History Baseline facts。
+6. 最后根据 QueryEvent 与 History Baseline facts 重建 Vocab。
 
-步骤 1 是独立的本地 migration prerequisite，不是从 Backup 输入恢复实体。它可以在 Restore 开始前由本地迁移流程完成；若协调层发现它尚未完成，则必须先安全完成该前置边界或停止 Query History Restore。该本地前置流程即使建立 Migration Baseline 或写入本地 Migration State，也不得被报告为 Backup 输入的部分恢复结果。
+步骤 1 是独立的本地 migration prerequisite，不是从 Backup 输入恢复实体。它可以在 Restore 开始前由本地迁移流程完整完成；若协调层发现它尚未完成，则必须先安全准备该前置边界或停止 Query History Restore。作为本轮 Restore 的 prerequisite，步骤 1 可以建立 Migration Baseline，但本轮对 Migration State 的收口必须等待步骤 3。无论该本地流程何时建立 Baseline 或收口 State，都不得被报告为 Backup 输入的部分恢复结果。
 
-步骤 2 和步骤 3 的首次 Backup 输入写入只能发生在步骤 1 之后取得稳定本地事实快照，并完成本轮所有剩余输入预检、跨实体关系检查和 Domain Assessment 之后。上述顺序定义安全边界，不规定具体 Repository API 或存储协议。
+步骤 4 和步骤 5 的首次 Backup 输入写入只能发生在步骤 1 之后取得稳定本地事实快照、完成本轮所有剩余输入预检、跨实体关系检查和 Domain Assessment，并按步骤 3 安全收口 Migration State 之后。上述顺序定义安全边界，不规定具体 Repository API 或存储协议。
+
+一旦步骤 3 已安全完成，后续 Backup fact Restore 即使发生 partial 或 interrupted，也不得重新打开 migration boundary；否则已经写入的现代 facts 或由其重建的 Vocab 可能再次被误识别为 legacy history。
 
 Restore 明确禁止：
 
