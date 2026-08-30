@@ -37,6 +37,22 @@
       : null;
   }
 
+  function getQueryEventBackupExport() {
+    const queryEventExport = window.LingoFlowQueryEventBackupExport;
+    return queryEventExport &&
+      typeof queryEventExport.exportQueryEvents === "function"
+      ? queryEventExport
+      : null;
+  }
+
+  function getHistoryBaselineBackupExport() {
+    const historyBaselineExport = window.LingoFlowHistoryBaselineBackupExport;
+    return historyBaselineExport &&
+      typeof historyBaselineExport.exportHistoryBaselines === "function"
+      ? historyBaselineExport
+      : null;
+  }
+
   function getReadyCollection(result, entity) {
     if (!result || result.status !== "ready" ||
         !result.payload || !Array.isArray(result.payload[entity])) {
@@ -127,6 +143,8 @@
     }
 
     let learningExport;
+    let queryEventExport;
+    let historyBaselineExport;
     let firstSnapshot;
     try {
       firstSnapshot = {
@@ -159,6 +177,45 @@
         return { status: "failed", payload: null };
       }
       firstSnapshot.favoriteLearningStates = cloneCollection(exportedLearningStates);
+
+      queryEventExport = getQueryEventBackupExport();
+      if (!queryEventExport) {
+        return { status: "failed", payload: null };
+      }
+      const queryEventResult = await queryEventExport.exportQueryEvents();
+      if (queryEventResult?.status === "rejected" ||
+          queryEventResult?.status === "failed") {
+        return { status: queryEventResult.status, payload: null };
+      }
+      const exportedQueryEvents = getReadyCollection(
+        queryEventResult,
+        "queryEvents"
+      );
+      if (!exportedQueryEvents) {
+        return { status: "failed", payload: null };
+      }
+      firstSnapshot.queryEvents = cloneCollection(exportedQueryEvents);
+
+      historyBaselineExport = getHistoryBaselineBackupExport();
+      if (!historyBaselineExport) {
+        return { status: "failed", payload: null };
+      }
+      const historyBaselineResult = await historyBaselineExport
+        .exportHistoryBaselines();
+      if (historyBaselineResult?.status === "rejected" ||
+          historyBaselineResult?.status === "failed") {
+        return { status: historyBaselineResult.status, payload: null };
+      }
+      const exportedHistoryBaselines = getReadyCollection(
+        historyBaselineResult,
+        "historyBaselines"
+      );
+      if (!exportedHistoryBaselines) {
+        return { status: "failed", payload: null };
+      }
+      firstSnapshot.historyBaselines = cloneCollection(
+        exportedHistoryBaselines
+      );
     } catch (error) {
       return { status: "failed", payload: null };
     }
@@ -207,6 +264,32 @@
         verifiedLearningStates
       );
 
+      const queryEventVerification = await queryEventExport.exportQueryEvents();
+      const verifiedQueryEvents = getReadyCollection(
+        queryEventVerification,
+        "queryEvents"
+      );
+      if (!verifiedQueryEvents) {
+        return createSnapshotReadFailure(queryEventVerification, "queryEvents");
+      }
+      verificationSnapshot.queryEvents = cloneCollection(verifiedQueryEvents);
+
+      const historyBaselineVerification = await historyBaselineExport
+        .exportHistoryBaselines();
+      const verifiedHistoryBaselines = getReadyCollection(
+        historyBaselineVerification,
+        "historyBaselines"
+      );
+      if (!verifiedHistoryBaselines) {
+        return createSnapshotReadFailure(
+          historyBaselineVerification,
+          "historyBaselines"
+        );
+      }
+      verificationSnapshot.historyBaselines = cloneCollection(
+        verifiedHistoryBaselines
+      );
+
       const snapshotMatches = collectionsMatch(
         firstSnapshot.articles,
         verificationSnapshot.articles
@@ -216,6 +299,12 @@
       ) && collectionsMatch(
         firstSnapshot.favoriteLearningStates,
         verificationSnapshot.favoriteLearningStates
+      ) && collectionsMatch(
+        firstSnapshot.queryEvents,
+        verificationSnapshot.queryEvents
+      ) && collectionsMatch(
+        firstSnapshot.historyBaselines,
+        verificationSnapshot.historyBaselines
       );
       if (!snapshotMatches) {
         return {
@@ -241,7 +330,9 @@
       const result = envelope.buildEnvelope({
         articles: firstSnapshot.articles,
         favorites: firstSnapshot.favorites,
-        favoriteLearningStates: firstSnapshot.favoriteLearningStates
+        favoriteLearningStates: firstSnapshot.favoriteLearningStates,
+        queryEvents: firstSnapshot.queryEvents,
+        historyBaselines: firstSnapshot.historyBaselines
       });
       if (result?.status === "rejected") {
         return { status: "rejected", payload: null };

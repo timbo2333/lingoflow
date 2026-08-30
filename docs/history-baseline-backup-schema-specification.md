@@ -235,6 +235,8 @@ Schema validation 可以验证两个集合各自的字段结构，但不能从�
 
 步骤 4 和步骤 5 的首次 Backup 输入写入只能发生在步骤 1 之后取得稳定本地事实快照、完成本轮所有剩余输入预检、跨实体关系检查和 Domain Assessment，并按步骤 3 安全收口 Migration State 之后。上述顺序定义安全边界，不规定具体 Repository API 或存储协议。
 
+若步骤 1 已建立 Migration Baseline，但步骤 3 尚未安全完成，且尚未写入任何来自 Backup 输入的 QueryEvent 或 History Baseline fact，则不得开始步骤 6。此时原 legacy Vocab 可以继续作为未完成 migration 的来源快照保留；prerequisite、Domain Assessment 或 Migration State 收口失败均不得触发 derived Vocab rebuild。该边界保留 Migration Baseline 与其来源 legacy Vocab 的严格一致性检查，使后续重试可以继续安全收口，而不把未完成 migration 的本地副作用误报为 Backup 恢复结果。
+
 一旦步骤 3 已安全完成，后续 Backup fact Restore 即使发生 partial 或 interrupted，也不得重新打开 migration boundary；否则已经写入的现代 facts 或由其重建的 Vocab 可能再次被误识别为 legacy history。
 
 Restore 明确禁止：

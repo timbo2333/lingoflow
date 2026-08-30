@@ -101,7 +101,9 @@ test("buildEnvelope 为传入的已注册实体生成完全对应的 schema 声�
   const data = {
     articles: [],
     favorites: [{ id: "favorite:envelope-container" }],
-    favoriteLearningStates: [{ favoriteId: "favorite:envelope-container" }]
+    favoriteLearningStates: [{ favoriteId: "favorite:envelope-container" }],
+    queryEvents: [{ id: "query-event:envelope-container" }],
+    historyBaselines: [{ id: "history-baseline:envelope-container" }]
   };
   const result = await page.evaluate(incoming => (
     window.LingoFlowBackupV2Envelope.buildEnvelope(incoming)
@@ -111,7 +113,9 @@ test("buildEnvelope 为传入的已注册实体生成完全对应的 schema 声�
   expect(result.envelope.schema).toEqual({
     articles: "1",
     favorites: "1",
-    favoriteLearningStates: "1"
+    favoriteLearningStates: "1",
+    queryEvents: "1",
+    historyBaselines: "1"
   });
   expect(result.envelope.data).toEqual(data);
 });
@@ -303,19 +307,23 @@ test("Envelope 接受全部已注册实体，并明确拒绝未注册实体", as
       schema: {
         articles: "1",
         favorites: "1",
-        favoriteLearningStates: "1"
+        favoriteLearningStates: "1",
+        queryEvents: "1",
+        historyBaselines: "1"
       },
       data: {
         articles: [],
         favorites: [],
-        favoriteLearningStates: []
+        favoriteLearningStates: [],
+        queryEvents: [],
+        historyBaselines: []
       }
     };
     const unsupported = {
       format: { name: "LingoFlow Backup", version: 2 },
       metadata: {},
-      schema: { articles: "1", queryEvents: "1" },
-      data: { articles: [], queryEvents: [] }
+      schema: { articles: "1", vocab: "1" },
+      data: { articles: [], vocab: [] }
     };
     return {
       registered: window.LingoFlowBackupV2Envelope.validateEnvelope(registered),
@@ -330,8 +338,8 @@ test("Envelope 接受全部已注册实体，并明确拒绝未注册实体", as
   expect(result.unsupported.status).toBe("rejected");
   expect(result.unsupported.errors).toContainEqual({
     code: "unsupported-entity",
-    path: "data.queryEvents",
-    entity: "queryEvents"
+    path: "data.vocab",
+    entity: "vocab"
   });
   expect(result.schemaCalls).toBe(0);
   expect(result.libraryCalls).toBe(0);
@@ -368,6 +376,16 @@ test("Envelope 要求每个已注册实体的 schema 与 data key 一一对应",
         ...base,
         schema: { articles: "1" },
         data: { articles: [], favoriteLearningStates: [] }
+      }),
+      missingQueryEventData: window.LingoFlowBackupV2Envelope.validateEnvelope({
+        ...base,
+        schema: { articles: "1", queryEvents: "1" },
+        data: { articles: [] }
+      }),
+      missingBaselineSchema: window.LingoFlowBackupV2Envelope.validateEnvelope({
+        ...base,
+        schema: { articles: "1" },
+        data: { articles: [], historyBaselines: [] }
       })
     };
   });
@@ -382,6 +400,74 @@ test("Envelope 要求每个已注册实体的 schema 与 data key 一一对应",
     path: "schema.favoriteLearningStates",
     entity: "favoriteLearningStates"
   });
+  expect(result.missingQueryEventData.errors).toContainEqual({
+    code: "missing-data",
+    path: "data.queryEvents",
+    entity: "queryEvents"
+  });
+  expect(result.missingBaselineSchema.errors).toContainEqual({
+    code: "missing-schema",
+    path: "schema.historyBaselines",
+    entity: "historyBaselines"
+  });
+});
+
+test("Envelope 保持 Article-only 与现有三实体 Envelope 合法", async ({ page }) => {
+  const result = await page.evaluate(() => {
+    const base = {
+      format: { name: "LingoFlow Backup", version: 2 },
+      metadata: {}
+    };
+    return {
+      articleOnly: window.LingoFlowBackupV2Envelope.validateEnvelope({
+        ...base,
+        schema: { articles: "1" },
+        data: { articles: [] }
+      }),
+      existingThree: window.LingoFlowBackupV2Envelope.validateEnvelope({
+        ...base,
+        schema: {
+          articles: "1",
+          favorites: "1",
+          favoriteLearningStates: "1"
+        },
+        data: {
+          articles: [],
+          favorites: [],
+          favoriteLearningStates: []
+        }
+      })
+    };
+  });
+
+  expect(result.articleOnly.status).toBe("valid");
+  expect(result.existingThree.status).toBe("valid");
+});
+
+test("Envelope 明确拒绝 Vocab、Migration State 和其他未知实体", async ({ page }) => {
+  const result = await page.evaluate(() => {
+    const validateEntity = entity => window.LingoFlowBackupV2Envelope.validateEnvelope({
+      format: { name: "LingoFlow Backup", version: 2 },
+      metadata: {},
+      schema: { articles: "1", [entity]: "1" },
+      data: { articles: [], [entity]: [] }
+    });
+    return {
+      vocab: validateEntity("vocab"),
+      migrationState: validateEntity("migrationState"),
+      unknown: validateEntity("futureEntity")
+    };
+  });
+
+  for (const [entity, validation] of Object.entries(result)) {
+    const expectedEntity = entity === "unknown" ? "futureEntity" : entity;
+    expect(validation.status).toBe("rejected");
+    expect(validation.errors).toContainEqual({
+      code: "unsupported-entity",
+      path: `data.${expectedEntity}`,
+      entity: expectedEntity
+    });
+  }
 });
 
 test("Envelope 拒绝访问器、Symbol 和循环数据且不执行 getter", async ({ page }) => {
@@ -481,7 +567,7 @@ test("buildEnvelope 拒绝无效或未支持的数据集合", async ({ page }) =
     invalid: window.LingoFlowBackupV2Envelope.buildEnvelope({ articles: {} }),
     unsupported: window.LingoFlowBackupV2Envelope.buildEnvelope({
       articles: [],
-      queryEvents: []
+      vocab: []
     })
   }));
 
@@ -493,8 +579,8 @@ test("buildEnvelope 拒绝无效或未支持的数据集合", async ({ page }) =
   });
   expect(result.unsupported.errors).toContainEqual({
     code: "unsupported-entity",
-    path: "data.queryEvents",
-    entity: "queryEvents"
+    path: "data.vocab",
+    entity: "vocab"
   });
 });
 

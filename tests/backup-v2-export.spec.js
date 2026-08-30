@@ -131,19 +131,23 @@ test("exportBackup 将全部已注册实体导出结果封装为完整 Backup En
       schema: {
         articles: "1",
         favorites: "1",
-        favoriteLearningStates: "1"
+        favoriteLearningStates: "1",
+        queryEvents: "1",
+        historyBaselines: "1"
       },
       data: {
         articles: [article],
         favorites: [],
-        favoriteLearningStates: []
+        favoriteLearningStates: [],
+        queryEvents: [],
+        historyBaselines: []
       }
     }
   });
   expect(result.validation?.status).toBe("valid");
 });
 
-test("exportBackup 按 Article、Favorite、Learning 顺序成功后才构建 Envelope", async ({ page }) => {
+test("exportBackup 按五实体固定顺序成功后才构建 Envelope", async ({ page }) => {
   const result = await page.evaluate(async () => {
     const calls = [];
     window.LingoFlowArticleLibrary = Object.freeze({
@@ -170,6 +174,18 @@ test("exportBackup 按 Article、Favorite、Learning 顺序成功后才构建 En
         };
       }
     });
+    window.LingoFlowQueryEventBackupExport = Object.freeze({
+      exportQueryEvents: async () => {
+        calls.push(["queryEvents"]);
+        return { status: "ready", payload: { queryEvents: [] } };
+      }
+    });
+    window.LingoFlowHistoryBaselineBackupExport = Object.freeze({
+      exportHistoryBaselines: async () => {
+        calls.push(["historyBaselines"]);
+        return { status: "ready", payload: { historyBaselines: [] } };
+      }
+    });
     window.LingoFlowBackupV2Envelope = Object.freeze({
       buildEnvelope: data => {
         calls.push(["envelope", Object.keys(data)]);
@@ -189,7 +205,9 @@ test("exportBackup 按 Article、Favorite、Learning 顺序成功后才构建 En
       data: {
         articles: [],
         favorites: [],
-        favoriteLearningStates: []
+        favoriteLearningStates: [],
+        queryEvents: [],
+        historyBaselines: []
       }
     }
   });
@@ -197,11 +215,295 @@ test("exportBackup 按 Article、Favorite、Learning 顺序成功后才构建 En
     ["articles", { includeDeleted: true }],
     ["favorites"],
     ["favoriteLearningStates"],
+    ["queryEvents"],
+    ["historyBaselines"],
     ["articles", { includeDeleted: true }],
     ["favorites"],
     ["favoriteLearningStates"],
-    ["envelope", ["articles", "favorites", "favoriteLearningStates"]]
+    ["queryEvents"],
+    ["historyBaselines"],
+    ["envelope", [
+      "articles",
+      "favorites",
+      "favoriteLearningStates",
+      "queryEvents",
+      "historyBaselines"
+    ]]
   ]);
+});
+
+test("exportBackup 对五实体第二轮仅 collection 重排保持 ready", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    const collections = {
+      articles: [
+        { id: "article:order-a", marker: "a" },
+        { id: "article:order-b", marker: "b" }
+      ],
+      favorites: [
+        { id: "favorite:order-a", marker: "a" },
+        { id: "favorite:order-b", marker: "b" }
+      ],
+      favoriteLearningStates: [
+        { favoriteId: "favorite:order-a", marker: "a" },
+        { favoriteId: "favorite:order-b", marker: "b" }
+      ],
+      queryEvents: [
+        { id: "query-event:order-a", marker: "a" },
+        { id: "query-event:order-b", marker: "b" }
+      ],
+      historyBaselines: [
+        { id: "history-baseline:order-a", marker: "a" },
+        { id: "history-baseline:order-b", marker: "b" }
+      ]
+    };
+    const calls = {
+      articles: 0,
+      favorites: 0,
+      favoriteLearningStates: 0,
+      queryEvents: 0,
+      historyBaselines: 0,
+      envelope: 0
+    };
+    const readCollection = entity => {
+      calls[entity] += 1;
+      const records = calls[entity] === 1
+        ? collections[entity]
+        : collections[entity].slice().reverse();
+      return structuredClone(records);
+    };
+
+    window.LingoFlowArticleLibrary = Object.freeze({
+      listArticles: async () => readCollection("articles")
+    });
+    window.LingoFlowBackupV2Schema = Object.freeze({
+      validateArticles: articles => ({ status: "valid", articles })
+    });
+    window.LingoFlowFavoriteBackupExport = Object.freeze({
+      exportFavorites: async () => ({
+        status: "ready",
+        payload: { favorites: readCollection("favorites") }
+      })
+    });
+    window.LingoFlowFavoriteLearningBackupExport = Object.freeze({
+      exportFavoriteLearningStates: async () => ({
+        status: "ready",
+        payload: {
+          favoriteLearningStates: readCollection("favoriteLearningStates")
+        }
+      })
+    });
+    window.LingoFlowQueryEventBackupExport = Object.freeze({
+      exportQueryEvents: async () => ({
+        status: "ready",
+        payload: { queryEvents: readCollection("queryEvents") }
+      })
+    });
+    window.LingoFlowHistoryBaselineBackupExport = Object.freeze({
+      exportHistoryBaselines: async () => ({
+        status: "ready",
+        payload: { historyBaselines: readCollection("historyBaselines") }
+      })
+    });
+    window.LingoFlowBackupV2Envelope = Object.freeze({
+      buildEnvelope: data => {
+        calls.envelope += 1;
+        return { status: "ready", envelope: { data } };
+      }
+    });
+
+    return {
+      exported: await window.LingoFlowBackupV2Export.exportBackup(),
+      calls,
+      collections
+    };
+  });
+
+  expect(result.exported).toEqual({
+    status: "ready",
+    payload: { data: result.collections }
+  });
+  expect(result.calls).toEqual({
+    articles: 2,
+    favorites: 2,
+    favoriteLearningStates: 2,
+    queryEvents: 2,
+    historyBaselines: 2,
+    envelope: 1
+  });
+});
+
+for (const changingEntity of ["queryEvents", "historyBaselines"]) {
+  test(`exportBackup 检测 ${changingEntity} 两轮读取变化且不生成 Envelope`, async ({ page }) => {
+    const result = await page.evaluate(async entity => {
+      let queryCalls = 0;
+      let baselineCalls = 0;
+      let envelopeCalls = 0;
+      const firstQueryEvents = [{ id: "query-event:first", marker: "first" }];
+      const secondQueryEvents = entity === "queryEvents"
+        ? [{ id: "query-event:first", marker: "second" }]
+        : structuredClone(firstQueryEvents);
+      const firstBaselines = [{ id: "history-baseline:first", marker: "first" }];
+      const secondBaselines = entity === "historyBaselines"
+        ? [{ id: "history-baseline:first", marker: "second" }]
+        : structuredClone(firstBaselines);
+      const before = structuredClone({
+        firstQueryEvents,
+        secondQueryEvents,
+        firstBaselines,
+        secondBaselines
+      });
+
+      window.LingoFlowArticleLibrary = Object.freeze({
+        listArticles: async () => []
+      });
+      window.LingoFlowBackupV2Schema = Object.freeze({
+        validateArticles: articles => ({ status: "valid", articles })
+      });
+      window.LingoFlowFavoriteBackupExport = Object.freeze({
+        exportFavorites: async () => ({
+          status: "ready",
+          payload: { favorites: [] }
+        })
+      });
+      window.LingoFlowFavoriteLearningBackupExport = Object.freeze({
+        exportFavoriteLearningStates: async () => ({
+          status: "ready",
+          payload: { favoriteLearningStates: [] }
+        })
+      });
+      window.LingoFlowQueryEventBackupExport = Object.freeze({
+        exportQueryEvents: async () => {
+          queryCalls += 1;
+          return {
+            status: "ready",
+            payload: {
+              queryEvents: queryCalls === 1
+                ? firstQueryEvents
+                : secondQueryEvents
+            }
+          };
+        }
+      });
+      window.LingoFlowHistoryBaselineBackupExport = Object.freeze({
+        exportHistoryBaselines: async () => {
+          baselineCalls += 1;
+          return {
+            status: "ready",
+            payload: {
+              historyBaselines: baselineCalls === 1
+                ? firstBaselines
+                : secondBaselines
+            }
+          };
+        }
+      });
+      window.LingoFlowBackupV2Envelope = Object.freeze({
+        buildEnvelope: () => {
+          envelopeCalls += 1;
+          return { status: "ready", envelope: {} };
+        }
+      });
+
+      const exported = await window.LingoFlowBackupV2Export.exportBackup();
+      return {
+        exported,
+        queryCalls,
+        baselineCalls,
+        envelopeCalls,
+        before,
+        after: {
+          firstQueryEvents,
+          secondQueryEvents,
+          firstBaselines,
+          secondBaselines
+        }
+      };
+    }, changingEntity);
+
+    expect(result.exported).toEqual({
+      status: "rejected",
+      payload: null,
+      reason: "inconsistent-export-snapshot"
+    });
+    expect(result.queryCalls).toBe(2);
+    expect(result.baselineCalls).toBe(2);
+    expect(result.envelopeCalls).toBe(0);
+    expect(result.after).toEqual(result.before);
+  });
+}
+
+test("exportBackup 检测 History Baseline locator 变化", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    let baselineCalls = 0;
+    let envelopeCalls = 0;
+    const record = { word: "apple", count: 2 };
+    const firstBaselines = [{
+      id: "history-baseline:locator-change",
+      records: { "legacy-locator:first": structuredClone(record) }
+    }];
+    const secondBaselines = [{
+      id: "history-baseline:locator-change",
+      records: { "legacy-locator:second": structuredClone(record) }
+    }];
+
+    window.LingoFlowArticleLibrary = Object.freeze({
+      listArticles: async () => []
+    });
+    window.LingoFlowBackupV2Schema = Object.freeze({
+      validateArticles: articles => ({ status: "valid", articles })
+    });
+    window.LingoFlowFavoriteBackupExport = Object.freeze({
+      exportFavorites: async () => ({
+        status: "ready",
+        payload: { favorites: [] }
+      })
+    });
+    window.LingoFlowFavoriteLearningBackupExport = Object.freeze({
+      exportFavoriteLearningStates: async () => ({
+        status: "ready",
+        payload: { favoriteLearningStates: [] }
+      })
+    });
+    window.LingoFlowQueryEventBackupExport = Object.freeze({
+      exportQueryEvents: async () => ({
+        status: "ready",
+        payload: { queryEvents: [] }
+      })
+    });
+    window.LingoFlowHistoryBaselineBackupExport = Object.freeze({
+      exportHistoryBaselines: async () => {
+        baselineCalls += 1;
+        return {
+          status: "ready",
+          payload: {
+            historyBaselines: baselineCalls === 1
+              ? firstBaselines
+              : secondBaselines
+          }
+        };
+      }
+    });
+    window.LingoFlowBackupV2Envelope = Object.freeze({
+      buildEnvelope: () => {
+        envelopeCalls += 1;
+        return { status: "ready", envelope: {} };
+      }
+    });
+
+    return {
+      exported: await window.LingoFlowBackupV2Export.exportBackup(),
+      baselineCalls,
+      envelopeCalls
+    };
+  });
+
+  expect(result.exported).toEqual({
+    status: "rejected",
+    payload: null,
+    reason: "inconsistent-export-snapshot"
+  });
+  expect(result.baselineCalls).toBe(2);
+  expect(result.envelopeCalls).toBe(0);
 });
 
 test("exportBackup 拒绝无法解析到同次导出 Favorite 的 Learning State", async ({ page }) => {
@@ -394,6 +696,71 @@ test("exportBackup 在任一实体导出失败时不构建部分 Envelope", asyn
   expect(result.learningFailed).toEqual({ status: "failed", payload: null });
   expect(result.favoriteCalls).toBe(1);
   expect(result.learningCalls).toBe(1);
+  expect(result.envelopeCalls).toBe(0);
+});
+
+test("exportBackup 在 QueryEvent rejected 或 Baseline throw 时不构建部分 Envelope", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    let envelopeCalls = 0;
+
+    const installSuccessfulDependencies = () => {
+      window.LingoFlowArticleLibrary = Object.freeze({
+        listArticles: async () => []
+      });
+      window.LingoFlowBackupV2Schema = Object.freeze({
+        validateArticles: articles => ({ status: "valid", articles })
+      });
+      window.LingoFlowFavoriteBackupExport = Object.freeze({
+        exportFavorites: async () => ({
+          status: "ready",
+          payload: { favorites: [] }
+        })
+      });
+      window.LingoFlowFavoriteLearningBackupExport = Object.freeze({
+        exportFavoriteLearningStates: async () => ({
+          status: "ready",
+          payload: { favoriteLearningStates: [] }
+        })
+      });
+      window.LingoFlowQueryEventBackupExport = Object.freeze({
+        exportQueryEvents: async () => ({
+          status: "ready",
+          payload: { queryEvents: [] }
+        })
+      });
+      window.LingoFlowHistoryBaselineBackupExport = Object.freeze({
+        exportHistoryBaselines: async () => ({
+          status: "ready",
+          payload: { historyBaselines: [] }
+        })
+      });
+      window.LingoFlowBackupV2Envelope = Object.freeze({
+        buildEnvelope: () => {
+          envelopeCalls += 1;
+          return { status: "ready", envelope: {} };
+        }
+      });
+    };
+
+    installSuccessfulDependencies();
+    window.LingoFlowQueryEventBackupExport = Object.freeze({
+      exportQueryEvents: async () => ({ status: "rejected", payload: null })
+    });
+    const queryRejected = await window.LingoFlowBackupV2Export.exportBackup();
+
+    installSuccessfulDependencies();
+    window.LingoFlowHistoryBaselineBackupExport = Object.freeze({
+      exportHistoryBaselines: async () => {
+        throw new Error("baseline export failed");
+      }
+    });
+    const baselineThrown = await window.LingoFlowBackupV2Export.exportBackup();
+
+    return { queryRejected, baselineThrown, envelopeCalls };
+  });
+
+  expect(result.queryRejected).toEqual({ status: "rejected", payload: null });
+  expect(result.baselineThrown).toEqual({ status: "failed", payload: null });
   expect(result.envelopeCalls).toBe(0);
 });
 

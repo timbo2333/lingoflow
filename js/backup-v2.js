@@ -10,8 +10,21 @@
   const ENTITY_ORDER = [
     "articles",
     "favorites",
-    "favoriteLearningStates"
+    "favoriteLearningStates",
+    "queryEvents",
+    "historyBaselines"
   ];
+  const QUERY_HISTORY_ENTITIES = new Set([
+    "queryEvents",
+    "historyBaselines"
+  ]);
+  const ENTITY_IDENTITY_FIELDS = Object.freeze({
+    articles: "articleId",
+    favorites: "favoriteId",
+    favoriteLearningStates: "favoriteId",
+    queryEvents: "queryEventId",
+    historyBaselines: "historyBaselineId"
+  });
   const BATCH_RESTORE_STATUSES = new Set([
     "completed",
     "completed-with-conflicts",
@@ -58,6 +71,10 @@
         ? { conflictingArticleId: details.conflictingArticleId }
         : {}),
       ...(details.favoriteId ? { favoriteId: details.favoriteId } : {}),
+      ...(details.queryEventId ? { queryEventId: details.queryEventId } : {}),
+      ...(details.historyBaselineId
+        ? { historyBaselineId: details.historyBaselineId }
+        : {}),
       ...(details.entity ? { entity: details.entity } : {}),
       ...(details.message ? { message: details.message } : {})
     };
@@ -77,6 +94,54 @@
         })
       };
     }
+  }
+
+  function createJsonSnapshot(value, ancestors = new WeakSet()) {
+    if (value === null || ["string", "boolean"].includes(typeof value)) return value;
+    if (typeof value === "number") {
+      if (Number.isFinite(value)) return value;
+      throw new TypeError("Backup input contains a non-finite number.");
+    }
+    if (typeof value !== "object") {
+      throw new TypeError("Backup input is not JSON-safe.");
+    }
+
+    const isArray = Array.isArray(value);
+    const prototype = Object.getPrototypeOf(value);
+    if (!isArray && prototype !== Object.prototype && prototype !== null) {
+      throw new TypeError("Backup input contains a non-plain object.");
+    }
+    if (ancestors.has(value)) throw new TypeError("Backup input contains a cycle.");
+    ancestors.add(value);
+
+    const target = isArray ? new Array(value.length) : {};
+    const expectedIndexes = isArray
+      ? new Set(Array.from({ length: value.length }, (_, index) => String(index)))
+      : null;
+    for (const key of Reflect.ownKeys(value)) {
+      if (isArray && key === "length") continue;
+      if (typeof key !== "string" || (isArray && !expectedIndexes.has(key))) {
+        ancestors.delete(value);
+        throw new TypeError("Backup input contains an invalid property.");
+      }
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (!descriptor ||
+          !descriptor.enumerable ||
+          !Object.prototype.hasOwnProperty.call(descriptor, "value")) {
+        ancestors.delete(value);
+        throw new TypeError("Backup input contains an accessor or hidden property.");
+      }
+      Object.defineProperty(target, key, {
+        configurable: true,
+        enumerable: true,
+        writable: true,
+        value: createJsonSnapshot(descriptor.value, ancestors)
+      });
+      if (expectedIndexes) expectedIndexes.delete(key);
+    }
+    ancestors.delete(value);
+    if (expectedIndexes?.size) throw new TypeError("Backup input contains a sparse array.");
+    return target;
   }
 
   function validateBatchStructure(batch) {
@@ -195,6 +260,20 @@
       : null;
   }
 
+  function getQueryEventBackupSchema() {
+    const schema = window.LingoFlowQueryEventBackupSchema;
+    return schema && typeof schema.validateQueryEvents === "function"
+      ? schema
+      : null;
+  }
+
+  function getHistoryBaselineBackupSchema() {
+    const schema = window.LingoFlowHistoryBaselineBackupSchema;
+    return schema && typeof schema.validateHistoryBaselines === "function"
+      ? schema
+      : null;
+  }
+
   function getFavoriteRepository() {
     const repository = window.LingoFlowFavoriteRepository;
     return repository && typeof repository === "object"
@@ -208,6 +287,49 @@
       typeof repository.assessBackupRestore === "function" &&
       typeof repository.restoreBackupRecords === "function"
       ? repository
+      : null;
+  }
+
+  function getQueryEventRepository() {
+    const repository = window.LingoFlowQueryEventRepository;
+    return repository &&
+      typeof repository.list === "function" &&
+      typeof repository.assessBackupRestore === "function" &&
+      typeof repository.restoreBackupRecords === "function"
+      ? repository
+      : null;
+  }
+
+  function getHistoryBaselineRepository() {
+    const repository = window.LingoFlowHistoryBaselineRepository;
+    return repository &&
+      typeof repository.list === "function" &&
+      typeof repository.assessBackupRestore === "function" &&
+      typeof repository.restoreBackupRecords === "function"
+      ? repository
+      : null;
+  }
+
+  function getQueryHistoryMigrationCoordinator() {
+    const coordinator = window.LingoFlowQueryHistoryMigrationCoordinator;
+    return coordinator &&
+      typeof coordinator.prepare === "function" &&
+      typeof coordinator.finalize === "function"
+      ? coordinator
+      : null;
+  }
+
+  function getQueryHistoryProjector() {
+    const projector = window.LingoFlowQueryHistoryProjector;
+    return projector && typeof projector.project === "function"
+      ? projector
+      : null;
+  }
+
+  function getQueryData() {
+    const queryData = window.LingoFlowLocalData?.QueryData;
+    return queryData && typeof queryData.setVocab === "function"
+      ? queryData
       : null;
   }
 
@@ -566,15 +688,33 @@
   }
 
   function getEntityIdentity(entity, record) {
-    if (entity === "articles") {
-      return {
-        articleId: typeof record?.id === "string" ? record.id : null
-      };
+    switch (entity) {
+      case "articles":
+        return { articleId: typeof record?.id === "string" ? record.id : null };
+      case "favorites":
+        return { favoriteId: typeof record?.id === "string" ? record.id : null };
+      case "favoriteLearningStates":
+        return {
+          favoriteId: typeof record?.favoriteId === "string"
+            ? record.favoriteId
+            : null
+        };
+      case "queryEvents":
+        return { queryEventId: typeof record?.id === "string" ? record.id : null };
+      case "historyBaselines":
+        return {
+          historyBaselineId: typeof record?.id === "string" ? record.id : null
+        };
+      default:
+        return null;
     }
-    const favoriteId = entity === "favorites" ? record?.id : record?.favoriteId;
-    return {
-      favoriteId: typeof favoriteId === "string" ? favoriteId : null
-    };
+  }
+
+  function identityMatches(entity, record, result) {
+    const identityField = ENTITY_IDENTITY_FIELDS[entity];
+    const identity = getEntityIdentity(entity, record);
+    return Boolean(identityField && identity) &&
+      result?.[identityField] === identity[identityField];
   }
 
   function tagEntityErrors(entity, errors, fallbackCode) {
@@ -588,38 +728,58 @@
   }
 
   function schemaFailureCode(entity, unavailable = false) {
-    if (entity === "articles") {
-      return unavailable
-        ? "backup-schema-unavailable"
-        : "backup-schema-validation-failed";
-    }
-    if (entity === "favorites") {
-      return unavailable
-        ? "favorite-backup-schema-unavailable"
-        : "favorite-backup-schema-validation-failed";
-    }
-    return unavailable
-      ? "favorite-learning-backup-schema-unavailable"
-      : "favorite-learning-backup-schema-validation-failed";
+    const codes = {
+      articles: ["backup-schema-validation-failed", "backup-schema-unavailable"],
+      favorites: [
+        "favorite-backup-schema-validation-failed",
+        "favorite-backup-schema-unavailable"
+      ],
+      favoriteLearningStates: [
+        "favorite-learning-backup-schema-validation-failed",
+        "favorite-learning-backup-schema-unavailable"
+      ],
+      queryEvents: [
+        "query-event-backup-schema-validation-failed",
+        "query-event-backup-schema-unavailable"
+      ],
+      historyBaselines: [
+        "history-baseline-backup-schema-validation-failed",
+        "history-baseline-backup-schema-unavailable"
+      ]
+    };
+    const entityCodes = codes[entity];
+    return entityCodes
+      ? entityCodes[unavailable ? 1 : 0]
+      : "unsupported-entity";
   }
 
   function getSchemaValidator(entity) {
-    if (entity === "articles") {
-      const schema = getBackupSchema();
-      return schema
-        ? records => schema.validateArticles(records)
-        : null;
+    switch (entity) {
+      case "articles": {
+        const schema = getBackupSchema();
+        return schema ? records => schema.validateArticles(records) : null;
+      }
+      case "favorites": {
+        const schema = getFavoriteBackupSchema();
+        return schema ? records => schema.validateFavorites(records) : null;
+      }
+      case "favoriteLearningStates": {
+        const schema = getFavoriteLearningBackupSchema();
+        return schema
+          ? records => schema.validateFavoriteLearningStates(records)
+          : null;
+      }
+      case "queryEvents": {
+        const schema = getQueryEventBackupSchema();
+        return schema ? records => schema.validateQueryEvents(records) : null;
+      }
+      case "historyBaselines": {
+        const schema = getHistoryBaselineBackupSchema();
+        return schema ? records => schema.validateHistoryBaselines(records) : null;
+      }
+      default:
+        return null;
     }
-    if (entity === "favorites") {
-      const schema = getFavoriteBackupSchema();
-      return schema
-        ? records => schema.validateFavorites(records)
-        : null;
-    }
-    const schema = getFavoriteLearningBackupSchema();
-    return schema
-      ? records => schema.validateFavoriteLearningStates(records)
-      : null;
   }
 
   function collectRejectedValidationItems(entity, validation) {
@@ -873,29 +1033,62 @@
       }
     }
 
+    const includesQueryHistory = entities.some(entity => QUERY_HISTORY_ENTITIES.has(entity));
+    if (includesQueryHistory) {
+      const repository = getQueryEventRepository();
+      if (!repository && entities.includes("queryEvents")) {
+        errors.push(createError("query-event-repository-unavailable", {
+          entity: "queryEvents"
+        }));
+      }
+      dependencies.queryEvents = repository;
+    }
+
+    if (includesQueryHistory) {
+      const repository = getHistoryBaselineRepository();
+      if (!repository && entities.includes("historyBaselines")) {
+        errors.push(createError("history-baseline-repository-unavailable", {
+          entity: "historyBaselines"
+        }));
+      }
+      dependencies.historyBaselines = repository;
+    }
+
+    if (includesQueryHistory) {
+      dependencies.queryHistoryMigrationCoordinator =
+        getQueryHistoryMigrationCoordinator();
+    }
+
     return { dependencies, errors };
   }
 
   async function assessRepositoryRecords(entity, records, repository) {
     const items = [];
     const errors = [];
+    const isQueryHistory = QUERY_HISTORY_ENTITIES.has(entity);
+    const allowedStatuses = isQueryHistory
+      ? new Set(["restorable", "unchanged", "conflict", "rejected", "failed"])
+      : ARTICLE_RESULT_STATUSES;
 
     for (let index = 0; index < records.length; index += 1) {
       const record = records[index];
       try {
         const result = await repository.assessBackupRestore(record);
-        const expectedIdentity = getEntityIdentity(entity, record).favoriteId;
-        if (!isArticleResult(result) ||
+        if (!result ||
+            typeof result !== "object" ||
+            Array.isArray(result) ||
+            !allowedStatuses.has(result.status) ||
             result.written !== false ||
-            result.favoriteId !== expectedIdentity) {
+            !identityMatches(entity, record, result)) {
           throw new Error(`${entity} Repository 返回了无效的评估结果。`);
         }
         items.push({ index, ...result });
-        if (result.status === "rejected") {
+        if (["rejected", "failed"].includes(result.status)) {
+          const identity = getEntityIdentity(entity, record);
           errors.push(createError(result.reason || `${entity}-rejected`, {
             entity,
             index,
-            favoriteId: result.favoriteId
+            ...identity
           }));
         }
       } catch (error) {
@@ -903,14 +1096,14 @@
         items.push({
           index,
           ...identity,
-          status: "rejected",
+          status: isQueryHistory ? "failed" : "rejected",
           written: false,
           reason: `${entity}-assessment-failed`
         });
         errors.push(createError(`${entity}-assessment-failed`, {
           entity,
           index,
-          favoriteId: identity.favoriteId,
+          ...identity,
           message: error?.message || `${entity} 评估失败。`
         }));
       }
@@ -919,8 +1112,12 @@
     return {
       status: items.some(item => item.status === "rejected")
         ? "rejected"
-        : "ready",
-      summary: summarizeAssessment(records.length, items),
+        : items.some(item => item.status === "failed")
+          ? "blocked"
+          : "ready",
+      summary: summarizeAssessment(records.length, items.map(item => (
+        item.status === "restorable" ? { ...item, status: "restored" } : item
+      ))),
       items,
       errors
     };
@@ -962,15 +1159,14 @@
     return assessment.items.every((item, index) => {
       if (!item ||
           item.index !== index ||
-          !isArticleResult(item) ||
-          item.status === "rejected" ||
           item.written !== false) {
         return false;
       }
-      const expectedIdentity = getEntityIdentity(entity, records[index]);
-      return entity === "articles"
-        ? item.articleId === expectedIdentity.articleId
-        : item.favoriteId === expectedIdentity.favoriteId;
+      const allowedStatuses = QUERY_HISTORY_ENTITIES.has(entity)
+        ? ["restorable", "unchanged", "conflict"]
+        : ["restored", "unchanged", "conflict"];
+      return allowedStatuses.includes(item.status) &&
+        identityMatches(entity, records[index], item);
     });
   }
 
@@ -990,11 +1186,27 @@
       }] : [],
       errors: [createError(`${entity}-assessment-failed`, {
         entity,
-        ...(entity === "articles"
-          ? { articleId: identity.articleId }
-          : { favoriteId: identity.favoriteId }),
+        ...identity,
         message: `${entity} Domain 返回了无效的评估结果。`
       })]
+    };
+  }
+
+  function blockedDomainAssessment(entity, records, assessment = null) {
+    const sourceItems = Array.isArray(assessment?.items) ? assessment.items : [];
+    return {
+      status: "blocked",
+      summary: assessment?.summary || summarizeAssessment(records.length, []),
+      items: records.map((record, index) => ({
+        index,
+        ...getEntityIdentity(entity, record),
+        status: sourceItems[index]?.status === "failed" ? "failed" : "not-attempted",
+        written: false,
+        ...(sourceItems[index]?.reason ? { reason: sourceItems[index].reason } : {})
+      })),
+      errors: Array.isArray(assessment?.errors) && assessment.errors.length
+        ? assessment.errors.slice()
+        : [createError(`${entity}-assessment-failed`, { entity })]
     };
   }
 
@@ -1019,9 +1231,15 @@
       }
       if (assessment?.status === "ready" &&
           !isReadyDomainAssessment(entity, collections[entity], assessment)) {
-        assessment = invalidDomainAssessment(entity, collections[entity]);
+        assessment = QUERY_HISTORY_ENTITIES.has(entity)
+          ? blockedDomainAssessment(entity, collections[entity])
+          : invalidDomainAssessment(entity, collections[entity]);
+      } else if (assessment?.status === "blocked") {
+        assessment = blockedDomainAssessment(entity, collections[entity], assessment);
       } else if (!assessment || !["ready", "rejected"].includes(assessment.status)) {
-        assessment = invalidDomainAssessment(entity, collections[entity]);
+        assessment = QUERY_HISTORY_ENTITIES.has(entity)
+          ? blockedDomainAssessment(entity, collections[entity], assessment)
+          : invalidDomainAssessment(entity, collections[entity]);
       }
       assessments[entity] = assessment;
 
@@ -1032,11 +1250,21 @@
           `${entity}-assessment-rejected`
         ));
         rejectedItems.push(...collectRejectedAssessmentItems(entity, assessment));
+      } else if (assessment.status === "blocked") {
+        errors.push(...tagEntityErrors(
+          entity,
+          assessment.errors,
+          `${entity}-assessment-failed`
+        ));
       }
     }
 
     return {
-      status: errors.length ? "rejected" : "ready",
+      status: Object.values(assessments).some(item => item.status === "rejected")
+        ? "rejected"
+        : Object.values(assessments).some(item => item.status === "blocked")
+          ? "blocked"
+          : "ready",
       assessments,
       errors,
       rejectedItems
@@ -1056,10 +1284,7 @@
       return false;
     }
 
-    const expectedIdentity = getEntityIdentity(entity, record);
-    return entity === "articles"
-      ? item.articleId === expectedIdentity.articleId
-      : item.favoriteId === expectedIdentity.favoriteId;
+    return identityMatches(entity, record, item);
   }
 
   function isBatchRestoreResult(result, entity, records) {
@@ -1125,9 +1350,48 @@
       items,
       errors: [createError(`${entity}-restore-failed`, {
         entity,
+        ...(records.length ? getEntityIdentity(entity, records[0]) : {}),
         message: error?.message || `${entity} 恢复失败。`
       })]
     };
+  }
+
+  function createMalformedEntityResult(entity, records, result) {
+    const sourceItems = Array.isArray(result?.items) ? result.items : [];
+    const items = [];
+    let malformedIndex = null;
+
+    for (let index = 0; index < records.length; index += 1) {
+      const item = sourceItems[index];
+      if (malformedIndex === null && isBatchRestoreItem(entity, records[index], item, index)) {
+        items.push({ ...item, entity });
+        continue;
+      }
+      if (malformedIndex === null) malformedIndex = index;
+      items.push({
+        entity,
+        index,
+        ...getEntityIdentity(entity, records[index]),
+        status: index === malformedIndex ? "failed" : "not-attempted",
+        written: false,
+        ...(index === malformedIndex ? { reason: `${entity}-restore-result-invalid` } : {})
+      });
+    }
+
+    const errors = Array.isArray(result?.errors)
+      ? result.errors.map(error => ({ ...error, entity }))
+      : [];
+    errors.push(createError(`${entity}-restore-failed`, {
+      entity,
+      ...(malformedIndex !== null
+        ? {
+            index: malformedIndex,
+            ...getEntityIdentity(entity, records[malformedIndex])
+          }
+        : {}),
+      message: `${entity} Domain 返回了无效的恢复结果。`
+    }));
+    return { status: "interrupted", items, errors };
   }
 
   function aggregateMultiRestore(entityResults, forcedStatus = null) {
@@ -1154,15 +1418,31 @@
       const records = collections[entity];
       let result;
       try {
-        if (entity === "articles") {
-          result = await restoreAssessedArticles(records, dependencies.articles);
-        } else {
-          result = await dependencies[entity].restoreBackupRecords(records);
+        switch (entity) {
+          case "articles":
+            result = await restoreAssessedArticles(records, dependencies.articles);
+            break;
+          case "favorites":
+            result = await dependencies.favorites.restoreBackupRecords(records);
+            break;
+          case "favoriteLearningStates":
+            result = await dependencies.favoriteLearningStates
+              .restoreBackupRecords(records);
+            break;
+          case "queryEvents":
+            result = await dependencies.queryEvents.restoreBackupRecords(records);
+            break;
+          case "historyBaselines":
+            result = await dependencies.historyBaselines.restoreBackupRecords(records);
+            break;
+          default:
+            throw new Error(`不支持的 Backup entity：${entity}`);
         }
         if (!isBatchRestoreResult(result, entity, records)) {
-          throw new Error(`${entity} Domain 返回了无效的恢复结果。`);
+          result = createMalformedEntityResult(entity, records, result);
+        } else {
+          result = addEntityContext(entity, result);
         }
-        result = addEntityContext(entity, result);
       } catch (error) {
         result = createFailedEntityResult(entity, records, error);
       }
@@ -1185,15 +1465,363 @@
     return aggregateMultiRestore(entityResults);
   }
 
+  function createMigrationPhase(status, result = null, backupWritesStarted = false) {
+    return {
+      status,
+      outcome: result?.outcome || null,
+      baselineWritten: Boolean(result?.baselineWritten),
+      migrationStateWritten: Boolean(result?.migrationStateWritten),
+      historyBaselineId: result?.historyBaselineId || null,
+      legacyVocabStatus: result?.legacyVocabStatus || null,
+      reason: result?.reason || null,
+      backupWritesStarted,
+      errors: Array.isArray(result?.errors)
+        ? result.errors.map(error => ({ ...error }))
+        : []
+    };
+  }
+
+  function getOwnResultValue(value, key) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return { exists: false, value: undefined };
+    }
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    return descriptor &&
+      descriptor.enumerable &&
+      Object.prototype.hasOwnProperty.call(descriptor, "value")
+      ? { exists: true, value: descriptor.value }
+      : { exists: false, value: undefined };
+  }
+
+  function isMigrationCoordinatorResult(result, expectedStatus) {
+    const status = getOwnResultValue(result, "status");
+    const outcome = getOwnResultValue(result, "outcome");
+    const baselineWritten = getOwnResultValue(result, "baselineWritten");
+    const migrationStateWritten = getOwnResultValue(result, "migrationStateWritten");
+    const historyBaselineId = getOwnResultValue(result, "historyBaselineId");
+    const legacyVocabStatus = getOwnResultValue(result, "legacyVocabStatus");
+    const reason = getOwnResultValue(result, "reason");
+    const errors = getOwnResultValue(result, "errors");
+    const nullableString = field => field.exists && (
+      field.value === null || typeof field.value === "string"
+    );
+
+    return status.exists && status.value === expectedStatus &&
+      outcome.exists && typeof outcome.value === "string" && Boolean(outcome.value) &&
+      baselineWritten.exists && typeof baselineWritten.value === "boolean" &&
+      migrationStateWritten.exists && typeof migrationStateWritten.value === "boolean" &&
+      nullableString(historyBaselineId) &&
+      nullableString(legacyVocabStatus) &&
+      nullableString(reason) &&
+      errors.exists && Array.isArray(errors.value) &&
+      (expectedStatus === "failed" || (
+        reason.value === null && errors.value.length === 0
+      ));
+  }
+
+  async function verifyMigrationStateCompleted() {
+    const queryData = window.LingoFlowLocalData?.QueryData;
+    if (!queryData || typeof queryData.readHistoryMigrationState !== "function") {
+      return {
+        status: "failed",
+        reason: "query-history-migration-state-reader-unavailable",
+        errors: [{ code: "query-history-migration-state-reader-unavailable" }]
+      };
+    }
+    try {
+      const state = await queryData.readHistoryMigrationState();
+      if (!state || state.status !== "completed") {
+        throw new Error("Query History Migration State 未完成。");
+      }
+      return { status: "completed", errors: [] };
+    } catch (error) {
+      const code = error?.code || "query-history-migration-state-not-completed";
+      return {
+        status: "failed",
+        reason: code,
+        errors: [{
+          code,
+          ...(error?.message ? { message: error.message } : {})
+        }]
+      };
+    }
+  }
+
+  async function prepareQueryHistoryMigration(coordinator) {
+    if (!coordinator) {
+      return {
+        status: "failed",
+        token: null,
+        phase: createMigrationPhase("failed", {
+          reason: "query-history-migration-coordinator-unavailable",
+          errors: [{ code: "query-history-migration-coordinator-unavailable" }]
+        })
+      };
+    }
+    try {
+      const result = await coordinator.prepare();
+      if (isMigrationCoordinatorResult(result, "completed")) {
+        return {
+          status: "completed",
+          token: null,
+          phase: createMigrationPhase("completed", result)
+        };
+      }
+      const token = getOwnResultValue(result, "token");
+      if (isMigrationCoordinatorResult(result, "ready") &&
+          token.exists && token.value && typeof token.value === "object") {
+        return {
+          status: "ready",
+          token: token.value,
+          phase: createMigrationPhase("prepared", result)
+        };
+      }
+      const failedResult = isMigrationCoordinatorResult(result, "failed")
+        ? result
+        : {
+            reason: "query-history-migration-prepare-result-invalid",
+            errors: [{ code: "query-history-migration-prepare-result-invalid" }]
+          };
+      return {
+        status: "failed",
+        token: null,
+        phase: createMigrationPhase("failed", failedResult)
+      };
+    } catch (error) {
+      const code = error?.code || "query-history-migration-prepare-failed";
+      return {
+        status: "failed",
+        token: null,
+        phase: createMigrationPhase("failed", {
+          reason: code,
+          errors: [{
+            code,
+            ...(error?.message ? { message: error.message } : {})
+          }]
+        })
+      };
+    }
+  }
+
+  async function finalizeQueryHistoryMigration(coordinator, preparation) {
+    if (preparation.status === "completed") {
+      const state = await verifyMigrationStateCompleted();
+      return state.status === "completed"
+        ? preparation.phase
+        : createMigrationPhase("failed", {
+            ...preparation.phase,
+            reason: state.reason,
+            errors: state.errors
+          });
+    }
+    try {
+      const result = await coordinator.finalize(preparation.token);
+      if (isMigrationCoordinatorResult(result, "completed")) {
+        const phase = createMigrationPhase("completed", {
+          ...preparation.phase,
+          ...result,
+          baselineWritten: preparation.phase.baselineWritten || result.baselineWritten,
+          historyBaselineId: result.historyBaselineId ||
+            preparation.phase.historyBaselineId
+        });
+        const state = await verifyMigrationStateCompleted();
+        return state.status === "completed"
+          ? phase
+          : createMigrationPhase("failed", {
+              ...phase,
+              reason: state.reason,
+              errors: state.errors
+            });
+      }
+      const failedResult = isMigrationCoordinatorResult(result, "failed")
+        ? result
+        : {
+            ...preparation.phase,
+            reason: "query-history-migration-finalize-result-invalid",
+            errors: [{ code: "query-history-migration-finalize-result-invalid" }]
+          };
+      return createMigrationPhase("failed", {
+        ...failedResult,
+        baselineWritten: preparation.phase.baselineWritten || failedResult.baselineWritten,
+        historyBaselineId: preparation.phase.historyBaselineId ||
+          failedResult.historyBaselineId
+      });
+    } catch (error) {
+      const code = error?.code || "query-history-migration-finalize-failed";
+      return createMigrationPhase("failed", {
+        ...preparation.phase,
+        reason: code,
+        errors: [{
+          code,
+          ...(error?.message ? { message: error.message } : {})
+        }]
+      });
+    }
+  }
+
+  async function readLocalQueryHistoryFacts(dependencies) {
+    try {
+      const queryEvents = await dependencies.queryEvents.list();
+      if (!Array.isArray(queryEvents)) {
+        throw new Error("QueryEvent Repository 返回了无效的列表。");
+      }
+      const historyBaselines = await dependencies.historyBaselines.list();
+      if (!Array.isArray(historyBaselines)) {
+        throw new Error("History Baseline Repository 返回了无效的列表。");
+      }
+      return { status: "ready", queryEvents, historyBaselines, errors: [] };
+    } catch (error) {
+      const code = error?.code || "query-history-local-facts-read-failed";
+      return {
+        status: "failed",
+        queryEvents: null,
+        historyBaselines: null,
+        errors: [{
+          code,
+          ...(error?.message ? { message: error.message } : {})
+        }]
+      };
+    }
+  }
+
+  function buildInterruptedMultiRestore(data, entities, errors, migration = null) {
+    const entityResults = entities.map(entity => createPendingEntityResult(
+      entity,
+      Array.isArray(data[entity]) ? data[entity] : []
+    ));
+    const result = aggregateMultiRestore(entityResults, "interrupted");
+    result.errors = Array.isArray(errors) ? errors.map(error => ({ ...error })) : [];
+    if (migration) result.migration = migration;
+    return result;
+  }
+
+  function buildBlockedAssessmentRestore(data, entities, assessments, errors) {
+    const entityResults = entities.map(entity => {
+      const records = Array.isArray(data[entity]) ? data[entity] : [];
+      const assessedItems = Array.isArray(assessments?.[entity]?.items)
+        ? assessments[entity].items
+        : [];
+      return {
+        status: "interrupted",
+        items: records.map((record, index) => {
+          const assessed = assessedItems[index];
+          const failed = assessed?.status === "failed";
+          return {
+            entity,
+            index,
+            ...getEntityIdentity(entity, record),
+            status: failed ? "failed" : "not-attempted",
+            written: false,
+            ...(failed && assessed.reason ? { reason: assessed.reason } : {})
+          };
+        }),
+        errors: []
+      };
+    });
+    const result = aggregateMultiRestore(entityResults, "interrupted");
+    result.errors = Array.isArray(errors) ? errors.map(error => ({ ...error })) : [];
+    return result;
+  }
+
+  async function rebuildQueryHistoryVocab(dependencies) {
+    const projector = getQueryHistoryProjector();
+    const queryData = getQueryData();
+    if (!projector || !queryData) {
+      const code = !projector
+        ? "query-history-projector-unavailable"
+        : "query-history-vocab-persistence-unavailable";
+      return {
+        status: "failed",
+        reason: code,
+        errors: [{ code }]
+      };
+    }
+
+    const facts = await readLocalQueryHistoryFacts(dependencies);
+    if (facts.status !== "ready") {
+      return {
+        status: "failed",
+        reason: facts.errors[0]?.code || "query-history-local-facts-read-failed",
+        errors: facts.errors
+      };
+    }
+
+    try {
+      const vocab = projector.project(facts.queryEvents, facts.historyBaselines);
+      queryData.setVocab(vocab);
+      return {
+        status: "rebuilt",
+        vocabCount: Object.keys(vocab).length,
+        errors: []
+      };
+    } catch (error) {
+      const code = error?.code || "query-history-vocab-rebuild-failed";
+      return {
+        status: "failed",
+        reason: code,
+        errors: [{
+          code,
+          ...(error?.message ? { message: error.message } : {})
+        }]
+      };
+    }
+  }
+
+  function hasWrittenQueryHistoryFact(result) {
+    return Array.isArray(result?.items) && result.items.some(item => (
+      QUERY_HISTORY_ENTITIES.has(item.entity) &&
+      item.status === "restored" &&
+      item.written === true
+    ));
+  }
+
+  function hasAnyBackupFactWrite(result) {
+    return Array.isArray(result?.items) && result.items.some(item => item.written === true);
+  }
+
+  async function attachQueryHistoryPhases(result, migration, dependencies, shouldRebuild) {
+    const backupWritesStarted = hasAnyBackupFactWrite(result);
+    const migrationPhase = {
+      ...migration,
+      backupWritesStarted
+    };
+    const vocabRebuild = migrationPhase.status === "completed" && shouldRebuild
+      ? await rebuildQueryHistoryVocab(dependencies)
+      : { status: "not-attempted", errors: [] };
+    const errors = result.errors.slice();
+    if (vocabRebuild.status === "failed") {
+      errors.push(...vocabRebuild.errors.map(error => ({
+        ...error,
+        phase: "vocabRebuild"
+      })));
+    }
+    return {
+      ...result,
+      status: vocabRebuild.status === "failed" &&
+        ["completed", "completed-with-conflicts"].includes(result.status)
+        ? "completed-with-derived-view-failure"
+        : result.status,
+      errors,
+      migration: migrationPhase,
+      vocabRebuild
+    };
+  }
+
   async function restoreMultiEntityBackup(data, entities) {
+    const includesQueryHistory = entities.some(entity => QUERY_HISTORY_ENTITIES.has(entity));
     const schemaValidation = validateBackupEntitySchemas(data, entities);
     if (schemaValidation.status !== "valid") {
-      return buildRejectedMultiRestore(
+      const rejected = buildRejectedMultiRestore(
         data,
         entities,
         schemaValidation.errors,
         schemaValidation.rejectedItems
       );
+      if (includesQueryHistory) {
+        rejected.migration = createMigrationPhase("not-attempted");
+        rejected.vocabRebuild = { status: "not-attempted", errors: [] };
+      }
+      return rejected;
     }
 
     const relationshipValidation = await validateLearningRelationships(
@@ -1201,21 +1829,102 @@
       entities
     );
     if (relationshipValidation.status !== "valid") {
-      return buildRejectedMultiRestore(
+      const rejected = buildRejectedMultiRestore(
         data,
         entities,
         relationshipValidation.errors,
         relationshipValidation.rejectedItems
       );
+      if (includesQueryHistory) {
+        rejected.migration = createMigrationPhase("not-attempted");
+        rejected.vocabRebuild = { status: "not-attempted", errors: [] };
+      }
+      return rejected;
     }
 
     const dependencyResolution = resolveDomainDependencies(entities);
     if (dependencyResolution.errors.length) {
-      return buildRejectedMultiRestore(
+      const rejected = buildRejectedMultiRestore(
         data,
         entities,
         dependencyResolution.errors
       );
+      if (includesQueryHistory) {
+        rejected.migration = createMigrationPhase("not-attempted");
+        rejected.vocabRebuild = { status: "not-attempted", errors: [] };
+      }
+      return rejected;
+    }
+
+    if (includesQueryHistory && (
+      !dependencyResolution.dependencies.queryEvents ||
+      !dependencyResolution.dependencies.historyBaselines ||
+      !dependencyResolution.dependencies.queryHistoryMigrationCoordinator
+    )) {
+      const code = !dependencyResolution.dependencies.queryEvents
+        ? "query-event-repository-unavailable"
+        : !dependencyResolution.dependencies.historyBaselines
+          ? "history-baseline-repository-unavailable"
+          : "query-history-migration-coordinator-unavailable";
+      const migration = createMigrationPhase("failed", {
+        reason: code,
+        errors: [{ code }]
+      });
+      const interrupted = buildInterruptedMultiRestore(
+        schemaValidation.collections,
+        entities,
+        migration.errors.map(error => ({ ...error, phase: "migration" })),
+        migration
+      );
+      return attachQueryHistoryPhases(
+        interrupted,
+        migration,
+        dependencyResolution.dependencies,
+        false
+      );
+    }
+
+    let migrationPreparation = null;
+    let migrationPhase = includesQueryHistory
+      ? createMigrationPhase("not-attempted")
+      : createMigrationPhase("not-required");
+    if (includesQueryHistory) {
+      migrationPreparation = await prepareQueryHistoryMigration(
+        dependencyResolution.dependencies.queryHistoryMigrationCoordinator
+      );
+      migrationPhase = migrationPreparation.phase;
+      if (migrationPreparation.status === "failed") {
+        const interrupted = buildInterruptedMultiRestore(
+          schemaValidation.collections,
+          entities,
+          migrationPhase.errors.map(error => ({ ...error, phase: "migration" })),
+          migrationPhase
+        );
+        return attachQueryHistoryPhases(
+          interrupted,
+          migrationPhase,
+          dependencyResolution.dependencies,
+          migrationPhase.baselineWritten
+        );
+      }
+
+      const localFacts = await readLocalQueryHistoryFacts(
+        dependencyResolution.dependencies
+      );
+      if (localFacts.status !== "ready") {
+        const interrupted = buildInterruptedMultiRestore(
+          schemaValidation.collections,
+          entities,
+          localFacts.errors.map(error => ({ ...error, phase: "assessment" })),
+          migrationPhase
+        );
+        return attachQueryHistoryPhases(
+          interrupted,
+          migrationPhase,
+          dependencyResolution.dependencies,
+          migrationPhase.baselineWritten
+        );
+      }
     }
 
     const domainAssessment = await assessAllDomains(
@@ -1223,19 +1932,73 @@
       entities,
       dependencyResolution.dependencies
     );
-    if (domainAssessment.status !== "ready") {
-      return buildRejectedMultiRestore(
+    if (domainAssessment.status === "rejected") {
+      const rejected = buildRejectedMultiRestore(
         data,
         entities,
         domainAssessment.errors,
         domainAssessment.rejectedItems
       );
+      if (!includesQueryHistory) return rejected;
+      return attachQueryHistoryPhases(
+        rejected,
+        migrationPhase,
+        dependencyResolution.dependencies,
+        migrationPhase.baselineWritten
+      );
+    }
+    if (domainAssessment.status === "blocked") {
+      const interrupted = buildBlockedAssessmentRestore(
+        schemaValidation.collections,
+        entities,
+        domainAssessment.assessments,
+        domainAssessment.errors
+      );
+      if (!includesQueryHistory) return interrupted;
+      return attachQueryHistoryPhases(
+        interrupted,
+        migrationPhase,
+        dependencyResolution.dependencies,
+        migrationPhase.baselineWritten
+      );
     }
 
-    return writeAssessedDomains(
+    if (includesQueryHistory) {
+      migrationPhase = await finalizeQueryHistoryMigration(
+        dependencyResolution.dependencies.queryHistoryMigrationCoordinator,
+        migrationPreparation
+      );
+      if (migrationPhase.status !== "completed") {
+        const interrupted = buildInterruptedMultiRestore(
+          schemaValidation.collections,
+          entities,
+          migrationPhase.errors.map(error => ({ ...error, phase: "migration" })),
+          migrationPhase
+        );
+        return attachQueryHistoryPhases(
+          interrupted,
+          migrationPhase,
+          dependencyResolution.dependencies,
+          migrationPhase.baselineWritten
+        );
+      }
+    }
+
+    const restored = await writeAssessedDomains(
       schemaValidation.collections,
       entities,
       dependencyResolution.dependencies
+    );
+    if (!includesQueryHistory) return restored;
+
+    const shouldRebuild = ["completed", "completed-with-conflicts"].includes(
+      restored.status
+    ) || migrationPhase.baselineWritten || hasWrittenQueryHistoryFact(restored);
+    return attachQueryHistoryPhases(
+      restored,
+      migrationPhase,
+      dependencyResolution.dependencies,
+      shouldRebuild
     );
   }
 
@@ -1247,9 +2010,20 @@
       ]);
     }
 
+    let envelopeSnapshot;
+    try {
+      envelopeSnapshot = createJsonSnapshot(envelopeValue);
+    } catch (error) {
+      return rejectedEnvelopeRestoreResult([
+        createError("backup-envelope-snapshot-failed", {
+          message: error?.message || "Backup Envelope 无法创建安全快照。"
+        })
+      ]);
+    }
+
     let validation;
     try {
-      validation = envelope.validateEnvelope(envelopeValue);
+      validation = envelope.validateEnvelope(envelopeSnapshot);
     } catch (error) {
       return rejectedEnvelopeRestoreResult([
         createError("backup-envelope-validation-failed", {
@@ -1265,7 +2039,7 @@
 
     let unwrapped;
     try {
-      unwrapped = envelope.unwrapEnvelope(envelopeValue);
+      unwrapped = envelope.unwrapEnvelope(envelopeSnapshot);
     } catch (error) {
       return rejectedEnvelopeRestoreResult([
         createError("backup-envelope-unpack-failed", {

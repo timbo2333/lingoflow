@@ -147,7 +147,9 @@ test("Backup v2 roundtrip preserves Article, Favorite tombstone, and mastered tr
     expect(exportResult.backup.payload.schema).toEqual({
       articles: "1",
       favorites: "1",
-      favoriteLearningStates: "1"
+      favoriteLearningStates: "1",
+      queryEvents: "1",
+      historyBaselines: "1"
     });
     expect(exportResult.backup.payload.data.articles).toEqual([article]);
     expect(exportResult.backup.payload.data.favorites).toHaveLength(2);
@@ -158,6 +160,8 @@ test("Backup v2 roundtrip preserves Article, Favorite tombstone, and mastered tr
     expect(exportResult.backup.payload.data.favoriteLearningStates).toEqual(
       expect.arrayContaining(learningStates)
     );
+    expect(exportResult.backup.payload.data.queryEvents).toEqual([]);
+    expect(exportResult.backup.payload.data.historyBaselines).toEqual([]);
     exported = exportResult.backup.payload;
   } finally {
     await exportContext.close();
@@ -487,8 +491,8 @@ test("restoreBackup rejects an unregistered entity before Schema or Domain acces
   const envelope = {
     format: { name: "LingoFlow Backup", version: 2 },
     metadata: {},
-    schema: { articles: "1", queryEvents: "1" },
-    data: { articles: [], queryEvents: [] }
+    schema: { articles: "1", querySessions: "1" },
+    data: { articles: [], querySessions: [] }
   };
 
   const result = await page.evaluate(async incoming => {
@@ -564,8 +568,8 @@ test("restoreBackup rejects an unregistered entity before Schema or Domain acces
   expect(result.restored.status).toBe("rejected");
   expect(result.restored.errors).toContainEqual({
     code: "unsupported-entity",
-    path: "data.queryEvents",
-    entity: "queryEvents"
+    path: "data.querySessions",
+    entity: "querySessions"
   });
   expect(result.calls).toEqual([]);
   expect(await readStoredDomains(page)).toEqual({

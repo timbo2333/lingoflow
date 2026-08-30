@@ -873,7 +873,7 @@ test("旧 full NDJSON vocab-only restore 显式转换 Baseline、清空旧 Event
   expect(result.vocabAfterQuery.local).toBeUndefined();
 });
 
-test("legacy backup 继续读写 map，Query History 仍未注册进 Backup v2 Envelope", async ({ page }) => {
+test("legacy backup 继续读写 map，Backup v2 Envelope 仍拒绝未注册实体", async ({ page }) => {
   const event = makeEvent("query:legacy-backup");
   const baseline = makeBaseline("baseline:legacy-backup", {
     "legacy/locator": { word: "apple", count: 2 }
@@ -898,7 +898,7 @@ test("legacy backup 继续读写 map，Query History 仍未注册进 Backup v2 E
     const payload = JSON.parse(await captured.blob.text());
     const envelopeResult = window.LingoFlowBackupV2Envelope.buildEnvelope({
       articles: [],
-      queryEvents: []
+      querySessions: []
     });
     return {
       backupType: payload.backupType,

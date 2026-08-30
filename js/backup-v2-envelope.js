@@ -6,7 +6,9 @@
   const ENTITY_SCHEMA_VERSIONS = Object.freeze({
     articles: "1",
     favorites: "1",
-    favoriteLearningStates: "1"
+    favoriteLearningStates: "1",
+    queryEvents: "1",
+    historyBaselines: "1"
   });
   const REQUIRED_ENTITIES = new Set(["articles"]);
   const REQUIRED_FIELDS = ["format", "metadata", "schema", "data"];
