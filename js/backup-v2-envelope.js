@@ -8,7 +8,8 @@
     favorites: "1",
     favoriteLearningStates: "1",
     queryEvents: "1",
-    historyBaselines: "1"
+    historyBaselines: "1",
+    preferences: "1"
   });
   const REQUIRED_ENTITIES = new Set(["articles"]);
   const REQUIRED_FIELDS = ["format", "metadata", "schema", "data"];

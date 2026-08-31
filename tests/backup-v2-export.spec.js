@@ -1,5 +1,6 @@
 const { test, expect } = require("@playwright/test");
 
+const PREFERENCES_STORAGE_KEY = "EnglishReaderV052ReadingPrefs";
 const projectErrors = new WeakMap();
 
 test.beforeEach(async ({ page }) => {
@@ -133,21 +134,23 @@ test("exportBackup 将全部已注册实体导出结果封装为完整 Backup En
         favorites: "1",
         favoriteLearningStates: "1",
         queryEvents: "1",
-        historyBaselines: "1"
+        historyBaselines: "1",
+        preferences: "1"
       },
       data: {
         articles: [article],
         favorites: [],
         favoriteLearningStates: [],
         queryEvents: [],
-        historyBaselines: []
+        historyBaselines: [],
+        preferences: []
       }
     }
   });
   expect(result.validation?.status).toBe("valid");
 });
 
-test("exportBackup 按五实体固定顺序成功后才构建 Envelope", async ({ page }) => {
+test("exportBackup 按六实体固定顺序成功后才构建 Envelope", async ({ page }) => {
   const result = await page.evaluate(async () => {
     const calls = [];
     window.LingoFlowArticleLibrary = Object.freeze({
@@ -186,6 +189,12 @@ test("exportBackup 按五实体固定顺序成功后才构建 Envelope", async (
         return { status: "ready", payload: { historyBaselines: [] } };
       }
     });
+    window.LingoFlowPreferencesBackupExport = Object.freeze({
+      exportPreferences: async () => {
+        calls.push(["preferences"]);
+        return { status: "ready", payload: { preferences: [] } };
+      }
+    });
     window.LingoFlowBackupV2Envelope = Object.freeze({
       buildEnvelope: data => {
         calls.push(["envelope", Object.keys(data)]);
@@ -207,7 +216,8 @@ test("exportBackup 按五实体固定顺序成功后才构建 Envelope", async (
         favorites: [],
         favoriteLearningStates: [],
         queryEvents: [],
-        historyBaselines: []
+        historyBaselines: [],
+        preferences: []
       }
     }
   });
@@ -217,22 +227,25 @@ test("exportBackup 按五实体固定顺序成功后才构建 Envelope", async (
     ["favoriteLearningStates"],
     ["queryEvents"],
     ["historyBaselines"],
+    ["preferences"],
     ["articles", { includeDeleted: true }],
     ["favorites"],
     ["favoriteLearningStates"],
     ["queryEvents"],
     ["historyBaselines"],
+    ["preferences"],
     ["envelope", [
       "articles",
       "favorites",
       "favoriteLearningStates",
       "queryEvents",
-      "historyBaselines"
+      "historyBaselines",
+      "preferences"
     ]]
   ]);
 });
 
-test("exportBackup 对五实体第二轮仅 collection 重排保持 ready", async ({ page }) => {
+test("exportBackup 对六实体第二轮仅 collection 重排保持 ready", async ({ page }) => {
   const result = await page.evaluate(async () => {
     const collections = {
       articles: [
@@ -254,6 +267,10 @@ test("exportBackup 对五实体第二轮仅 collection 重排保持 ready", asyn
       historyBaselines: [
         { id: "history-baseline:order-a", marker: "a" },
         { id: "history-baseline:order-b", marker: "b" }
+      ],
+      preferences: [
+        { key: "appearance", value: "dark" },
+        { key: "speechVoice", value: null }
       ]
     };
     const calls = {
@@ -262,6 +279,7 @@ test("exportBackup 对五实体第二轮仅 collection 重排保持 ready", asyn
       favoriteLearningStates: 0,
       queryEvents: 0,
       historyBaselines: 0,
+      preferences: 0,
       envelope: 0
     };
     const readCollection = entity => {
@@ -304,6 +322,12 @@ test("exportBackup 对五实体第二轮仅 collection 重排保持 ready", asyn
         payload: { historyBaselines: readCollection("historyBaselines") }
       })
     });
+    window.LingoFlowPreferencesBackupExport = Object.freeze({
+      exportPreferences: async () => ({
+        status: "ready",
+        payload: { preferences: readCollection("preferences") }
+      })
+    });
     window.LingoFlowBackupV2Envelope = Object.freeze({
       buildEnvelope: data => {
         calls.envelope += 1;
@@ -328,8 +352,164 @@ test("exportBackup 对五实体第二轮仅 collection 重排保持 ready", asyn
     favoriteLearningStates: 2,
     queryEvents: 2,
     historyBaselines: 2,
+    preferences: 2,
     envelope: 1
   });
+});
+
+test("exportBackup 将 missing 与已存储空 Preferences 都导出为空集合", async ({ page }) => {
+  const result = await page.evaluate(async storageKey => {
+    localStorage.removeItem(storageKey);
+    const missing = await window.LingoFlowBackupV2Export.exportBackup();
+    localStorage.setItem(storageKey, "{}");
+    const storedEmpty = await window.LingoFlowBackupV2Export.exportBackup();
+    return { missing, storedEmpty };
+  }, PREFERENCES_STORAGE_KEY);
+
+  expect(result.missing.status).toBe("ready");
+  expect(result.missing.payload.data.preferences).toEqual([]);
+  expect(result.storedEmpty.status).toBe("ready");
+  expect(result.storedEmpty.payload.data.preferences).toEqual([]);
+});
+
+test("exportBackup 检测 Preferences 完整值在第二轮读取期间变化", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    let preferencesCalls = 0;
+    let envelopeCalls = 0;
+    const firstPreferences = [
+      { key: "fontSize", value: 18 },
+      { key: "speechVoice", value: null },
+      {
+        key: "futurePreference",
+        value: { nested: ["stable", { enabled: true }] }
+      }
+    ];
+    const secondPreferences = structuredClone(firstPreferences);
+    secondPreferences[2].value.nested[1].enabled = false;
+    const before = structuredClone({ firstPreferences, secondPreferences });
+
+    window.LingoFlowArticleLibrary = Object.freeze({
+      listArticles: async () => []
+    });
+    window.LingoFlowBackupV2Schema = Object.freeze({
+      validateArticles: articles => ({ status: "valid", articles })
+    });
+    window.LingoFlowFavoriteBackupExport = Object.freeze({
+      exportFavorites: async () => ({
+        status: "ready",
+        payload: { favorites: [] }
+      })
+    });
+    window.LingoFlowFavoriteLearningBackupExport = Object.freeze({
+      exportFavoriteLearningStates: async () => ({
+        status: "ready",
+        payload: { favoriteLearningStates: [] }
+      })
+    });
+    window.LingoFlowQueryEventBackupExport = Object.freeze({
+      exportQueryEvents: async () => ({
+        status: "ready",
+        payload: { queryEvents: [] }
+      })
+    });
+    window.LingoFlowHistoryBaselineBackupExport = Object.freeze({
+      exportHistoryBaselines: async () => ({
+        status: "ready",
+        payload: { historyBaselines: [] }
+      })
+    });
+    window.LingoFlowPreferencesBackupExport = Object.freeze({
+      exportPreferences: async () => {
+        preferencesCalls += 1;
+        return {
+          status: "ready",
+          payload: {
+            preferences: preferencesCalls === 1
+              ? firstPreferences
+              : secondPreferences
+          }
+        };
+      }
+    });
+    window.LingoFlowBackupV2Envelope = Object.freeze({
+      buildEnvelope: () => {
+        envelopeCalls += 1;
+        return { status: "ready", envelope: {} };
+      }
+    });
+
+    return {
+      exported: await window.LingoFlowBackupV2Export.exportBackup(),
+      preferencesCalls,
+      envelopeCalls,
+      before,
+      after: { firstPreferences, secondPreferences }
+    };
+  });
+
+  expect(result.exported).toEqual({
+    status: "rejected",
+    payload: null,
+    reason: "inconsistent-export-snapshot"
+  });
+  expect(result.preferencesCalls).toBe(2);
+  expect(result.envelopeCalls).toBe(0);
+  expect(result.after).toEqual(result.before);
+});
+
+test("exportBackup 在 Preferences rejected 或 throw 时不构建部分 Envelope", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    let envelopeCalls = 0;
+    window.LingoFlowArticleLibrary = Object.freeze({ listArticles: async () => [] });
+    window.LingoFlowBackupV2Schema = Object.freeze({
+      validateArticles: articles => ({ status: "valid", articles })
+    });
+    window.LingoFlowFavoriteBackupExport = Object.freeze({
+      exportFavorites: async () => ({ status: "ready", payload: { favorites: [] } })
+    });
+    window.LingoFlowFavoriteLearningBackupExport = Object.freeze({
+      exportFavoriteLearningStates: async () => ({
+        status: "ready",
+        payload: { favoriteLearningStates: [] }
+      })
+    });
+    window.LingoFlowQueryEventBackupExport = Object.freeze({
+      exportQueryEvents: async () => ({
+        status: "ready",
+        payload: { queryEvents: [] }
+      })
+    });
+    window.LingoFlowHistoryBaselineBackupExport = Object.freeze({
+      exportHistoryBaselines: async () => ({
+        status: "ready",
+        payload: { historyBaselines: [] }
+      })
+    });
+    window.LingoFlowBackupV2Envelope = Object.freeze({
+      buildEnvelope: () => {
+        envelopeCalls += 1;
+        return { status: "ready", envelope: {} };
+      }
+    });
+
+    window.LingoFlowPreferencesBackupExport = Object.freeze({
+      exportPreferences: async () => ({ status: "rejected", payload: null })
+    });
+    const rejected = await window.LingoFlowBackupV2Export.exportBackup();
+
+    window.LingoFlowPreferencesBackupExport = Object.freeze({
+      exportPreferences: async () => {
+        throw new Error("preferences export failed");
+      }
+    });
+    const thrown = await window.LingoFlowBackupV2Export.exportBackup();
+
+    return { rejected, thrown, envelopeCalls };
+  });
+
+  expect(result.rejected).toEqual({ status: "rejected", payload: null });
+  expect(result.thrown).toEqual({ status: "failed", payload: null });
+  expect(result.envelopeCalls).toBe(0);
 });
 
 for (const changingEntity of ["queryEvents", "historyBaselines"]) {

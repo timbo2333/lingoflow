@@ -53,6 +53,14 @@
       : null;
   }
 
+  function getPreferencesBackupExport() {
+    const preferencesExport = window.LingoFlowPreferencesBackupExport;
+    return preferencesExport &&
+      typeof preferencesExport.exportPreferences === "function"
+      ? preferencesExport
+      : null;
+  }
+
   function getReadyCollection(result, entity) {
     if (!result || result.status !== "ready" ||
         !result.payload || !Array.isArray(result.payload[entity])) {
@@ -145,6 +153,7 @@
     let learningExport;
     let queryEventExport;
     let historyBaselineExport;
+    let preferencesExport;
     let firstSnapshot;
     try {
       firstSnapshot = {
@@ -216,6 +225,24 @@
       firstSnapshot.historyBaselines = cloneCollection(
         exportedHistoryBaselines
       );
+
+      preferencesExport = getPreferencesBackupExport();
+      if (!preferencesExport) {
+        return { status: "failed", payload: null };
+      }
+      const preferencesResult = await preferencesExport.exportPreferences();
+      if (preferencesResult?.status === "rejected" ||
+          preferencesResult?.status === "failed") {
+        return { status: preferencesResult.status, payload: null };
+      }
+      const exportedPreferences = getReadyCollection(
+        preferencesResult,
+        "preferences"
+      );
+      if (!exportedPreferences) {
+        return { status: "failed", payload: null };
+      }
+      firstSnapshot.preferences = cloneCollection(exportedPreferences);
     } catch (error) {
       return { status: "failed", payload: null };
     }
@@ -290,6 +317,19 @@
         verifiedHistoryBaselines
       );
 
+      const preferencesVerification = await preferencesExport.exportPreferences();
+      const verifiedPreferences = getReadyCollection(
+        preferencesVerification,
+        "preferences"
+      );
+      if (!verifiedPreferences) {
+        return createSnapshotReadFailure(
+          preferencesVerification,
+          "preferences"
+        );
+      }
+      verificationSnapshot.preferences = cloneCollection(verifiedPreferences);
+
       const snapshotMatches = collectionsMatch(
         firstSnapshot.articles,
         verificationSnapshot.articles
@@ -305,6 +345,9 @@
       ) && collectionsMatch(
         firstSnapshot.historyBaselines,
         verificationSnapshot.historyBaselines
+      ) && collectionsMatch(
+        firstSnapshot.preferences,
+        verificationSnapshot.preferences
       );
       if (!snapshotMatches) {
         return {
@@ -332,7 +375,8 @@
         favorites: firstSnapshot.favorites,
         favoriteLearningStates: firstSnapshot.favoriteLearningStates,
         queryEvents: firstSnapshot.queryEvents,
-        historyBaselines: firstSnapshot.historyBaselines
+        historyBaselines: firstSnapshot.historyBaselines,
+        preferences: firstSnapshot.preferences
       });
       if (result?.status === "rejected") {
         return { status: "rejected", payload: null };

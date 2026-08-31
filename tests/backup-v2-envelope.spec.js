@@ -103,7 +103,8 @@ test("buildEnvelope 为传入的已注册实体生成完全对应的 schema 声�
     favorites: [{ id: "favorite:envelope-container" }],
     favoriteLearningStates: [{ favoriteId: "favorite:envelope-container" }],
     queryEvents: [{ id: "query-event:envelope-container" }],
-    historyBaselines: [{ id: "history-baseline:envelope-container" }]
+    historyBaselines: [{ id: "history-baseline:envelope-container" }],
+    preferences: [{ key: "appearance", value: "dark" }]
   };
   const result = await page.evaluate(incoming => (
     window.LingoFlowBackupV2Envelope.buildEnvelope(incoming)
@@ -115,7 +116,8 @@ test("buildEnvelope 为传入的已注册实体生成完全对应的 schema 声�
     favorites: "1",
     favoriteLearningStates: "1",
     queryEvents: "1",
-    historyBaselines: "1"
+    historyBaselines: "1",
+    preferences: "1"
   });
   expect(result.envelope.data).toEqual(data);
 });
@@ -309,14 +311,16 @@ test("Envelope 接受全部已注册实体，并明确拒绝未注册实体", as
         favorites: "1",
         favoriteLearningStates: "1",
         queryEvents: "1",
-        historyBaselines: "1"
+        historyBaselines: "1",
+        preferences: "1"
       },
       data: {
         articles: [],
         favorites: [],
         favoriteLearningStates: [],
         queryEvents: [],
-        historyBaselines: []
+        historyBaselines: [],
+        preferences: []
       }
     };
     const unsupported = {
@@ -386,6 +390,16 @@ test("Envelope 要求每个已注册实体的 schema 与 data key 一一对应",
         ...base,
         schema: { articles: "1" },
         data: { articles: [], historyBaselines: [] }
+      }),
+      missingPreferencesData: window.LingoFlowBackupV2Envelope.validateEnvelope({
+        ...base,
+        schema: { articles: "1", preferences: "1" },
+        data: { articles: [] }
+      }),
+      missingPreferencesSchema: window.LingoFlowBackupV2Envelope.validateEnvelope({
+        ...base,
+        schema: { articles: "1" },
+        data: { articles: [], preferences: [] }
       })
     };
   });
@@ -410,9 +424,51 @@ test("Envelope 要求每个已注册实体的 schema 与 data key 一一对应",
     path: "schema.historyBaselines",
     entity: "historyBaselines"
   });
+  expect(result.missingPreferencesData.errors).toContainEqual({
+    code: "missing-data",
+    path: "data.preferences",
+    entity: "preferences"
+  });
+  expect(result.missingPreferencesSchema.errors).toContainEqual({
+    code: "missing-schema",
+    path: "schema.preferences",
+    entity: "preferences"
+  });
 });
 
-test("Envelope 保持 Article-only 与现有三实体 Envelope 合法", async ({ page }) => {
+test("Envelope 要求 Preferences schema v1 且 collection 必须为数组", async ({ page }) => {
+  const result = await page.evaluate(() => {
+    const base = {
+      format: { name: "LingoFlow Backup", version: 2 },
+      metadata: {}
+    };
+    return {
+      wrongVersion: window.LingoFlowBackupV2Envelope.validateEnvelope({
+        ...base,
+        schema: { articles: "1", preferences: "2" },
+        data: { articles: [], preferences: [] }
+      }),
+      wrongCollection: window.LingoFlowBackupV2Envelope.validateEnvelope({
+        ...base,
+        schema: { articles: "1", preferences: "1" },
+        data: { articles: [], preferences: {} }
+      })
+    };
+  });
+
+  expect(result.wrongVersion.errors).toContainEqual({
+    code: "unsupported-schema-version",
+    path: "schema.preferences",
+    entity: "preferences"
+  });
+  expect(result.wrongCollection.errors).toContainEqual({
+    code: "invalid-entity-collection",
+    path: "data.preferences",
+    entity: "preferences"
+  });
+});
+
+test("Envelope 保持 Article-only、现有三实体与现有五实体 Envelope 合法", async ({ page }) => {
   const result = await page.evaluate(() => {
     const base = {
       format: { name: "LingoFlow Backup", version: 2 },
@@ -436,12 +492,30 @@ test("Envelope 保持 Article-only 与现有三实体 Envelope 合法", async ({
           favorites: [],
           favoriteLearningStates: []
         }
+      }),
+      existingFive: window.LingoFlowBackupV2Envelope.validateEnvelope({
+        ...base,
+        schema: {
+          articles: "1",
+          favorites: "1",
+          favoriteLearningStates: "1",
+          queryEvents: "1",
+          historyBaselines: "1"
+        },
+        data: {
+          articles: [],
+          favorites: [],
+          favoriteLearningStates: [],
+          queryEvents: [],
+          historyBaselines: []
+        }
       })
     };
   });
 
   expect(result.articleOnly.status).toBe("valid");
   expect(result.existingThree.status).toBe("valid");
+  expect(result.existingFive.status).toBe("valid");
 });
 
 test("Envelope 明确拒绝 Vocab、Migration State 和其他未知实体", async ({ page }) => {
@@ -455,6 +529,7 @@ test("Envelope 明确拒绝 Vocab、Migration State 和其他未知实体", asyn
     return {
       vocab: validateEntity("vocab"),
       migrationState: validateEntity("migrationState"),
+      deviceId: validateEntity("deviceId"),
       unknown: validateEntity("futureEntity")
     };
   });

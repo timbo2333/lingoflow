@@ -149,7 +149,8 @@ test("Backup v2 roundtrip preserves Article, Favorite tombstone, and mastered tr
       favorites: "1",
       favoriteLearningStates: "1",
       queryEvents: "1",
-      historyBaselines: "1"
+      historyBaselines: "1",
+      preferences: "1"
     });
     expect(exportResult.backup.payload.data.articles).toEqual([article]);
     expect(exportResult.backup.payload.data.favorites).toHaveLength(2);
@@ -162,6 +163,7 @@ test("Backup v2 roundtrip preserves Article, Favorite tombstone, and mastered tr
     );
     expect(exportResult.backup.payload.data.queryEvents).toEqual([]);
     expect(exportResult.backup.payload.data.historyBaselines).toEqual([]);
+    expect(exportResult.backup.payload.data.preferences).toEqual([]);
     exported = exportResult.backup.payload;
   } finally {
     await exportContext.close();

@@ -11,6 +11,7 @@
     "articles",
     "favorites",
     "favoriteLearningStates",
+    "preferences",
     "queryEvents",
     "historyBaselines"
   ];
@@ -22,9 +23,15 @@
     articles: "articleId",
     favorites: "favoriteId",
     favoriteLearningStates: "favoriteId",
+    preferences: "preferenceKey",
     queryEvents: "queryEventId",
     historyBaselines: "historyBaselineId"
   });
+  const RESTORABLE_ASSESSMENT_ENTITIES = new Set([
+    "preferences",
+    "queryEvents",
+    "historyBaselines"
+  ]);
   const BATCH_RESTORE_STATUSES = new Set([
     "completed",
     "completed-with-conflicts",
@@ -71,6 +78,9 @@
         ? { conflictingArticleId: details.conflictingArticleId }
         : {}),
       ...(details.favoriteId ? { favoriteId: details.favoriteId } : {}),
+      ...(details.preferenceKey
+        ? { preferenceKey: details.preferenceKey }
+        : {}),
       ...(details.queryEventId ? { queryEventId: details.queryEventId } : {}),
       ...(details.historyBaselineId
         ? { historyBaselineId: details.historyBaselineId }
@@ -274,6 +284,13 @@
       : null;
   }
 
+  function getPreferencesBackupSchema() {
+    const schema = window.LingoFlowPreferencesBackupSchema;
+    return schema && typeof schema.validatePreferences === "function"
+      ? schema
+      : null;
+  }
+
   function getFavoriteRepository() {
     const repository = window.LingoFlowFavoriteRepository;
     return repository && typeof repository === "object"
@@ -306,6 +323,15 @@
       typeof repository.list === "function" &&
       typeof repository.assessBackupRestore === "function" &&
       typeof repository.restoreBackupRecords === "function"
+      ? repository
+      : null;
+  }
+
+  function getPreferencesRepository() {
+    const repository = window.LingoFlowPreferencesRepository;
+    return repository &&
+      typeof repository.assessBackupRestore === "function" &&
+      typeof repository.restoreBackupItems === "function"
       ? repository
       : null;
   }
@@ -699,6 +725,10 @@
             ? record.favoriteId
             : null
         };
+      case "preferences":
+        return {
+          preferenceKey: typeof record?.key === "string" ? record.key : null
+        };
       case "queryEvents":
         return { queryEventId: typeof record?.id === "string" ? record.id : null };
       case "historyBaselines":
@@ -738,6 +768,10 @@
         "favorite-learning-backup-schema-validation-failed",
         "favorite-learning-backup-schema-unavailable"
       ],
+      preferences: [
+        "preferences-backup-schema-validation-failed",
+        "preferences-backup-schema-unavailable"
+      ],
       queryEvents: [
         "query-event-backup-schema-validation-failed",
         "query-event-backup-schema-unavailable"
@@ -768,6 +802,10 @@
         return schema
           ? records => schema.validateFavoriteLearningStates(records)
           : null;
+      }
+      case "preferences": {
+        const schema = getPreferencesBackupSchema();
+        return schema ? records => schema.validatePreferences(records) : null;
       }
       case "queryEvents": {
         const schema = getQueryEventBackupSchema();
@@ -1033,6 +1071,17 @@
       }
     }
 
+    if (entities.includes("preferences")) {
+      const repository = getPreferencesRepository();
+      if (!repository) {
+        errors.push(createError("preferences-repository-unavailable", {
+          entity: "preferences"
+        }));
+      } else {
+        dependencies.preferences = repository;
+      }
+    }
+
     const includesQueryHistory = entities.some(entity => QUERY_HISTORY_ENTITIES.has(entity));
     if (includesQueryHistory) {
       const repository = getQueryEventRepository();
@@ -1065,8 +1114,8 @@
   async function assessRepositoryRecords(entity, records, repository) {
     const items = [];
     const errors = [];
-    const isQueryHistory = QUERY_HISTORY_ENTITIES.has(entity);
-    const allowedStatuses = isQueryHistory
+    const usesRestorableAssessment = RESTORABLE_ASSESSMENT_ENTITIES.has(entity);
+    const allowedStatuses = usesRestorableAssessment
       ? new Set(["restorable", "unchanged", "conflict", "rejected", "failed"])
       : ARTICLE_RESULT_STATUSES;
 
@@ -1096,7 +1145,7 @@
         items.push({
           index,
           ...identity,
-          status: isQueryHistory ? "failed" : "rejected",
+          status: usesRestorableAssessment ? "failed" : "rejected",
           written: false,
           reason: `${entity}-assessment-failed`
         });
@@ -1162,7 +1211,7 @@
           item.written !== false) {
         return false;
       }
-      const allowedStatuses = QUERY_HISTORY_ENTITIES.has(entity)
+      const allowedStatuses = RESTORABLE_ASSESSMENT_ENTITIES.has(entity)
         ? ["restorable", "unchanged", "conflict"]
         : ["restored", "unchanged", "conflict"];
       return allowedStatuses.includes(item.status) &&
@@ -1231,13 +1280,13 @@
       }
       if (assessment?.status === "ready" &&
           !isReadyDomainAssessment(entity, collections[entity], assessment)) {
-        assessment = QUERY_HISTORY_ENTITIES.has(entity)
+        assessment = RESTORABLE_ASSESSMENT_ENTITIES.has(entity)
           ? blockedDomainAssessment(entity, collections[entity])
           : invalidDomainAssessment(entity, collections[entity]);
       } else if (assessment?.status === "blocked") {
         assessment = blockedDomainAssessment(entity, collections[entity], assessment);
       } else if (!assessment || !["ready", "rejected"].includes(assessment.status)) {
-        assessment = QUERY_HISTORY_ENTITIES.has(entity)
+        assessment = RESTORABLE_ASSESSMENT_ENTITIES.has(entity)
           ? blockedDomainAssessment(entity, collections[entity], assessment)
           : invalidDomainAssessment(entity, collections[entity]);
       }
@@ -1428,6 +1477,9 @@
           case "favoriteLearningStates":
             result = await dependencies.favoriteLearningStates
               .restoreBackupRecords(records);
+            break;
+          case "preferences":
+            result = await dependencies.preferences.restoreBackupItems(records);
             break;
           case "queryEvents":
             result = await dependencies.queryEvents.restoreBackupRecords(records);

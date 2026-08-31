@@ -204,15 +204,18 @@ test("five-entity roundtrip preserves Query History facts and rebuilds Vocab", a
       favorites: "1",
       favoriteLearningStates: "1",
       queryEvents: "1",
-      historyBaselines: "1"
+      historyBaselines: "1",
+      preferences: "1"
     });
     expect(Object.keys(exported.payload.data)).toEqual([
       "articles",
       "favorites",
       "favoriteLearningStates",
       "queryEvents",
-      "historyBaselines"
+      "historyBaselines",
+      "preferences"
     ]);
+    expect(exported.payload.data.preferences).toEqual([]);
     expect(exported.payload.data).not.toHaveProperty("vocab");
     expect(exported.payload.data).not.toHaveProperty("migrationState");
     payload = exported.payload;
@@ -1258,9 +1261,10 @@ for (const missingCase of [
   });
 }
 
-test("five-entity restore completes every assessment and migration finalize before ordered writes", async ({ page }) => {
+test("six-entity restore completes every assessment and migration finalize before ordered writes", async ({ page }) => {
   await loadBackupEnvironment(page);
   const data = makeFiveEntityData("full-phase-order");
+  data.preferences = [{ key: "appearance", value: "dark" }];
   const localRelationFavorite = makeFavorite("favorite:local-relation", {
     text: "local relation target"
   });
@@ -1272,11 +1276,13 @@ test("five-entity restore completes every assessment and migration finalize befo
       articleSchema: window.LingoFlowBackupV2Schema,
       favoriteSchema: window.LingoFlowFavoriteBackupSchema,
       learningSchema: window.LingoFlowFavoriteLearningBackupSchema,
+      preferencesSchema: window.LingoFlowPreferencesBackupSchema,
       querySchema: window.LingoFlowQueryEventBackupSchema,
       baselineSchema: window.LingoFlowHistoryBaselineBackupSchema,
       articles: window.LingoFlowArticleLibrary,
       favorites: window.LingoFlowFavoriteRepository,
       learning: window.LingoFlowFavoriteLearningRepository,
+      preferences: window.LingoFlowPreferencesRepository,
       queryEvents: window.LingoFlowQueryEventRepository,
       historyBaselines: window.LingoFlowHistoryBaselineRepository,
       coordinator: window.LingoFlowQueryHistoryMigrationCoordinator,
@@ -1313,6 +1319,13 @@ test("five-entity restore completes every assessment and migration finalize befo
       validateFavoriteLearningStates(records) {
         calls.push("schema:favoriteLearningStates");
         return originals.learningSchema.validateFavoriteLearningStates(records);
+      }
+    });
+    window.LingoFlowPreferencesBackupSchema = Object.freeze({
+      ...originals.preferencesSchema,
+      validatePreferences(records) {
+        calls.push("schema:preferences");
+        return originals.preferencesSchema.validatePreferences(records);
       }
     });
     window.LingoFlowQueryEventBackupSchema = Object.freeze({
@@ -1364,6 +1377,17 @@ test("five-entity restore completes every assessment and migration finalize befo
       restoreBackupRecords(records) {
         calls.push("restore:favoriteLearningStates");
         return originals.learning.restoreBackupRecords(records);
+      }
+    });
+    window.LingoFlowPreferencesRepository = Object.freeze({
+      ...originals.preferences,
+      assessBackupRestore(record) {
+        calls.push("assess:preferences");
+        return originals.preferences.assessBackupRestore(record);
+      },
+      restoreBackupItems(records) {
+        calls.push("restore:preferences");
+        return originals.preferences.restoreBackupItems(records);
       }
     });
     window.LingoFlowQueryEventRepository = Object.freeze({
@@ -1426,11 +1450,13 @@ test("five-entity restore completes every assessment and migration finalize befo
       window.LingoFlowBackupV2Schema = originals.articleSchema;
       window.LingoFlowFavoriteBackupSchema = originals.favoriteSchema;
       window.LingoFlowFavoriteLearningBackupSchema = originals.learningSchema;
+      window.LingoFlowPreferencesBackupSchema = originals.preferencesSchema;
       window.LingoFlowQueryEventBackupSchema = originals.querySchema;
       window.LingoFlowHistoryBaselineBackupSchema = originals.baselineSchema;
       window.LingoFlowArticleLibrary = originals.articles;
       window.LingoFlowFavoriteRepository = originals.favorites;
       window.LingoFlowFavoriteLearningRepository = originals.learning;
+      window.LingoFlowPreferencesRepository = originals.preferences;
       window.LingoFlowQueryEventRepository = originals.queryEvents;
       window.LingoFlowHistoryBaselineRepository = originals.historyBaselines;
       window.LingoFlowQueryHistoryMigrationCoordinator = originals.coordinator;
@@ -1440,7 +1466,7 @@ test("five-entity restore completes every assessment and migration finalize befo
 
   expect(result.restored).toMatchObject({
     status: "completed",
-    summary: { total: 5, restored: 5 },
+    summary: { total: 6, restored: 6 },
     migration: { status: "completed", backupWritesStarted: true },
     vocabRebuild: { status: "rebuilt" }
   });
@@ -1450,6 +1476,7 @@ test("five-entity restore completes every assessment and migration finalize befo
     "schema:articles",
     "schema:favorites",
     "schema:favoriteLearningStates",
+    "schema:preferences",
     "schema:queryEvents",
     "schema:historyBaselines",
     "relation:favorites",
@@ -1464,6 +1491,7 @@ test("five-entity restore completes every assessment and migration finalize befo
     "assess:articles",
     "assess:favorites",
     "assess:favoriteLearningStates",
+    "assess:preferences",
     "assess:queryEvents",
     "assess:historyBaselines",
     "migration:finalize:start",
@@ -1473,6 +1501,8 @@ test("five-entity restore completes every assessment and migration finalize befo
     "restore:articles",
     "restore:favorites",
     "restore:favoriteLearningStates",
+    "restore:preferences",
+    "schema:preferences",
     "restore:queryEvents",
     "schema:queryEvents",
     "restore:historyBaselines",
