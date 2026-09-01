@@ -2,10 +2,11 @@
   "use strict";
 
   const DB_NAME = "LingoFlowSyncDB";
-  const DB_VERSION = 1;
+  const DB_VERSION = 2;
   const CONTROL_STORE = "control";
   const SIDECAR_STORE = "entitySidecars";
   const OUTBOX_STORE = "outbox";
+  const ISSUES_STORE = "syncIssues";
   const BINDING_KEY = "workspace-binding";
   const FAVORITE_WRITER_KEY = "favorite-writer-lock";
   const FAVORITE_LOCK_NAME = "lingoflow:favorite-global-writer";
@@ -41,8 +42,35 @@
     "localBeforeSnapshot",
     "localBeforeFingerprint",
     "candidateFingerprint",
-    "request"
+    "request",
+    "attemptedAt",
+    "attemptCount",
+    "leaseToken",
+    "leaseExpiresAt",
+    "dependsOnMutationId"
   ]);
+  const OUTBOX_RUNTIME_FIELDS = Object.freeze([
+    "attemptedAt",
+    "attemptCount",
+    "leaseToken",
+    "leaseExpiresAt",
+    "dependsOnMutationId"
+  ]);
+  const ISSUE_FIELDS = new Set([
+    "ownerId",
+    "bindingId",
+    "mutationId",
+    "entityType",
+    "entityId",
+    "scope",
+    "schemaVersion",
+    "kind",
+    "reason",
+    "request",
+    "result",
+    "createdAt"
+  ]);
+  const ISSUE_KINDS = new Set(["conflict", "rejected"]);
   let databasePromise = null;
 
   function getCanonical() {
@@ -208,6 +236,21 @@
         !LOCAL_OPERATIONS.has(item.localOperation)) {
       throw new Error("Outbox item metadata 无效。");
     }
+    if ((item.attemptedAt !== null && !isCanonicalTimestamp(item.attemptedAt)) ||
+        !Number.isSafeInteger(item.attemptCount) || item.attemptCount < 0 ||
+        (item.leaseToken !== null && !isOpaqueString(item.leaseToken)) ||
+        (item.leaseExpiresAt !== null && !isCanonicalTimestamp(item.leaseExpiresAt)) ||
+        (item.dependsOnMutationId !== null && !isOpaqueString(item.dependsOnMutationId)) ||
+        item.dependsOnMutationId === item.mutationId) {
+      throw new Error("Outbox runtime metadata 无效。");
+    }
+    if ((item.attemptCount === 0) !== (item.attemptedAt === null) ||
+        (item.leaseToken === null) !== (item.leaseExpiresAt === null) ||
+        (item.leaseToken !== null && item.attemptedAt === null) ||
+        (item.status === "prepared" &&
+          (item.attemptedAt !== null || item.leaseToken !== null))) {
+      throw new Error("Outbox attempt/lease 状态无效。");
+    }
 
     const protocolResult = getProtocol().validateMutation(item.request);
     if (!protocolResult || protocolResult.status !== "valid") {
@@ -238,6 +281,53 @@
       throw new Error("Outbox candidate fingerprint 不匹配。");
     }
     return item;
+  }
+
+  function validateStoredOutbox(value) {
+    return validateOutbox(value);
+  }
+
+  function validateIssue(value) {
+    const issue = getCanonical().snapshot(value, "syncIssue");
+    if (!isPlainObject(issue) || !hasExactFields(issue, ISSUE_FIELDS)) {
+      throw new Error("Sync issue 结构无效。");
+    }
+    if (!isOpaqueString(issue.ownerId) ||
+        !isOpaqueString(issue.bindingId) ||
+        !isOpaqueString(issue.mutationId) ||
+        issue.entityType !== "favorites" ||
+        !isOpaqueString(issue.entityId) ||
+        issue.scope !== "record" ||
+        issue.schemaVersion !== "1" ||
+        !ISSUE_KINDS.has(issue.kind) ||
+        !isOpaqueString(issue.reason) ||
+        !isCanonicalTimestamp(issue.createdAt)) {
+      throw new Error("Sync issue metadata 无效。");
+    }
+
+    const request = getProtocol().validateMutation(issue.request);
+    const result = getProtocol().validateResult(issue.result);
+    if (!request || request.status !== "valid" ||
+        !result || result.status !== "valid" ||
+        result.result.status !== issue.kind ||
+        result.result.reason !== issue.reason) {
+      throw new Error("Sync issue request/result 无效。");
+    }
+    issue.request = request.mutation;
+    issue.result = result.result;
+    if (issue.mutationId !== issue.request.mutationId ||
+        issue.entityType !== issue.request.entityType ||
+        issue.entityId !== issue.request.entityId ||
+        issue.scope !== issue.request.scope ||
+        issue.schemaVersion !== issue.request.schemaVersion ||
+        issue.result.mutationId !== issue.mutationId ||
+        issue.result.entityType !== issue.entityType ||
+        issue.result.entityId !== issue.entityId ||
+        issue.result.scope !== issue.scope ||
+        (issue.kind === "conflict" && issue.result.schemaVersion !== issue.schemaVersion)) {
+      throw new Error("Sync issue identity 无效。");
+    }
+    return issue;
   }
 
   function requestResult(request) {
@@ -281,7 +371,7 @@
       const request = indexedDB.open(DB_NAME, DB_VERSION);
       let blockedOpen = false;
 
-      request.onupgradeneeded = () => {
+      request.onupgradeneeded = event => {
         const db = request.result;
         if (!db.objectStoreNames.contains(CONTROL_STORE)) {
           db.createObjectStore(CONTROL_STORE, { keyPath: "key" });
@@ -316,6 +406,49 @@
           outbox.createIndex(
             "byOwnerStatusCreatedAt",
             ["ownerId", "status", "createdAt"],
+            { unique: false }
+          );
+        }
+
+        if (event.oldVersion < 2) {
+          const cursorRequest = outbox.openCursor();
+          cursorRequest.onsuccess = () => {
+            const cursor = cursorRequest.result;
+            if (!cursor) return;
+            const item = cursor.value;
+            const runtimeFieldCount = OUTBOX_RUNTIME_FIELDS.filter(field => (
+              Object.prototype.hasOwnProperty.call(item, field)
+            )).length;
+            if (runtimeFieldCount === 0) {
+              cursor.update({
+                ...item,
+                attemptedAt: null,
+                attemptCount: 0,
+                leaseToken: null,
+                leaseExpiresAt: null,
+                dependsOnMutationId: null
+              });
+            }
+            cursor.continue();
+          };
+        }
+
+        const issues = db.objectStoreNames.contains(ISSUES_STORE)
+          ? request.transaction.objectStore(ISSUES_STORE)
+          : db.createObjectStore(ISSUES_STORE, {
+              keyPath: ["ownerId", "mutationId"]
+            });
+        if (!issues.indexNames.contains("byOwnerRecord")) {
+          issues.createIndex(
+            "byOwnerRecord",
+            ["ownerId", "entityType", "entityId", "scope"],
+            { unique: false }
+          );
+        }
+        if (!issues.indexNames.contains("byOwnerKindCreatedAt")) {
+          issues.createIndex(
+            "byOwnerKindCreatedAt",
+            ["ownerId", "kind", "createdAt"],
             { unique: false }
           );
         }
@@ -603,7 +736,9 @@
       if (!isPlainObject(options) || !isOpaqueString(options.leaseToken)) {
         throw new Error("prepareOutbox options 无效。");
       }
-      const replaceReady = Boolean(options.replaceReady);
+      const replaceUnattemptedReady = Boolean(
+        options.replaceUnattemptedReady || options.replaceReady
+      );
 
       return await runTransaction(
         [CONTROL_STORE, SIDECAR_STORE, OUTBOX_STORE],
@@ -641,7 +776,7 @@
 
           const store = tx.objectStore(OUTBOX_STORE);
           const pendingValues = await requestResult(store.getAll());
-          const pending = pendingValues.map(validateOutbox)
+          const pending = pendingValues.map(validateStoredOutbox)
             .filter(current => isSameFavoriteRecord(current, item));
           for (const current of pending) {
             const mismatch = getWorkspaceMismatch(
@@ -654,14 +789,30 @@
           if (pending.some(current => current.status === "prepared")) {
             return blocked("prepared-mutation-exists");
           }
-          if (pending.some(current => current.status === "ready") && !replaceReady) {
+          const attemptedHeads = pending.filter(current => (
+            current.status === "ready" && current.attemptedAt !== null
+          ));
+          if (attemptedHeads.length > 1) {
+            return blocked("multiple-attempted-mutations");
+          }
+          const attemptedHead = attemptedHeads[0] || null;
+          if (attemptedHead && item.dependsOnMutationId !== attemptedHead.mutationId) {
+            return blocked("successor-dependency-mismatch");
+          }
+          if (!attemptedHead && item.dependsOnMutationId !== null) {
+            return blocked("successor-dependency-missing");
+          }
+
+          const unattemptedReady = pending.filter(current => (
+            current.status === "ready" && current.attemptedAt === null
+          ));
+          if (unattemptedReady.length && !replaceUnattemptedReady) {
             return blocked("ready-mutation-exists");
           }
 
           const replacedMutationIds = [];
-          if (replaceReady) {
-            for (const current of pending) {
-              if (current.status !== "ready") continue;
+          if (replaceUnattemptedReady) {
+            for (const current of unattemptedReady) {
               await requestResult(store.delete([current.ownerId, current.mutationId]));
               replacedMutationIds.push(current.mutationId);
             }
@@ -672,6 +823,59 @@
       );
     } catch (error) {
       return failed("outbox-prepare-failed", error);
+    }
+  }
+
+  async function cancelUnattemptedOutbox(context) {
+    try {
+      const value = getCanonical().snapshot(context, "context");
+      if (!isPlainObject(value) ||
+          !isOpaqueString(value.ownerId) ||
+          !isOpaqueString(value.bindingId) ||
+          !isOpaqueString(value.entityId) ||
+          !isOpaqueString(value.leaseToken)) {
+        throw new Error("cancelUnattemptedOutbox context 无效。");
+      }
+      return await runTransaction([CONTROL_STORE, OUTBOX_STORE], "readwrite", async tx => {
+        const control = tx.objectStore(CONTROL_STORE);
+        const binding = await requireBinding(control, value.ownerId, value.bindingId);
+        if (binding.status !== "ready") return binding;
+        const lease = await requireWriterLease(
+          control,
+          value.ownerId,
+          value.bindingId,
+          value.leaseToken
+        );
+        if (lease.status !== "ready") return lease;
+
+        const store = tx.objectStore(OUTBOX_STORE);
+        const records = (await requestResult(store.getAll()))
+          .map(validateStoredOutbox)
+          .filter(item => isSameFavoriteRecord(item, {
+            entityType: "favorites",
+            entityId: value.entityId,
+            scope: "record"
+          }));
+        if (records.some(item => item.ownerId !== value.ownerId)) {
+          return blocked("workspace-owner-mismatch");
+        }
+        if (records.some(item => item.bindingId !== value.bindingId)) {
+          return blocked("workspace-binding-mismatch");
+        }
+        if (records.some(item => item.status === "prepared")) {
+          return blocked("prepared-mutation-exists");
+        }
+
+        const removedMutationIds = [];
+        for (const item of records) {
+          if (item.attemptedAt !== null) continue;
+          await requestResult(store.delete([item.ownerId, item.mutationId]));
+          removedMutationIds.push(item.mutationId);
+        }
+        return { status: "cancelled", removedMutationIds };
+      });
+    } catch (error) {
+      return failed("outbox-cancel-failed", error);
     }
   }
 
@@ -700,7 +904,7 @@
         const store = tx.objectStore(OUTBOX_STORE);
         const storedValue = await requestResult(store.get([value.ownerId, value.mutationId]));
         if (storedValue === undefined) return { status: "missing", item: null };
-        const item = validateOutbox(storedValue);
+        const item = validateStoredOutbox(storedValue);
         if (item.bindingId !== value.bindingId) return blocked("workspace-binding-mismatch");
         if (item.status === "ready") return { status: "ready", item };
         item.status = "ready";
@@ -744,6 +948,405 @@
     }
   }
 
+  function createPushLeaseToken() {
+    const token = window.crypto?.randomUUID
+      ? `favorite-push:${window.crypto.randomUUID()}`
+      : null;
+    if (!token) throw new Error("无法生成 Favorite push lease token。");
+    return token;
+  }
+
+  async function listRecordIssues(store, item) {
+    const values = await requestResult(store.index("byOwnerRecord").getAll([
+      item.ownerId,
+      item.entityType,
+      item.entityId,
+      item.scope
+    ]));
+    return values.map(validateIssue).filter(issue => issue.bindingId === item.bindingId);
+  }
+
+  async function acquireNextReadyMutationLease(context, options = {}) {
+    try {
+      const owner = validateBindingInput(context);
+      if (!isPlainObject(options)) throw new Error("Push lease options 无效。");
+      const leaseMs = Number.isInteger(options.leaseMs) && options.leaseMs > 0
+        ? options.leaseMs
+        : 30000;
+      const now = Date.now();
+      const attemptedAt = new Date(now).toISOString();
+      const leaseToken = createPushLeaseToken();
+      const leaseExpiresAt = new Date(now + leaseMs).toISOString();
+
+      return await runTransaction(
+        [CONTROL_STORE, OUTBOX_STORE, ISSUES_STORE],
+        "readwrite",
+        async tx => {
+          const binding = await requireBinding(
+            tx.objectStore(CONTROL_STORE),
+            owner.ownerId,
+            owner.bindingId
+          );
+          if (binding.status !== "ready") return binding;
+
+          const store = tx.objectStore(OUTBOX_STORE);
+          const range = IDBKeyRange.bound(
+            [owner.ownerId, "ready", ""],
+            [owner.ownerId, "ready", "\uffff"]
+          );
+          const values = await requestResult(
+            store.index("byOwnerStatusCreatedAt").getAll(range)
+          );
+          if (!values.length) return { status: "idle", item: null };
+
+          const all = values.map(validateStoredOutbox)
+            .sort((left, right) => (
+              left.createdAt.localeCompare(right.createdAt) ||
+              left.mutationId.localeCompare(right.mutationId)
+            ));
+          const current = all.filter(item => item.bindingId === owner.bindingId);
+          if (!current.length) {
+            return blocked("workspace-binding-mismatch", {
+              blockedMutationIds: all.map(item => item.mutationId)
+            });
+          }
+
+          const recordHeads = new Map();
+          for (const item of current) {
+            if (item.dependsOnMutationId !== null) continue;
+            const key = `${item.entityType}\u0000${item.entityId}\u0000${item.scope}`;
+            if (recordHeads.has(key)) {
+              return blocked("multiple-sendable-heads", {
+                entityId: item.entityId
+              });
+            }
+            recordHeads.set(key, item);
+          }
+
+          const heads = Array.from(recordHeads.values()).sort((left, right) => (
+            left.createdAt.localeCompare(right.createdAt) ||
+            left.mutationId.localeCompare(right.mutationId)
+          ));
+          const blockedItems = [];
+          for (const item of heads) {
+            const issues = await listRecordIssues(tx.objectStore(ISSUES_STORE), item);
+            if (issues.length) {
+              blockedItems.push({ mutationId: item.mutationId, reason: "sync-issue-exists" });
+              continue;
+            }
+            if (item.leaseToken !== null && Date.parse(item.leaseExpiresAt) > now) {
+              return {
+                status: "busy",
+                reason: "push-lease-active",
+                mutationId: item.mutationId,
+                leaseExpiresAt: item.leaseExpiresAt
+              };
+            }
+
+            item.attemptedAt = item.attemptedAt || attemptedAt;
+            item.attemptCount += 1;
+            item.leaseToken = leaseToken;
+            item.leaseExpiresAt = leaseExpiresAt;
+            const validated = validateOutbox(item);
+            await requestResult(store.put(validated));
+            return { status: "leased", item: validated };
+          }
+
+          if (blockedItems.length) {
+            return blocked("no-sendable-ready-mutation", { blocked: blockedItems });
+          }
+          return blocked("successor-dependency-unresolved", {
+            blockedMutationIds: current.map(item => item.mutationId)
+          });
+        }
+      );
+    } catch (error) {
+      return failed("push-lease-acquire-failed", error);
+    }
+  }
+
+  async function releaseMutationLease(context) {
+    try {
+      const value = getCanonical().snapshot(context, "context");
+      if (!isPlainObject(value) ||
+          !isOpaqueString(value.ownerId) ||
+          !isOpaqueString(value.bindingId) ||
+          !isOpaqueString(value.mutationId) ||
+          !isOpaqueString(value.leaseToken)) {
+        throw new Error("releaseMutationLease context 无效。");
+      }
+      return await runTransaction([CONTROL_STORE, OUTBOX_STORE], "readwrite", async tx => {
+        const binding = await requireBinding(
+          tx.objectStore(CONTROL_STORE),
+          value.ownerId,
+          value.bindingId
+        );
+        if (binding.status !== "ready") return binding;
+        const store = tx.objectStore(OUTBOX_STORE);
+        const stored = await requestResult(store.get([value.ownerId, value.mutationId]));
+        if (stored === undefined) return { status: "missing" };
+        const item = validateStoredOutbox(stored);
+        if (item.bindingId !== value.bindingId) return blocked("workspace-binding-mismatch");
+        if (item.leaseToken !== value.leaseToken) return blocked("stale-push-lease");
+        item.leaseToken = null;
+        item.leaseExpiresAt = null;
+        const validated = validateOutbox(item);
+        await requestResult(store.put(validated));
+        return { status: "released", item: validated };
+      });
+    } catch (error) {
+      return failed("push-lease-release-failed", error);
+    }
+  }
+
+  function validateSettlementContext(context, allowedStatuses) {
+    const value = getCanonical().snapshot(context, "context");
+    if (!isPlainObject(value) ||
+        !isOpaqueString(value.ownerId) ||
+        !isOpaqueString(value.bindingId) ||
+        !isOpaqueString(value.mutationId) ||
+        !isOpaqueString(value.leaseToken)) {
+      throw new Error("Push settlement context 无效。");
+    }
+    const request = getProtocol().validateMutation(value.request);
+    const result = getProtocol().validateResult(value.result);
+    if (request.status !== "valid" || result.status !== "valid" ||
+        !allowedStatuses.has(result.result.status)) {
+      throw new Error("Push settlement request/result 无效。");
+    }
+    value.request = request.mutation;
+    value.result = result.result;
+    if (value.mutationId !== value.request.mutationId ||
+        value.result.mutationId !== value.request.mutationId ||
+        value.result.entityType !== value.request.entityType ||
+        value.result.entityId !== value.request.entityId ||
+        value.result.scope !== value.request.scope ||
+        (value.result.status !== "rejected" &&
+          value.result.schemaVersion !== value.request.schemaVersion)) {
+      throw new Error("Push settlement identity 无效。");
+    }
+    return value;
+  }
+
+  async function requireLeasedOutbox(store, value) {
+    const stored = await requestResult(store.get([value.ownerId, value.mutationId]));
+    if (stored === undefined) return { status: "missing", item: null };
+    const item = validateStoredOutbox(stored);
+    const mismatch = getWorkspaceMismatch(item, value.ownerId, value.bindingId);
+    if (mismatch) return mismatch;
+    if (item.status !== "ready" || item.leaseToken !== value.leaseToken) {
+      return blocked("stale-push-lease");
+    }
+    if (!getCanonical().valuesEqual(item.request, value.request)) {
+      return blocked("outbox-request-changed");
+    }
+    return { status: "ready", item };
+  }
+
+  async function readExpectedSidecar(store, item) {
+    const stored = await requestResult(store.get([
+      item.ownerId,
+      item.entityType,
+      item.entityId,
+      item.scope
+    ]));
+    if (stored === undefined) {
+      return item.request.baseRevision === null
+        ? { status: "ready", sidecar: null }
+        : blocked("sidecar-revision-changed");
+    }
+    const sidecar = validateSidecar(stored);
+    const mismatch = getWorkspaceMismatch(sidecar, item.ownerId, item.bindingId);
+    if (mismatch) return mismatch;
+    return sidecar.serverRevision === item.request.baseRevision
+      ? { status: "ready", sidecar }
+      : blocked("sidecar-revision-changed");
+  }
+
+  async function settleSuccessfulMutation(context) {
+    try {
+      const value = validateSettlementContext(
+        context,
+        new Set(["applied", "unchanged"])
+      );
+      const successor = value.successor === null
+        ? null
+        : validateOutbox(value.successor);
+      return await runTransaction(
+        [CONTROL_STORE, SIDECAR_STORE, OUTBOX_STORE, ISSUES_STORE],
+        "readwrite",
+        async tx => {
+          const binding = await requireBinding(
+            tx.objectStore(CONTROL_STORE),
+            value.ownerId,
+            value.bindingId
+          );
+          if (binding.status !== "ready") return binding;
+          const outbox = tx.objectStore(OUTBOX_STORE);
+          const leased = await requireLeasedOutbox(outbox, value);
+          if (leased.status !== "ready") return leased;
+          const item = leased.item;
+          const sidecars = tx.objectStore(SIDECAR_STORE);
+          const currentSidecar = await readExpectedSidecar(sidecars, item);
+          if (currentSidecar.status !== "ready") return currentSidecar;
+          const existingIssues = await listRecordIssues(tx.objectStore(ISSUES_STORE), item);
+          if (existingIssues.length) return blocked("sync-issue-exists");
+
+          const recordItems = (await requestResult(outbox.getAll()))
+            .map(validateStoredOutbox)
+            .filter(current => isSameFavoriteRecord(current, item));
+          for (const current of recordItems) {
+            const mismatch = getWorkspaceMismatch(
+              current,
+              item.ownerId,
+              item.bindingId
+            );
+            if (mismatch) return mismatch;
+          }
+          const followers = recordItems.filter(current => current.mutationId !== item.mutationId);
+          if (followers.some(current => (
+            current.status !== "ready" ||
+            current.attemptedAt !== null ||
+            current.dependsOnMutationId !== item.mutationId
+          ))) {
+            return blocked("successor-state-invalid");
+          }
+          if (followers.length > 1) return blocked("multiple-successor-mutations");
+
+          if (successor) {
+            if (successor.status !== "ready" ||
+                successor.ownerId !== item.ownerId ||
+                successor.bindingId !== item.bindingId ||
+                !isSameFavoriteRecord(successor, item) ||
+                successor.mutationId === item.mutationId ||
+                successor.attemptedAt !== null ||
+                successor.attemptCount !== 0 ||
+                successor.leaseToken !== null ||
+                successor.dependsOnMutationId !== null ||
+                successor.request.baseRevision !== value.result.revision) {
+              return blocked("successor-materialization-invalid");
+            }
+          }
+
+          const sidecar = validateSidecar({
+            ownerId: item.ownerId,
+            bindingId: item.bindingId,
+            entityType: item.entityType,
+            entityId: item.entityId,
+            scope: item.scope,
+            schemaVersion: item.request.schemaVersion,
+            serverRevision: value.result.revision,
+            lastSyncedSnapshot: item.request.payload,
+            lastSyncedFingerprint: getCanonical().fingerprint(item.request.payload)
+          });
+          await requestResult(sidecars.put(sidecar));
+          await requestResult(outbox.delete([item.ownerId, item.mutationId]));
+          for (const follower of followers) {
+            await requestResult(outbox.delete([follower.ownerId, follower.mutationId]));
+          }
+          if (successor) await requestResult(outbox.add(successor));
+          return {
+            status: "settled",
+            resultStatus: value.result.status,
+            sidecar,
+            successor
+          };
+        }
+      );
+    } catch (error) {
+      return failed("push-success-settlement-failed", error);
+    }
+  }
+
+  async function settleMutationIssue(context) {
+    try {
+      const value = validateSettlementContext(
+        context,
+        new Set(["conflict", "rejected"])
+      );
+      const issue = validateIssue({
+        ownerId: value.ownerId,
+        bindingId: value.bindingId,
+        mutationId: value.mutationId,
+        entityType: value.request.entityType,
+        entityId: value.request.entityId,
+        scope: value.request.scope,
+        schemaVersion: value.request.schemaVersion,
+        kind: value.result.status,
+        reason: value.result.reason,
+        request: value.request,
+        result: value.result,
+        createdAt: new Date().toISOString()
+      });
+      return await runTransaction(
+        [CONTROL_STORE, OUTBOX_STORE, ISSUES_STORE],
+        "readwrite",
+        async tx => {
+          const binding = await requireBinding(
+            tx.objectStore(CONTROL_STORE),
+            value.ownerId,
+            value.bindingId
+          );
+          if (binding.status !== "ready") return binding;
+          const outbox = tx.objectStore(OUTBOX_STORE);
+          const leased = await requireLeasedOutbox(outbox, value);
+          if (leased.status !== "ready") return leased;
+          await requestResult(tx.objectStore(ISSUES_STORE).add(issue));
+          await requestResult(outbox.delete([value.ownerId, value.mutationId]));
+          return { status: "settled", resultStatus: issue.kind, issue };
+        }
+      );
+    } catch (error) {
+      return failed("push-issue-settlement-failed", error);
+    }
+  }
+
+  async function getIssue(ownerId, mutationId) {
+    try {
+      if (!isOpaqueString(ownerId) || !isOpaqueString(mutationId)) {
+        throw new Error("Sync issue identity 无效。");
+      }
+      const value = await runTransaction([ISSUES_STORE], "readonly", tx => (
+        requestResult(tx.objectStore(ISSUES_STORE).get([ownerId, mutationId]))
+      ));
+      if (value === undefined) return { status: "missing", issue: null };
+      return { status: "ready", issue: validateIssue(value) };
+    } catch (error) {
+      return failed("sync-issue-read-failed", error);
+    }
+  }
+
+  async function listIssues(query = {}) {
+    try {
+      const value = getCanonical().snapshot(query, "query");
+      if (!isPlainObject(value) || !isOpaqueString(value.ownerId)) {
+        throw new Error("Sync issue query 缺少 ownerId。");
+      }
+      if (Object.prototype.hasOwnProperty.call(value, "bindingId") &&
+          !isOpaqueString(value.bindingId)) {
+        throw new Error("Sync issue query bindingId 无效。");
+      }
+      if (Object.prototype.hasOwnProperty.call(value, "entityId") &&
+          !isOpaqueString(value.entityId)) {
+        throw new Error("Sync issue query entityId 无效。");
+      }
+      const values = await runTransaction([ISSUES_STORE], "readonly", tx => (
+        requestResult(tx.objectStore(ISSUES_STORE).getAll())
+      ));
+      const issues = values.map(validateIssue)
+        .filter(issue => issue.ownerId === value.ownerId)
+        .filter(issue => !value.bindingId || issue.bindingId === value.bindingId)
+        .filter(issue => !value.entityId || issue.entityId === value.entityId)
+        .sort((left, right) => (
+          left.createdAt.localeCompare(right.createdAt) ||
+          left.mutationId.localeCompare(right.mutationId)
+        ));
+      return { status: "ready", issues };
+    } catch (error) {
+      return failed("sync-issue-list-failed", error);
+    }
+  }
+
   async function getOutbox(ownerId, mutationId) {
     try {
       if (!isOpaqueString(ownerId) || !isOpaqueString(mutationId)) {
@@ -753,7 +1356,7 @@
         requestResult(tx.objectStore(OUTBOX_STORE).get([ownerId, mutationId]))
       ));
       if (value === undefined) return { status: "missing", item: null };
-      return { status: "ready", item: validateOutbox(value) };
+      return { status: "ready", item: validateStoredOutbox(value) };
     } catch (error) {
       return failed("outbox-read-failed", error);
     }
@@ -777,7 +1380,7 @@
       const values = await runTransaction([OUTBOX_STORE], "readonly", tx => (
         requestResult(tx.objectStore(OUTBOX_STORE).getAll())
       ));
-      const items = values.map(validateOutbox)
+      const items = values.map(validateStoredOutbox)
         .filter(item => item.ownerId === value.ownerId)
         .filter(item => !value.status || item.status === value.status)
         .filter(item => !value.entityId || item.entityId === value.entityId)
@@ -804,8 +1407,15 @@
     listSidecars,
     putSidecar,
     prepareOutbox,
+    cancelUnattemptedOutbox,
     markOutboxReady,
     removeOutbox,
+    acquireNextReadyMutationLease,
+    releaseMutationLease,
+    settleSuccessfulMutation,
+    settleMutationIssue,
+    getIssue,
+    listIssues,
     getOutbox,
     listOutbox
   });

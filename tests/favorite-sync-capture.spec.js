@@ -27,6 +27,11 @@ async function loadCaptureScripts(page) {
         localBeforeSnapshot: before,
         localBeforeFingerprint: before === null ? null : canonical.fingerprint(before),
         candidateFingerprint: canonical.fingerprint(payload),
+        attemptedAt: null,
+        attemptCount: 0,
+        leaseToken: null,
+        leaseExpiresAt: null,
+        dependsOnMutationId: null,
         request: {
           mutationId,
           entityType: "favorites",
@@ -99,12 +104,13 @@ test.afterEach(async ({ page }) => {
   expect(projectErrors.get(page), "页面不应出现项目自身的 JavaScript 错误").toEqual([]);
 });
 
-test("LingoFlowSyncDB v1 只创建 control、entitySidecars、outbox", async ({ page }) => {
+test("LingoFlowSyncDB v2 仅增加 syncIssues store", async ({ page }) => {
   const schema = await page.evaluate(async () => {
     const repository = window.LingoFlowSyncStateRepository;
     const db = await repository.openDatabase();
     const sidecarStore = db.transaction("entitySidecars", "readonly").objectStore("entitySidecars");
     const outboxStore = db.transaction("outbox", "readonly").objectStore("outbox");
+    const issuesStore = db.transaction("syncIssues", "readonly").objectStore("syncIssues");
     return {
       name: db.name,
       version: db.version,
@@ -118,14 +124,19 @@ test("LingoFlowSyncDB v1 只创建 control、entitySidecars、outbox", async ({ 
       outboxIndexes: Array.from(outboxStore.indexNames).sort().map(name => ({
         name,
         keyPath: outboxStore.index(name).keyPath
+      })),
+      issuesKeyPath: issuesStore.keyPath,
+      issueIndexes: Array.from(issuesStore.indexNames).sort().map(name => ({
+        name,
+        keyPath: issuesStore.index(name).keyPath
       }))
     };
   });
 
   expect(schema).toEqual({
     name: "LingoFlowSyncDB",
-    version: 1,
-    stores: ["control", "entitySidecars", "outbox"],
+    version: 2,
+    stores: ["control", "entitySidecars", "outbox", "syncIssues"],
     sidecarKeyPath: ["ownerId", "entityType", "entityId", "scope"],
     sidecarIndexes: [{
       name: "byOwnerEntityType",
@@ -140,6 +151,17 @@ test("LingoFlowSyncDB v1 只创建 control、entitySidecars、outbox", async ({ 
       {
         name: "byOwnerStatusCreatedAt",
         keyPath: ["ownerId", "status", "createdAt"]
+      }
+    ],
+    issuesKeyPath: ["ownerId", "mutationId"],
+    issueIndexes: [
+      {
+        name: "byOwnerKindCreatedAt",
+        keyPath: ["ownerId", "kind", "createdAt"]
+      },
+      {
+        name: "byOwnerRecord",
+        keyPath: ["ownerId", "entityType", "entityId", "scope"]
       }
     ]
   });
@@ -182,6 +204,19 @@ test("malformed persisted sidecar/outbox 明确 failed 而不是 missing 或 emp
     const unknownStatusList = await state.listOutbox({ ownerId: owner.ownerId });
     await window.__deleteSyncStore("outbox", [owner.ownerId, unknownStatus.mutationId]);
 
+    const missingRuntime = window.__makeCaptureItem(owner, plan);
+    delete missingRuntime.attemptedAt;
+    delete missingRuntime.attemptCount;
+    delete missingRuntime.leaseToken;
+    delete missingRuntime.leaseExpiresAt;
+    delete missingRuntime.dependsOnMutationId;
+    await window.__putSyncStore("outbox", missingRuntime);
+    const missingRuntimeRead = await state.getOutbox(
+      owner.ownerId,
+      missingRuntime.mutationId
+    );
+    await window.__deleteSyncStore("outbox", [owner.ownerId, missingRuntime.mutationId]);
+
     const identityMismatch = window.__makeCaptureItem(owner, plan);
     identityMismatch.request.mutationId = `mutation:${crypto.randomUUID()}`;
     await window.__putSyncStore("outbox", identityMismatch);
@@ -194,6 +229,7 @@ test("malformed persisted sidecar/outbox 明确 failed 而不是 missing 或 emp
       sidecarRead,
       unknownStatusRead,
       unknownStatusList,
+      missingRuntimeRead,
       identityMismatchRead,
       identityMismatch,
       stillStored
@@ -211,6 +247,10 @@ test("malformed persisted sidecar/outbox 明确 failed 而不是 missing 或 emp
   expect(result.unknownStatusList).toMatchObject({
     status: "failed",
     reason: "outbox-list-failed"
+  });
+  expect(result.missingRuntimeRead).toMatchObject({
+    status: "failed",
+    reason: "outbox-read-failed"
   });
   expect(result.identityMismatchRead).toMatchObject({
     status: "failed",

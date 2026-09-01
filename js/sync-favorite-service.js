@@ -66,7 +66,14 @@
     return Boolean(favorite?.deletedAt);
   }
 
-  function createOutboxItem(owner, plan, sidecar, operation, localOperation) {
+  function createOutboxItem(
+    owner,
+    plan,
+    sidecar,
+    operation,
+    localOperation,
+    dependsOnMutationId = null
+  ) {
     const canonical = getCanonical();
     const mutationId = createMutationId();
     const payload = canonical.snapshot(plan.candidate, "candidate");
@@ -98,11 +105,16 @@
       localBeforeSnapshot: before,
       localBeforeFingerprint: before === null ? null : canonical.fingerprint(before),
       candidateFingerprint: canonical.fingerprint(payload),
-      request
+      request,
+      attemptedAt: null,
+      attemptCount: 0,
+      leaseToken: null,
+      leaseExpiresAt: null,
+      dependsOnMutationId
     };
   }
 
-  function chooseWireOperation(plan, sidecar, pending) {
+  function chooseWireOperation(plan, sidecar, pending, attemptedHead = null) {
     if (isTombstone(plan.candidate)) return { status: "ready", operation: "put" };
 
     if (sidecar?.lastSyncedSnapshot && isTombstone(sidecar.lastSyncedSnapshot)) {
@@ -115,11 +127,19 @@
     if (plan.operation === "restore") {
       const unsentDelete = pending.some(item => (
         item.status === "ready" &&
+        item.attemptedAt === null &&
         item.request.operation === "put" &&
         isTombstone(item.request.payload)
       ));
       if (unsentDelete) {
         return { status: "ready", operation: "put", coalescedRestore: true };
+      }
+      if (attemptedHead) {
+        return {
+          status: "ready",
+          operation: "put",
+          successorAwaitingAck: true
+        };
       }
       return { status: "blocked", reason: "restore-tombstone-revision-unavailable" };
     }
@@ -313,7 +333,61 @@
 
     const syncState = await readSyncState(owner, plan.entityId);
     if (syncState.status !== "ready") return syncState;
-    const wire = chooseWireOperation(plan, syncState.sidecar, syncState.pending);
+    const attempted = syncState.pending.filter(item => (
+      item.status === "ready" && item.attemptedAt !== null
+    ));
+    if (attempted.length > 1) {
+      return { status: "blocked", reason: "multiple-attempted-mutations" };
+    }
+    const attemptedHead = attempted[0] || null;
+    const comparisonSnapshot = attemptedHead
+      ? attemptedHead.request.payload
+      : syncState.sidecar?.lastSyncedSnapshot ?? null;
+
+    if (comparisonSnapshot && getCanonical().valuesEqual(plan.candidate, comparisonSnapshot)) {
+      const cancelled = await getStateRepository().cancelUnattemptedOutbox({
+        ownerId: owner.ownerId,
+        bindingId: owner.bindingId,
+        entityId: plan.entityId,
+        leaseToken: lease.leaseToken
+      });
+      if (cancelled.status !== "cancelled") return cancelled;
+      const binding = await verifyCurrentBinding(owner);
+      if (binding.status !== "ready") return binding;
+
+      let committed;
+      try {
+        committed = getFavoriteRepository().commitPlannedMutation(plan);
+      } catch (error) {
+        return {
+          status: "failed",
+          reason: "favorite-local-commit-failed",
+          message: error.message
+        };
+      }
+      if (committed.status !== "committed" && committed.status !== "unchanged") {
+        return {
+          status: "blocked",
+          reason: "stale-local-state",
+          favorite: committed.favorite
+        };
+      }
+      return {
+        status: "ready",
+        mutationId: attemptedHead?.mutationId || null,
+        favorite: committed.favorite,
+        coalescedClean: !attemptedHead,
+        awaitingAttemptedHead: Boolean(attemptedHead),
+        replacedMutationIds: cancelled.removedMutationIds
+      };
+    }
+
+    const wire = chooseWireOperation(
+      plan,
+      syncState.sidecar,
+      syncState.pending,
+      attemptedHead
+    );
     if (wire.status !== "ready") return wire;
 
     const item = createOutboxItem(
@@ -321,11 +395,14 @@
       plan,
       syncState.sidecar,
       wire.operation,
-      plan.operation
+      plan.operation,
+      attemptedHead?.mutationId || null
     );
     const prepared = await getStateRepository().prepareOutbox(item, {
       leaseToken: lease.leaseToken,
-      replaceReady: syncState.pending.some(current => current.status === "ready")
+      replaceUnattemptedReady: syncState.pending.some(current => (
+        current.status === "ready" && current.attemptedAt === null
+      ))
     });
     if (prepared.status !== "prepared") return prepared;
 
@@ -378,7 +455,9 @@
       favorite: committed.favorite,
       outbox: ready.item,
       replacedMutationIds: prepared.replacedMutationIds,
-      coalescedRestore: Boolean(wire.coalescedRestore)
+      coalescedRestore: Boolean(wire.coalescedRestore),
+      successorAwaitingAck: Boolean(wire.successorAwaitingAck),
+      dependsOnMutationId: item.dependsOnMutationId
     };
   }
 
