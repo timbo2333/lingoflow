@@ -50,6 +50,12 @@
     "updatedAt",
     "deletedAt"
   ]);
+  const PLANNED_OPERATIONS = new Set([
+    "create",
+    "update",
+    "soft-delete",
+    "restore"
+  ]);
 
   function isPlainObject(value) {
     if (!value || typeof value !== "object" || Array.isArray(value)) return false;
@@ -678,17 +684,204 @@
       .toLowerCase();
   }
 
-  function create(input) {
-    if (!isPlainObject(input)) throw new Error("Favorite 创建输入必须是普通 JSON 对象。");
+  function createPlan(operation, before, candidate, changed) {
+    return {
+      operation,
+      entityId: candidate.id,
+      before: before === null ? null : cloneJson(before, "favorite"),
+      candidate: cloneJson(candidate, "favorite"),
+      changed: Boolean(changed)
+    };
+  }
 
+  function validateCreateInput(input) {
+    if (!isPlainObject(input)) throw new Error("Favorite 创建输入必须是普通 JSON 对象。");
     for (const key of CREATE_RESERVED_FIELDS) {
       if (Object.prototype.hasOwnProperty.call(input, key)) {
         throw new Error(`Favorite 创建输入不能指定 ${key}。`);
       }
     }
-
     const snapshot = cloneJson(input, "favorite");
     validateFavorite(snapshot, { requireIdentity: false });
+    return snapshot;
+  }
+
+  function planCreate(input) {
+    const snapshot = validateCreateInput(input);
+    const records = readRecords();
+    const id = allocateFavoriteId(records);
+    const now = nextTimestamp();
+    const candidate = {
+      ...snapshot,
+      id,
+      type: snapshot.type,
+      text: snapshot.text,
+      createdAt: now,
+      updatedAt: now,
+      deletedAt: null
+    };
+    validateFavorite(candidate);
+    return createPlan("create", null, candidate, true);
+  }
+
+  function planUpdate(id, patch = {}) {
+    const favoriteId = normalizeId(id);
+    if (!favoriteId) throw new Error("缺少 Favorite ID。");
+    if (!isPlainObject(patch)) throw new Error("Favorite 更新必须是普通 JSON 对象。");
+    for (const key of UPDATE_PROTECTED_FIELDS) {
+      if (Object.prototype.hasOwnProperty.call(patch, key)) {
+        throw new Error(`Favorite 更新不能修改 ${key}。`);
+      }
+    }
+
+    const patchSnapshot = cloneJson(patch, "patch");
+    validateFieldBoundaries(patchSnapshot);
+    const current = getOwnRecord(readRecords(), favoriteId);
+    if (!current) throw new Error("要更新的 Favorite 不存在。");
+    if (current.deletedAt) throw new Error("已删除的 Favorite 必须先恢复再更新。");
+
+    const candidate = mergeJsonObjects(current, patchSnapshot);
+    candidate.id = current.id;
+    candidate.createdAt = current.createdAt;
+    candidate.updatedAt = current.updatedAt;
+    candidate.deletedAt = null;
+    validateFavorite(candidate);
+    if (valuesEqual(current, candidate)) {
+      return createPlan("update", current, current, false);
+    }
+    candidate.updatedAt = nextTimestamp(current.updatedAt);
+    validateFavorite(candidate);
+    return createPlan("update", current, candidate, true);
+  }
+
+  function planSoftDelete(id) {
+    const favoriteId = normalizeId(id);
+    if (!favoriteId) return null;
+    const current = getOwnRecord(readRecords(), favoriteId);
+    if (!current) return null;
+    if (current.deletedAt) return createPlan("soft-delete", current, current, false);
+
+    const deletedAt = nextTimestamp(current.updatedAt);
+    const candidate = {
+      ...current,
+      updatedAt: deletedAt,
+      deletedAt
+    };
+    validateFavorite(candidate);
+    return createPlan("soft-delete", current, candidate, true);
+  }
+
+  function planRestore(id) {
+    const favoriteId = normalizeId(id);
+    if (!favoriteId) return null;
+    const current = getOwnRecord(readRecords(), favoriteId);
+    if (!current) return null;
+    if (!current.deletedAt) return createPlan("restore", current, current, false);
+
+    const candidate = {
+      ...current,
+      updatedAt: nextTimestamp(current.updatedAt),
+      deletedAt: null
+    };
+    validateFavorite(candidate);
+    return createPlan("restore", current, candidate, true);
+  }
+
+  function snapshotPlannedMutation(value) {
+    if (!isPlainObject(value)) throw new Error("Favorite mutation plan 必须是普通对象。");
+    const plan = cloneJson(value, "plan");
+    const keys = Object.keys(plan).sort();
+    const expectedKeys = ["before", "candidate", "changed", "entityId", "operation"].sort();
+    if (keys.length !== expectedKeys.length ||
+        !keys.every((key, index) => key === expectedKeys[index]) ||
+        !PLANNED_OPERATIONS.has(plan.operation) ||
+        typeof plan.changed !== "boolean" ||
+        typeof plan.entityId !== "string" ||
+        !plan.entityId.trim() ||
+        plan.entityId !== plan.entityId.trim()) {
+      throw new Error("Favorite mutation plan 结构无效。");
+    }
+
+    if (plan.before !== null) validateFavorite(plan.before);
+    validateFavorite(plan.candidate);
+    if (plan.candidate.id !== plan.entityId ||
+        (plan.before !== null && plan.before.id !== plan.entityId)) {
+      throw new Error("Favorite mutation plan identity 不一致。");
+    }
+    if (plan.operation === "create") {
+      if (plan.before !== null || plan.candidate.deletedAt !== null || !plan.changed) {
+        throw new Error("Favorite create plan 无效。");
+      }
+    } else if (plan.before === null) {
+      throw new Error("非 create plan 缺少 expected-current snapshot。");
+    }
+    if (plan.before !== null && plan.candidate.createdAt !== plan.before.createdAt) {
+      throw new Error("Favorite mutation plan 不能修改 createdAt。");
+    }
+    if (plan.operation === "update" &&
+        (plan.before.deletedAt !== null || plan.candidate.deletedAt !== null)) {
+      throw new Error("Favorite update plan 生命周期无效。");
+    }
+    if (plan.operation === "soft-delete" &&
+        (plan.before.deletedAt !== null || plan.candidate.deletedAt === null)) {
+      throw new Error("Favorite delete plan 生命周期无效。");
+    }
+    if (plan.operation === "restore" &&
+        (plan.before.deletedAt === null || plan.candidate.deletedAt !== null)) {
+      throw new Error("Favorite restore plan 生命周期无效。");
+    }
+    if (plan.changed === valuesEqual(plan.before, plan.candidate)) {
+      throw new Error("Favorite mutation plan changed 标记无效。");
+    }
+    return plan;
+  }
+
+  function commitPlannedMutation(value) {
+    const plan = snapshotPlannedMutation(value);
+    const storageSnapshot = readRecordsSnapshot();
+    const current = getOwnRecord(storageSnapshot.records, plan.entityId);
+    if (!valuesEqual(current, plan.before)) {
+      return {
+        status: "stale-local-state",
+        entityId: plan.entityId,
+        written: false,
+        favorite: current === null ? null : cloneJson(current, "favorite")
+      };
+    }
+    if (!plan.changed) {
+      return {
+        status: "unchanged",
+        entityId: plan.entityId,
+        written: false,
+        favorite: cloneJson(plan.candidate, "favorite")
+      };
+    }
+
+    if (localStorage.getItem(STORAGE_KEY) !== storageSnapshot.raw) {
+      return {
+        status: "stale-local-state",
+        entityId: plan.entityId,
+        written: false,
+        favorite: current === null ? null : cloneJson(current, "favorite")
+      };
+    }
+    Object.defineProperty(storageSnapshot.records, plan.entityId, {
+      value: plan.candidate,
+      enumerable: true,
+      configurable: true,
+      writable: true
+    });
+    writeRecords(storageSnapshot.records);
+    return {
+      status: "committed",
+      entityId: plan.entityId,
+      written: true,
+      favorite: cloneJson(plan.candidate, "favorite")
+    };
+  }
+
+  function create(input) {
+    const snapshot = validateCreateInput(input);
 
     const records = readRecords();
     const id = allocateFavoriteId(records);
@@ -843,6 +1036,11 @@
     update,
     softDelete,
     restore,
+    planCreate,
+    planUpdate,
+    planSoftDelete,
+    planRestore,
+    commitPlannedMutation,
     assessBackupRestore,
     restoreBackupRecords,
     count,
