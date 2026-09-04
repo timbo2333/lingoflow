@@ -880,6 +880,69 @@
     };
   }
 
+  function commitExactSnapshot(value) {
+    if (!isPlainObject(value)) throw new Error("Favorite exact snapshot commit 必须是普通对象。");
+    const input = cloneJson(value, "commit");
+    const keys = Object.keys(input).sort();
+    const expectedKeys = ["candidate", "entityId", "expectedCurrent"].sort();
+    if (keys.length !== expectedKeys.length ||
+        !keys.every((key, index) => key === expectedKeys[index])) {
+      throw new Error("Favorite exact snapshot commit 结构无效。");
+    }
+
+    const entityId = normalizeId(input.entityId);
+    if (!entityId || entityId !== input.entityId) {
+      throw new Error("Favorite exact snapshot commit identity 无效。");
+    }
+    if (input.expectedCurrent !== null) validateFavorite(input.expectedCurrent);
+    validateFavorite(input.candidate);
+    if (input.candidate.id !== entityId ||
+        (input.expectedCurrent !== null && input.expectedCurrent.id !== entityId)) {
+      throw new Error("Favorite exact snapshot commit identity 不一致。");
+    }
+
+    const storageSnapshot = readRecordsSnapshot();
+    const current = getOwnRecord(storageSnapshot.records, entityId);
+    if (valuesEqual(current, input.candidate)) {
+      return {
+        status: "unchanged",
+        entityId,
+        written: false,
+        favorite: cloneJson(input.candidate, "favorite")
+      };
+    }
+    if (!valuesEqual(current, input.expectedCurrent)) {
+      return {
+        status: "stale-local-state",
+        entityId,
+        written: false,
+        favorite: current === null ? null : cloneJson(current, "favorite")
+      };
+    }
+    if (localStorage.getItem(STORAGE_KEY) !== storageSnapshot.raw) {
+      return {
+        status: "stale-local-state",
+        entityId,
+        written: false,
+        favorite: current === null ? null : cloneJson(current, "favorite")
+      };
+    }
+
+    Object.defineProperty(storageSnapshot.records, entityId, {
+      value: input.candidate,
+      enumerable: true,
+      configurable: true,
+      writable: true
+    });
+    writeRecords(storageSnapshot.records);
+    return {
+      status: "committed",
+      entityId,
+      written: true,
+      favorite: cloneJson(input.candidate, "favorite")
+    };
+  }
+
   function create(input) {
     const snapshot = validateCreateInput(input);
 
@@ -1041,6 +1104,7 @@
     planSoftDelete,
     planRestore,
     commitPlannedMutation,
+    commitExactSnapshot,
     assessBackupRestore,
     restoreBackupRecords,
     count,

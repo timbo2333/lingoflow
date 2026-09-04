@@ -905,3 +905,84 @@ test("Favorite Backup 存储写入失败时返回 interrupted 且不报告成功
   expect(result.restored.errors[0]).toMatchObject({ code: "favorite-storage-write-failed" });
   expect(result.raw).toBeNull();
 });
+
+test("commitExactSnapshot 原样提交 active remote snapshot 并保留 unknown fields", async ({ page }) => {
+  const candidate = makeBackupFavorite({
+    id: "favorite:exact-active",
+    futureRemoteFact: { labels: ["server"] }
+  });
+  const result = await page.evaluate(candidate => {
+    const repository = window.LingoFlowFavoriteRepository;
+    const input = { entityId: candidate.id, expectedCurrent: null, candidate };
+    const before = structuredClone(input);
+    const committed = repository.commitExactSnapshot(input);
+    input.candidate.futureRemoteFact.labels.push("outside");
+    return {
+      before,
+      committed,
+      stored: repository.getById(candidate.id, { includeDeleted: true })
+    };
+  }, candidate);
+  expect(result.committed).toMatchObject({ status: "committed", written: true });
+  expect(result.committed.favorite).toEqual(candidate);
+  expect(result.stored).toEqual(candidate);
+  expect(result.before.candidate).toEqual(candidate);
+});
+
+test("commitExactSnapshot 原样提交 tombstone 且不生成生命周期字段", async ({ page }) => {
+  const tombstone = makeBackupFavorite({
+    id: "favorite:exact-tombstone",
+    updatedAt: "2026-09-01T01:00:00.000Z",
+    deletedAt: "2026-09-01T01:00:00.000Z"
+  });
+  const result = await page.evaluate(tombstone => {
+    const repository = window.LingoFlowFavoriteRepository;
+    return {
+      committed: repository.commitExactSnapshot({
+        entityId: tombstone.id,
+        expectedCurrent: null,
+        candidate: tombstone
+      }),
+      stored: repository.getById(tombstone.id, { includeDeleted: true })
+    };
+  }, tombstone);
+  expect(result.committed).toMatchObject({ status: "committed", written: true });
+  expect(result.stored).toEqual(tombstone);
+});
+
+test("commitExactSnapshot exact current 返回 unchanged 且不重写 storage", async ({ page }) => {
+  const favorite = makeBackupFavorite({ id: "favorite:exact-unchanged" });
+  const result = await page.evaluate(({ favorite, entityKey }) => {
+    localStorage.setItem(entityKey, JSON.stringify({ [favorite.id]: favorite }));
+    const before = localStorage.getItem(entityKey);
+    const committed = window.LingoFlowFavoriteRepository.commitExactSnapshot({
+      entityId: favorite.id,
+      expectedCurrent: null,
+      candidate: favorite
+    });
+    return { committed, before, after: localStorage.getItem(entityKey) };
+  }, { favorite, entityKey: ENTITY_STORAGE_KEY });
+  expect(result.committed).toMatchObject({ status: "unchanged", written: false });
+  expect(result.after).toBe(result.before);
+});
+
+test("commitExactSnapshot stale expectedCurrent 不覆盖并发本地值", async ({ page }) => {
+  const before = makeBackupFavorite({ id: "favorite:exact-stale", meaning: "A" });
+  const concurrent = { ...before, meaning: "local B", updatedAt: "2026-09-01T01:00:00.000Z" };
+  const candidate = { ...before, meaning: "remote C", updatedAt: "2026-09-01T02:00:00.000Z" };
+  const result = await page.evaluate(({ before, concurrent, candidate, entityKey }) => {
+    localStorage.setItem(entityKey, JSON.stringify({ [before.id]: concurrent }));
+    const committed = window.LingoFlowFavoriteRepository.commitExactSnapshot({
+      entityId: before.id,
+      expectedCurrent: before,
+      candidate
+    });
+    return {
+      committed,
+      stored: window.LingoFlowFavoriteRepository.getById(before.id, { includeDeleted: true })
+    };
+  }, { before, concurrent, candidate, entityKey: ENTITY_STORAGE_KEY });
+  expect(result.committed).toMatchObject({ status: "stale-local-state", written: false });
+  expect(result.committed.favorite).toEqual(concurrent);
+  expect(result.stored).toEqual(concurrent);
+});

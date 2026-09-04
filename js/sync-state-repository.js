@@ -2,14 +2,18 @@
   "use strict";
 
   const DB_NAME = "LingoFlowSyncDB";
-  const DB_VERSION = 2;
+  const DB_VERSION = 3;
   const CONTROL_STORE = "control";
   const SIDECAR_STORE = "entitySidecars";
   const OUTBOX_STORE = "outbox";
   const ISSUES_STORE = "syncIssues";
+  const INBOX_STORE = "inbox";
   const BINDING_KEY = "workspace-binding";
   const FAVORITE_WRITER_KEY = "favorite-writer-lock";
   const FAVORITE_LOCK_NAME = "lingoflow:favorite-global-writer";
+  const PULL_PROGRESS_PREFIX = "pull-progress";
+  const PULL_LEASE_PREFIX = "pull-lease";
+  const PULL_ANCHOR_PREFIX = "pull-anchor";
   const OUTBOX_STATUSES = new Set(["prepared", "ready"]);
   const LOCAL_OPERATIONS = new Set([
     "create",
@@ -56,7 +60,7 @@
     "leaseExpiresAt",
     "dependsOnMutationId"
   ]);
-  const ISSUE_FIELDS = new Set([
+  const PUSH_ISSUE_FIELDS = new Set([
     "ownerId",
     "bindingId",
     "mutationId",
@@ -70,7 +74,78 @@
     "result",
     "createdAt"
   ]);
+  const PULL_ISSUE_FIELDS = new Set([
+    "ownerId",
+    "bindingId",
+    "mutationId",
+    "issueId",
+    "direction",
+    "entityType",
+    "entityId",
+    "scope",
+    "schemaVersion",
+    "kind",
+    "reason",
+    "localSnapshot",
+    "sidecarSnapshot",
+    "pendingMutationIds",
+    "remoteChange",
+    "remoteRevision",
+    "remoteCursor",
+    "createdAt"
+  ]);
   const ISSUE_KINDS = new Set(["conflict", "rejected"]);
+  const PULL_PROGRESS_FIELDS = new Set([
+    "key",
+    "ownerId",
+    "bindingId",
+    "receivedCursor",
+    "appliedCursor",
+    "lastInboxSeq"
+  ]);
+  const PULL_LEASE_FIELDS = new Set([
+    "key",
+    "ownerId",
+    "bindingId",
+    "leaseToken",
+    "leaseExpiresAt",
+    "startReceivedCursor"
+  ]);
+  const PULL_ANCHOR_FIELDS = new Set([
+    "key",
+    "ownerId",
+    "bindingId",
+    "entityType",
+    "entityId",
+    "scope",
+    "schemaVersion",
+    "revision",
+    "payloadFingerprint",
+    "cursor"
+  ]);
+  const INBOX_FIELDS = new Set([
+    "ownerId",
+    "bindingId",
+    "inboxSeq",
+    "status",
+    "cursor",
+    "entityType",
+    "entityId",
+    "scope",
+    "schemaVersion",
+    "revision",
+    "operation",
+    "change",
+    "applyIntent"
+  ]);
+  const APPLY_INTENT_FIELDS = new Set([
+    "localBeforeSnapshot",
+    "candidateSnapshot",
+    "expectedSidecarSnapshot",
+    "remoteChangeSnapshot",
+    "candidateFingerprint"
+  ]);
+  const INBOX_STATUSES = new Set(["received", "applying"]);
   let databasePromise = null;
 
   function getCanonical() {
@@ -94,7 +169,11 @@
 
   function getProtocol() {
     const protocol = window.LingoFlowCloudSyncProtocol;
-    if (!protocol || typeof protocol.validateMutation !== "function") {
+    if (!protocol ||
+        typeof protocol.validateMutation !== "function" ||
+        typeof protocol.validateResult !== "function" ||
+        typeof protocol.validatePullChange !== "function" ||
+        typeof protocol.validatePullResult !== "function") {
       throw new Error("Cloud Sync Protocol 不可用。");
     }
     return protocol;
@@ -123,6 +202,11 @@
     const keys = Object.keys(value).sort();
     const expected = Array.from(fields).sort();
     return keys.length === expected.length && keys.every((key, index) => key === expected[index]);
+  }
+
+  function controlKey(prefix, ownerId, bindingId, suffix = "") {
+    const identity = getCanonical().serialize([ownerId, bindingId, suffix]);
+    return `${prefix}:${identity}`;
   }
 
   function failed(reason, error = null) {
@@ -176,7 +260,8 @@
     if (nullable && value === null) return null;
     const snapshot = getCanonical().snapshot(value, "favorite");
     const validation = getFavoriteSchema().validateFavorite(snapshot);
-    if (!validation || validation.status !== "valid" || validation.favoriteId !== entityId) {
+    if (!validation || validation.status !== "valid" ||
+        (entityId !== null && validation.favoriteId !== entityId)) {
       throw new Error("Favorite snapshot 无效。");
     }
     return snapshot;
@@ -287,9 +372,8 @@
     return validateOutbox(value);
   }
 
-  function validateIssue(value) {
-    const issue = getCanonical().snapshot(value, "syncIssue");
-    if (!isPlainObject(issue) || !hasExactFields(issue, ISSUE_FIELDS)) {
+  function validatePushIssue(issue) {
+    if (!isPlainObject(issue) || !hasExactFields(issue, PUSH_ISSUE_FIELDS)) {
       throw new Error("Sync issue 结构无效。");
     }
     if (!isOpaqueString(issue.ownerId) ||
@@ -328,6 +412,207 @@
       throw new Error("Sync issue identity 无效。");
     }
     return issue;
+  }
+
+  function createPullIssueId(ownerId, bindingId, cursor) {
+    return `pull:${getCanonical().serialize([ownerId, bindingId, cursor])}`;
+  }
+
+  function validatePullIssue(issue) {
+    if (!isPlainObject(issue) || !hasExactFields(issue, PULL_ISSUE_FIELDS)) {
+      throw new Error("Pull sync issue 结构无效。");
+    }
+    if (!isOpaqueString(issue.ownerId) ||
+        !isOpaqueString(issue.bindingId) ||
+        !isOpaqueString(issue.issueId) ||
+        issue.mutationId !== issue.issueId ||
+        issue.direction !== "pull" ||
+        issue.kind !== "conflict" ||
+        issue.entityType !== "favorites" ||
+        !isOpaqueString(issue.entityId) ||
+        issue.scope !== "record" ||
+        issue.schemaVersion !== "1" ||
+        !isOpaqueString(issue.reason) ||
+        !isOpaqueString(issue.remoteRevision) ||
+        !isOpaqueString(issue.remoteCursor) ||
+        !isCanonicalTimestamp(issue.createdAt)) {
+      throw new Error("Pull sync issue metadata 无效。");
+    }
+    if (issue.issueId !== createPullIssueId(
+      issue.ownerId,
+      issue.bindingId,
+      issue.remoteCursor
+    )) {
+      throw new Error("Pull sync issue identity 无效。");
+    }
+
+    issue.localSnapshot = validateFavoriteSnapshot(
+      issue.localSnapshot,
+      issue.entityId,
+      true
+    );
+    if (issue.sidecarSnapshot !== null) {
+      issue.sidecarSnapshot = validateSidecar(issue.sidecarSnapshot);
+      if (issue.sidecarSnapshot.ownerId !== issue.ownerId ||
+          issue.sidecarSnapshot.bindingId !== issue.bindingId ||
+          !isSameFavoriteRecord(issue.sidecarSnapshot, issue)) {
+        throw new Error("Pull sync issue sidecar identity 无效。");
+      }
+    }
+    if (!Array.isArray(issue.pendingMutationIds) ||
+        issue.pendingMutationIds.some(value => !isOpaqueString(value)) ||
+        new Set(issue.pendingMutationIds).size !== issue.pendingMutationIds.length) {
+      throw new Error("Pull sync issue pending mutations 无效。");
+    }
+
+    const remote = getProtocol().validatePullChange(issue.remoteChange);
+    if (!remote || remote.status !== "valid") {
+      throw new Error("Pull sync issue remote change 无效。");
+    }
+    issue.remoteChange = remote.change;
+    if (issue.remoteChange.entityType !== issue.entityType ||
+        issue.remoteChange.entityId !== issue.entityId ||
+        issue.remoteChange.scope !== issue.scope ||
+        issue.remoteChange.schemaVersion !== issue.schemaVersion ||
+        issue.remoteChange.revision !== issue.remoteRevision ||
+        issue.remoteChange.cursor !== issue.remoteCursor) {
+      throw new Error("Pull sync issue remote identity 无效。");
+    }
+    return issue;
+  }
+
+  function validateIssue(value) {
+    const issue = getCanonical().snapshot(value, "syncIssue");
+    return issue?.direction === "pull"
+      ? validatePullIssue(issue)
+      : validatePushIssue(issue);
+  }
+
+  function validatePullProgress(value) {
+    const progress = getCanonical().snapshot(value, "pullProgress");
+    if (!isPlainObject(progress) || !hasExactFields(progress, PULL_PROGRESS_FIELDS) ||
+        !isOpaqueString(progress.ownerId) ||
+        !isOpaqueString(progress.bindingId) ||
+        progress.key !== controlKey(
+          PULL_PROGRESS_PREFIX,
+          progress.ownerId,
+          progress.bindingId
+        ) ||
+        (progress.receivedCursor !== null && !isOpaqueString(progress.receivedCursor)) ||
+        (progress.appliedCursor !== null && !isOpaqueString(progress.appliedCursor)) ||
+        !Number.isSafeInteger(progress.lastInboxSeq) ||
+        progress.lastInboxSeq < 0) {
+      throw new Error("Pull progress 无效。");
+    }
+    return progress;
+  }
+
+  function validatePullLease(value) {
+    const lease = getCanonical().snapshot(value, "pullLease");
+    if (!isPlainObject(lease) || !hasExactFields(lease, PULL_LEASE_FIELDS) ||
+        !isOpaqueString(lease.ownerId) ||
+        !isOpaqueString(lease.bindingId) ||
+        lease.key !== controlKey(PULL_LEASE_PREFIX, lease.ownerId, lease.bindingId) ||
+        !isOpaqueString(lease.leaseToken) ||
+        !isCanonicalTimestamp(lease.leaseExpiresAt) ||
+        (lease.startReceivedCursor !== null && !isOpaqueString(lease.startReceivedCursor))) {
+      throw new Error("Pull lease 无效。");
+    }
+    return lease;
+  }
+
+  function validatePullAnchor(value) {
+    const anchor = getCanonical().snapshot(value, "pullAnchor");
+    if (!isPlainObject(anchor) || !hasExactFields(anchor, PULL_ANCHOR_FIELDS) ||
+        !isOpaqueString(anchor.ownerId) ||
+        !isOpaqueString(anchor.bindingId) ||
+        anchor.entityType !== "favorites" ||
+        !isOpaqueString(anchor.entityId) ||
+        anchor.scope !== "record" ||
+        anchor.schemaVersion !== "1" ||
+        !isOpaqueString(anchor.revision) ||
+        !isOpaqueString(anchor.cursor) ||
+        typeof anchor.payloadFingerprint !== "string" ||
+        anchor.key !== controlKey(
+          PULL_ANCHOR_PREFIX,
+          anchor.ownerId,
+          anchor.bindingId,
+          anchor.entityId
+        )) {
+      throw new Error("Pull anchor 无效。");
+    }
+    return anchor;
+  }
+
+  function validateApplyIntent(value, item) {
+    const intent = getCanonical().snapshot(value, "applyIntent");
+    if (!isPlainObject(intent) || !hasExactFields(intent, APPLY_INTENT_FIELDS)) {
+      throw new Error("Inbox apply intent 结构无效。");
+    }
+    intent.localBeforeSnapshot = validateFavoriteSnapshot(
+      intent.localBeforeSnapshot,
+      item.entityId,
+      true
+    );
+    intent.candidateSnapshot = validateFavoriteSnapshot(
+      intent.candidateSnapshot,
+      item.entityId
+    );
+    if (intent.expectedSidecarSnapshot !== null) {
+      intent.expectedSidecarSnapshot = validateSidecar(intent.expectedSidecarSnapshot);
+      if (intent.expectedSidecarSnapshot.ownerId !== item.ownerId ||
+          intent.expectedSidecarSnapshot.bindingId !== item.bindingId ||
+          !isSameFavoriteRecord(intent.expectedSidecarSnapshot, item)) {
+        throw new Error("Inbox apply intent sidecar identity 无效。");
+      }
+    }
+    const remote = getProtocol().validatePullChange(intent.remoteChangeSnapshot);
+    if (!remote || remote.status !== "valid") {
+      throw new Error("Inbox apply intent remote change 无效。");
+    }
+    intent.remoteChangeSnapshot = remote.change;
+    if (!getCanonical().valuesEqual(intent.remoteChangeSnapshot, item.change) ||
+        !getCanonical().valuesEqual(intent.candidateSnapshot, item.change.payload) ||
+        intent.candidateFingerprint !== getCanonical().fingerprint(intent.candidateSnapshot)) {
+      throw new Error("Inbox apply intent snapshot 不一致。");
+    }
+    return intent;
+  }
+
+  function validateInbox(value) {
+    const item = getCanonical().snapshot(value, "inbox");
+    if (!isPlainObject(item) || !hasExactFields(item, INBOX_FIELDS) ||
+        !isOpaqueString(item.ownerId) ||
+        !isOpaqueString(item.bindingId) ||
+        !Number.isSafeInteger(item.inboxSeq) ||
+        item.inboxSeq <= 0 ||
+        !INBOX_STATUSES.has(item.status)) {
+      throw new Error("Inbox item metadata 无效。");
+    }
+    const validation = getProtocol().validatePullChange(item.change);
+    if (!validation || validation.status !== "valid") {
+      throw new Error("Inbox change 无效。");
+    }
+    item.change = validation.change;
+    for (const field of [
+      "cursor",
+      "entityType",
+      "entityId",
+      "scope",
+      "schemaVersion",
+      "revision",
+      "operation"
+    ]) {
+      if (item[field] !== item.change[field]) {
+        throw new Error("Inbox outer/change identity 不一致。");
+      }
+    }
+    if (item.status === "received") {
+      if (item.applyIntent !== null) throw new Error("Received Inbox 不能携带 apply intent。");
+    } else {
+      item.applyIntent = validateApplyIntent(item.applyIntent, item);
+    }
+    return item;
   }
 
   function requestResult(request) {
@@ -449,6 +734,26 @@
           issues.createIndex(
             "byOwnerKindCreatedAt",
             ["ownerId", "kind", "createdAt"],
+            { unique: false }
+          );
+        }
+
+        const inbox = db.objectStoreNames.contains(INBOX_STORE)
+          ? request.transaction.objectStore(INBOX_STORE)
+          : db.createObjectStore(INBOX_STORE, {
+              keyPath: ["ownerId", "bindingId", "inboxSeq"]
+            });
+        if (!inbox.indexNames.contains("byOwnerBindingCursor")) {
+          inbox.createIndex(
+            "byOwnerBindingCursor",
+            ["ownerId", "bindingId", "cursor"],
+            { unique: true }
+          );
+        }
+        if (!inbox.indexNames.contains("byOwnerRecordSequence")) {
+          inbox.createIndex(
+            "byOwnerRecordSequence",
+            ["ownerId", "bindingId", "entityType", "entityId", "scope", "inboxSeq"],
             { unique: false }
           );
         }
@@ -644,6 +949,304 @@
     }
   }
 
+  function createInitialPullProgress(owner) {
+    return {
+      key: controlKey(PULL_PROGRESS_PREFIX, owner.ownerId, owner.bindingId),
+      ownerId: owner.ownerId,
+      bindingId: owner.bindingId,
+      receivedCursor: null,
+      appliedCursor: null,
+      lastInboxSeq: 0
+    };
+  }
+
+  async function readPullProgress(store, owner) {
+    const value = await requestResult(store.get(
+      controlKey(PULL_PROGRESS_PREFIX, owner.ownerId, owner.bindingId)
+    ));
+    return value === undefined ? null : validatePullProgress(value);
+  }
+
+  async function getPullProgress(context) {
+    try {
+      const owner = validateBindingInput(context);
+      return await runTransaction([CONTROL_STORE], "readonly", async tx => {
+        const store = tx.objectStore(CONTROL_STORE);
+        const binding = await requireBinding(store, owner.ownerId, owner.bindingId);
+        if (binding.status !== "ready") return binding;
+        const progress = await readPullProgress(store, owner);
+        return progress === null
+          ? { status: "missing", progress: null }
+          : { status: "ready", progress };
+      });
+    } catch (error) {
+      return failed("pull-progress-read-failed", error);
+    }
+  }
+
+  function createPullLeaseToken() {
+    const token = window.crypto?.randomUUID
+      ? `favorite-pull:${window.crypto.randomUUID()}`
+      : null;
+    if (!token) throw new Error("无法生成 Favorite pull lease token。");
+    return token;
+  }
+
+  async function acquirePullLease(context, options = {}) {
+    try {
+      const owner = validateBindingInput(context);
+      if (!isPlainObject(options)) throw new Error("Pull lease options 无效。");
+      const leaseMs = Number.isInteger(options.leaseMs) && options.leaseMs > 0
+        ? options.leaseMs
+        : 30000;
+      const now = Date.now();
+      return await runTransaction([CONTROL_STORE], "readwrite", async tx => {
+        const store = tx.objectStore(CONTROL_STORE);
+        const binding = await requireBinding(store, owner.ownerId, owner.bindingId);
+        if (binding.status !== "ready") return binding;
+        const key = controlKey(PULL_LEASE_PREFIX, owner.ownerId, owner.bindingId);
+        const stored = await requestResult(store.get(key));
+        if (stored !== undefined) {
+          const current = validatePullLease(stored);
+          if (Date.parse(current.leaseExpiresAt) > now) {
+            return {
+              status: "busy",
+              reason: "pull-lease-active",
+              leaseExpiresAt: current.leaseExpiresAt
+            };
+          }
+        }
+        const progress = await readPullProgress(store, owner);
+        const lease = validatePullLease({
+          key,
+          ownerId: owner.ownerId,
+          bindingId: owner.bindingId,
+          leaseToken: createPullLeaseToken(),
+          leaseExpiresAt: new Date(now + leaseMs).toISOString(),
+          startReceivedCursor: progress?.receivedCursor ?? null
+        });
+        await requestResult(store.put(lease));
+        return { status: "leased", lease, progress };
+      });
+    } catch (error) {
+      return failed("pull-lease-acquire-failed", error);
+    }
+  }
+
+  async function releasePullLease(context) {
+    try {
+      const value = getCanonical().snapshot(context, "context");
+      if (!isPlainObject(value) ||
+          !isOpaqueString(value.ownerId) ||
+          !isOpaqueString(value.bindingId) ||
+          !isOpaqueString(value.leaseToken)) {
+        throw new Error("Pull lease release context 无效。");
+      }
+      return await runTransaction([CONTROL_STORE], "readwrite", async tx => {
+        const store = tx.objectStore(CONTROL_STORE);
+        const key = controlKey(PULL_LEASE_PREFIX, value.ownerId, value.bindingId);
+        const stored = await requestResult(store.get(key));
+        if (stored === undefined) return { status: "missing" };
+        const lease = validatePullLease(stored);
+        if (lease.leaseToken !== value.leaseToken) {
+          return blocked("stale-pull-lease");
+        }
+        await requestResult(store.delete(key));
+        return { status: "released" };
+      });
+    } catch (error) {
+      return failed("pull-lease-release-failed", error);
+    }
+  }
+
+  function createInboxItem(owner, inboxSeq, change) {
+    return validateInbox({
+      ownerId: owner.ownerId,
+      bindingId: owner.bindingId,
+      inboxSeq,
+      status: "received",
+      cursor: change.cursor,
+      entityType: change.entityType,
+      entityId: change.entityId,
+      scope: change.scope,
+      schemaVersion: change.schemaVersion,
+      revision: change.revision,
+      operation: change.operation,
+      change,
+      applyIntent: null
+    });
+  }
+
+  async function receivePullResult(context) {
+    try {
+      const value = getCanonical().snapshot(context, "context");
+      if (!isPlainObject(value) ||
+          !hasExactFields(value, new Set([
+            "ownerId",
+            "bindingId",
+            "leaseToken",
+            "startReceivedCursor",
+            "pullResult"
+          ])) ||
+          !isOpaqueString(value.ownerId) ||
+          !isOpaqueString(value.bindingId) ||
+          !isOpaqueString(value.leaseToken) ||
+          (value.startReceivedCursor !== null && !isOpaqueString(value.startReceivedCursor))) {
+        throw new Error("Pull receive context 无效。");
+      }
+      const validation = getProtocol().validatePullResult(value.pullResult);
+      if (!validation || validation.status !== "valid" ||
+          validation.pullResult.status !== "ready") {
+        throw new Error("Pull receive result 无效。");
+      }
+      const pullResult = validation.pullResult;
+      const owner = { ownerId: value.ownerId, bindingId: value.bindingId };
+      return await runTransaction([CONTROL_STORE, INBOX_STORE], "readwrite", async tx => {
+        const control = tx.objectStore(CONTROL_STORE);
+        const binding = await requireBinding(control, owner.ownerId, owner.bindingId);
+        if (binding.status !== "ready") return binding;
+
+        const leaseKey = controlKey(PULL_LEASE_PREFIX, owner.ownerId, owner.bindingId);
+        const storedLease = await requestResult(control.get(leaseKey));
+        if (storedLease === undefined) return blocked("stale-pull-lease");
+        const lease = validatePullLease(storedLease);
+        if (lease.leaseToken !== value.leaseToken ||
+            lease.startReceivedCursor !== value.startReceivedCursor ||
+            Date.parse(lease.leaseExpiresAt) <= Date.now()) {
+          return blocked("stale-pull-lease");
+        }
+
+        const storedProgress = await readPullProgress(control, owner);
+        const progress = storedProgress || createInitialPullProgress(owner);
+        if (progress.receivedCursor !== value.startReceivedCursor) {
+          return blocked("pull-received-cursor-changed");
+        }
+
+        const inbox = tx.objectStore(INBOX_STORE);
+        const pendingWrites = [];
+        const duplicates = [];
+        let nextSeq = progress.lastInboxSeq;
+        for (const change of pullResult.changes) {
+          const stored = await requestResult(inbox.index("byOwnerBindingCursor").get([
+            owner.ownerId,
+            owner.bindingId,
+            change.cursor
+          ]));
+          if (stored !== undefined) {
+            const existing = validateInbox(stored);
+            if (!getCanonical().valuesEqual(existing.change, change)) {
+              return failed("pull-change-cursor-conflict");
+            }
+            duplicates.push(change.cursor);
+            continue;
+          }
+          nextSeq += 1;
+          pendingWrites.push(createInboxItem(owner, nextSeq, change));
+        }
+
+        for (const item of pendingWrites) await requestResult(inbox.add(item));
+        const nextProgress = validatePullProgress({
+          ...progress,
+          receivedCursor: pullResult.nextCursor,
+          lastInboxSeq: nextSeq
+        });
+        await requestResult(control.put(nextProgress));
+        await requestResult(control.delete(leaseKey));
+        return {
+          status: "received",
+          received: pendingWrites.length,
+          duplicates,
+          progress: nextProgress,
+          items: pendingWrites
+        };
+      });
+    } catch (error) {
+      return failed("pull-receive-failed", error);
+    }
+  }
+
+  function validateInboxQuery(query) {
+    const value = getCanonical().snapshot(query, "query");
+    if (!isPlainObject(value) ||
+        !isOpaqueString(value.ownerId) ||
+        !isOpaqueString(value.bindingId)) {
+      throw new Error("Inbox query identity 无效。");
+    }
+    if (Object.prototype.hasOwnProperty.call(value, "status") &&
+        !INBOX_STATUSES.has(value.status)) {
+      throw new Error("Inbox query status 无效。");
+    }
+    if (Object.prototype.hasOwnProperty.call(value, "entityId") &&
+        !isOpaqueString(value.entityId)) {
+      throw new Error("Inbox query entityId 无效。");
+    }
+    return value;
+  }
+
+  async function listInbox(query = {}) {
+    try {
+      const value = validateInboxQuery(query);
+      return await runTransaction([CONTROL_STORE, INBOX_STORE], "readonly", async tx => {
+        const binding = await requireBinding(
+          tx.objectStore(CONTROL_STORE),
+          value.ownerId,
+          value.bindingId
+        );
+        if (binding.status !== "ready") return binding;
+        const values = await requestResult(tx.objectStore(INBOX_STORE).getAll());
+        const items = values.map(validateInbox)
+          .filter(item => item.ownerId === value.ownerId && item.bindingId === value.bindingId)
+          .filter(item => !value.status || item.status === value.status)
+          .filter(item => !value.entityId || item.entityId === value.entityId)
+          .sort((left, right) => left.inboxSeq - right.inboxSeq);
+        const applying = items.filter(item => item.status === "applying");
+        if (applying.length > 1 ||
+            (applying.length === 1 && items[0]?.inboxSeq !== applying[0].inboxSeq)) {
+          throw new Error("Inbox applying sequence 无效。");
+        }
+        return { status: "ready", items };
+      });
+    } catch (error) {
+      return failed("inbox-list-failed", error);
+    }
+  }
+
+  async function getNextInbox(context) {
+    const listed = await listInbox(context);
+    if (listed.status !== "ready") return listed;
+    return listed.items.length
+      ? { status: "ready", item: listed.items[0] }
+      : { status: "idle", item: null };
+  }
+
+  async function getPullAnchor(context) {
+    try {
+      const value = getCanonical().snapshot(context, "context");
+      if (!isPlainObject(value) ||
+          !isOpaqueString(value.ownerId) ||
+          !isOpaqueString(value.bindingId) ||
+          !isOpaqueString(value.entityId)) {
+        throw new Error("Pull anchor identity 无效。");
+      }
+      return await runTransaction([CONTROL_STORE], "readonly", async tx => {
+        const store = tx.objectStore(CONTROL_STORE);
+        const binding = await requireBinding(store, value.ownerId, value.bindingId);
+        if (binding.status !== "ready") return binding;
+        const stored = await requestResult(store.get(controlKey(
+          PULL_ANCHOR_PREFIX,
+          value.ownerId,
+          value.bindingId,
+          value.entityId
+        )));
+        return stored === undefined
+          ? { status: "missing", anchor: null }
+          : { status: "ready", anchor: validatePullAnchor(stored) };
+      });
+    } catch (error) {
+      return failed("pull-anchor-read-failed", error);
+    }
+  }
+
   async function getSidecar(ownerId, entityId) {
     try {
       if (!isOpaqueString(ownerId) || !isOpaqueString(entityId)) {
@@ -716,6 +1319,453 @@
       });
     } catch (error) {
       return failed("favorite-sidecar-write-failed", error);
+    }
+  }
+
+  async function readRecordSidecar(store, owner, entityId) {
+    const stored = await requestResult(store.get([
+      owner.ownerId,
+      "favorites",
+      entityId,
+      "record"
+    ]));
+    if (stored === undefined) return null;
+    const sidecar = validateSidecar(stored);
+    const mismatch = getWorkspaceMismatch(
+      sidecar,
+      owner.ownerId,
+      owner.bindingId
+    );
+    if (mismatch) return mismatch;
+    return sidecar;
+  }
+
+  async function readRecordOutbox(store, owner, entityId) {
+    const values = await requestResult(store.index("byOwnerRecord").getAll([
+      owner.ownerId,
+      "favorites",
+      entityId,
+      "record"
+    ]));
+    const items = values.map(validateStoredOutbox);
+    if (items.some(item => item.bindingId !== owner.bindingId)) {
+      return blocked("workspace-binding-mismatch");
+    }
+    return items.sort((left, right) => (
+      left.createdAt.localeCompare(right.createdAt) ||
+      left.mutationId.localeCompare(right.mutationId)
+    ));
+  }
+
+  async function readRecordIssues(store, owner, entityId) {
+    const values = await requestResult(store.index("byOwnerRecord").getAll([
+      owner.ownerId,
+      "favorites",
+      entityId,
+      "record"
+    ]));
+    const issues = values.map(validateIssue);
+    if (issues.some(issue => issue.bindingId !== owner.bindingId)) {
+      return blocked("workspace-binding-mismatch");
+    }
+    return issues;
+  }
+
+  async function requireInboxHead(store, owner, inboxSeq) {
+    const values = (await requestResult(store.getAll()))
+      .map(validateInbox)
+      .filter(item => item.ownerId === owner.ownerId && item.bindingId === owner.bindingId)
+      .sort((left, right) => left.inboxSeq - right.inboxSeq);
+    if (!values.length) return { status: "missing", item: null };
+    if (values[0].inboxSeq !== inboxSeq) {
+      return blocked("inbox-sequence-not-next", { nextInboxSeq: values[0].inboxSeq });
+    }
+    return { status: "ready", item: values[0] };
+  }
+
+  async function advanceAppliedCursor(control, inbox, owner, item) {
+    const progress = await readPullProgress(control, owner);
+    if (!progress || progress.receivedCursor === null || item.inboxSeq > progress.lastInboxSeq) {
+      throw new Error("Pull progress 与 Inbox 不一致。");
+    }
+    const remaining = (await requestResult(inbox.getAll()))
+      .map(validateInbox)
+      .filter(current => (
+        current.ownerId === owner.ownerId && current.bindingId === owner.bindingId
+      ))
+      .sort((left, right) => left.inboxSeq - right.inboxSeq);
+    const nextProgress = validatePullProgress({
+      ...progress,
+      appliedCursor: remaining.length ? item.cursor : progress.receivedCursor
+    });
+    await requestResult(control.put(nextProgress));
+    return nextProgress;
+  }
+
+  function createPullAnchor(owner, change) {
+    return validatePullAnchor({
+      key: controlKey(
+        PULL_ANCHOR_PREFIX,
+        owner.ownerId,
+        owner.bindingId,
+        change.entityId
+      ),
+      ownerId: owner.ownerId,
+      bindingId: owner.bindingId,
+      entityType: change.entityType,
+      entityId: change.entityId,
+      scope: change.scope,
+      schemaVersion: change.schemaVersion,
+      revision: change.revision,
+      payloadFingerprint: getCanonical().fingerprint(change.payload),
+      cursor: change.cursor
+    });
+  }
+
+  function validateApplyContext(context, fields) {
+    const value = getCanonical().snapshot(context, "context");
+    if (!isPlainObject(value) || !hasExactFields(value, fields) ||
+        !isOpaqueString(value.ownerId) ||
+        !isOpaqueString(value.bindingId) ||
+        !Number.isSafeInteger(value.inboxSeq) || value.inboxSeq <= 0 ||
+        !isOpaqueString(value.leaseToken)) {
+      throw new Error("Inbox apply context 无效。");
+    }
+    return value;
+  }
+
+  async function settleInboxNoop(context) {
+    try {
+      const value = validateApplyContext(context, new Set([
+        "ownerId",
+        "bindingId",
+        "inboxSeq",
+        "leaseToken",
+        "mode",
+        "anchorInboxSeq"
+      ]));
+      if (!new Set(["own-echo", "historical"]).has(value.mode) ||
+          (value.mode === "own-echo" && value.anchorInboxSeq !== null) ||
+          (value.mode === "historical" &&
+            (!Number.isSafeInteger(value.anchorInboxSeq) ||
+              value.anchorInboxSeq <= value.inboxSeq))) {
+        throw new Error("Inbox no-op mode 无效。");
+      }
+      const owner = { ownerId: value.ownerId, bindingId: value.bindingId };
+      return await runTransaction(
+        [CONTROL_STORE, SIDECAR_STORE, INBOX_STORE],
+        "readwrite",
+        async tx => {
+          const control = tx.objectStore(CONTROL_STORE);
+          const binding = await requireBinding(control, owner.ownerId, owner.bindingId);
+          if (binding.status !== "ready") return binding;
+          const writer = await requireWriterLease(
+            control,
+            owner.ownerId,
+            owner.bindingId,
+            value.leaseToken
+          );
+          if (writer.status !== "ready") return writer;
+          const inbox = tx.objectStore(INBOX_STORE);
+          const head = await requireInboxHead(inbox, owner, value.inboxSeq);
+          if (head.status !== "ready") return head;
+          const item = head.item;
+          if (item.status !== "received") return blocked("inbox-item-not-received");
+          const sidecar = await readRecordSidecar(
+            tx.objectStore(SIDECAR_STORE),
+            owner,
+            item.entityId
+          );
+          if (sidecar?.status === "blocked") return sidecar;
+          if (!sidecar) return blocked("pull-anchor-sidecar-missing");
+
+          if (value.mode === "own-echo") {
+            if (sidecar.serverRevision !== item.revision ||
+                !getCanonical().valuesEqual(
+                  sidecar.lastSyncedSnapshot,
+                  item.change.payload
+                )) {
+              return blocked("own-echo-state-changed");
+            }
+            await requestResult(control.put(createPullAnchor(owner, item.change)));
+          } else {
+            const storedAnchor = await requestResult(inbox.get([
+              owner.ownerId,
+              owner.bindingId,
+              value.anchorInboxSeq
+            ]));
+            if (storedAnchor === undefined) return blocked("historical-anchor-missing");
+            const anchor = validateInbox(storedAnchor);
+            if (!isSameFavoriteRecord(anchor, item) ||
+                anchor.revision !== sidecar.serverRevision ||
+                !getCanonical().valuesEqual(
+                  anchor.change.payload,
+                  sidecar.lastSyncedSnapshot
+                )) {
+              return blocked("historical-anchor-changed");
+            }
+          }
+
+          await requestResult(inbox.delete([owner.ownerId, owner.bindingId, item.inboxSeq]));
+          const progress = await advanceAppliedCursor(control, inbox, owner, item);
+          return {
+            status: "settled",
+            resultStatus: value.mode,
+            item,
+            progress
+          };
+        }
+      );
+    } catch (error) {
+      return failed("inbox-noop-settlement-failed", error);
+    }
+  }
+
+  async function prepareInboxApply(context) {
+    try {
+      const value = validateApplyContext(context, new Set([
+        "ownerId",
+        "bindingId",
+        "inboxSeq",
+        "leaseToken",
+        "localBeforeSnapshot",
+        "candidateSnapshot",
+        "expectedSidecarSnapshot"
+      ]));
+      const owner = { ownerId: value.ownerId, bindingId: value.bindingId };
+      value.localBeforeSnapshot = validateFavoriteSnapshot(
+        value.localBeforeSnapshot,
+        null,
+        true
+      );
+      value.candidateSnapshot = validateFavoriteSnapshot(
+        value.candidateSnapshot,
+        null
+      );
+      if (value.expectedSidecarSnapshot !== null) {
+        value.expectedSidecarSnapshot = validateSidecar(value.expectedSidecarSnapshot);
+      }
+      return await runTransaction(
+        [CONTROL_STORE, SIDECAR_STORE, OUTBOX_STORE, ISSUES_STORE, INBOX_STORE],
+        "readwrite",
+        async tx => {
+          const control = tx.objectStore(CONTROL_STORE);
+          const binding = await requireBinding(control, owner.ownerId, owner.bindingId);
+          if (binding.status !== "ready") return binding;
+          const writer = await requireWriterLease(
+            control,
+            owner.ownerId,
+            owner.bindingId,
+            value.leaseToken
+          );
+          if (writer.status !== "ready") return writer;
+          const inbox = tx.objectStore(INBOX_STORE);
+          const head = await requireInboxHead(inbox, owner, value.inboxSeq);
+          if (head.status !== "ready") return head;
+          const item = head.item;
+          if (item.status !== "received") return blocked("inbox-item-not-received");
+          if (value.candidateSnapshot.id !== item.entityId ||
+              (value.localBeforeSnapshot !== null &&
+                value.localBeforeSnapshot.id !== item.entityId) ||
+              !getCanonical().valuesEqual(value.candidateSnapshot, item.change.payload)) {
+            return blocked("inbox-apply-candidate-changed");
+          }
+
+          const sidecar = await readRecordSidecar(
+            tx.objectStore(SIDECAR_STORE),
+            owner,
+            item.entityId
+          );
+          if (sidecar?.status === "blocked") return sidecar;
+          if (!getCanonical().valuesEqual(sidecar, value.expectedSidecarSnapshot)) {
+            return blocked("sidecar-state-changed");
+          }
+          const pending = await readRecordOutbox(
+            tx.objectStore(OUTBOX_STORE),
+            owner,
+            item.entityId
+          );
+          if (pending?.status === "blocked") return pending;
+          if (pending.length) return blocked("outbox-state-changed");
+          const issues = await readRecordIssues(
+            tx.objectStore(ISSUES_STORE),
+            owner,
+            item.entityId
+          );
+          if (issues?.status === "blocked") return issues;
+          if (issues.length) return blocked("sync-issue-state-changed");
+
+          item.status = "applying";
+          item.applyIntent = validateApplyIntent({
+            localBeforeSnapshot: value.localBeforeSnapshot,
+            candidateSnapshot: value.candidateSnapshot,
+            expectedSidecarSnapshot: value.expectedSidecarSnapshot,
+            remoteChangeSnapshot: item.change,
+            candidateFingerprint: getCanonical().fingerprint(value.candidateSnapshot)
+          }, item);
+          const applying = validateInbox(item);
+          await requestResult(inbox.put(applying));
+          return { status: "applying", item: applying };
+        }
+      );
+    } catch (error) {
+      return failed("inbox-apply-prepare-failed", error);
+    }
+  }
+
+  async function finalizeInboxApply(context) {
+    try {
+      const value = validateApplyContext(context, new Set([
+        "ownerId",
+        "bindingId",
+        "inboxSeq",
+        "leaseToken"
+      ]));
+      const owner = { ownerId: value.ownerId, bindingId: value.bindingId };
+      return await runTransaction(
+        [CONTROL_STORE, SIDECAR_STORE, OUTBOX_STORE, ISSUES_STORE, INBOX_STORE],
+        "readwrite",
+        async tx => {
+          const control = tx.objectStore(CONTROL_STORE);
+          const binding = await requireBinding(control, owner.ownerId, owner.bindingId);
+          if (binding.status !== "ready") return binding;
+          const writer = await requireWriterLease(
+            control,
+            owner.ownerId,
+            owner.bindingId,
+            value.leaseToken
+          );
+          if (writer.status !== "ready") return writer;
+          const inbox = tx.objectStore(INBOX_STORE);
+          const head = await requireInboxHead(inbox, owner, value.inboxSeq);
+          if (head.status !== "ready") return head;
+          const item = head.item;
+          if (item.status !== "applying") return blocked("inbox-item-not-applying");
+          const sidecars = tx.objectStore(SIDECAR_STORE);
+          const currentSidecar = await readRecordSidecar(sidecars, owner, item.entityId);
+          if (currentSidecar?.status === "blocked") return currentSidecar;
+          if (!getCanonical().valuesEqual(
+            currentSidecar,
+            item.applyIntent.expectedSidecarSnapshot
+          )) {
+            return blocked("sidecar-state-changed");
+          }
+          const pending = await readRecordOutbox(
+            tx.objectStore(OUTBOX_STORE),
+            owner,
+            item.entityId
+          );
+          if (pending?.status === "blocked") return pending;
+          if (pending.length) return blocked("outbox-state-changed");
+          const issues = await readRecordIssues(
+            tx.objectStore(ISSUES_STORE),
+            owner,
+            item.entityId
+          );
+          if (issues?.status === "blocked") return issues;
+          if (issues.length) return blocked("sync-issue-state-changed");
+
+          const sidecar = validateSidecar({
+            ownerId: owner.ownerId,
+            bindingId: owner.bindingId,
+            entityType: item.entityType,
+            entityId: item.entityId,
+            scope: item.scope,
+            schemaVersion: item.schemaVersion,
+            serverRevision: item.revision,
+            lastSyncedSnapshot: item.applyIntent.candidateSnapshot,
+            lastSyncedFingerprint: getCanonical().fingerprint(
+              item.applyIntent.candidateSnapshot
+            )
+          });
+          await requestResult(sidecars.put(sidecar));
+          await requestResult(control.put(createPullAnchor(owner, item.change)));
+          await requestResult(inbox.delete([owner.ownerId, owner.bindingId, item.inboxSeq]));
+          const progress = await advanceAppliedCursor(control, inbox, owner, item);
+          return { status: "settled", resultStatus: "applied", sidecar, item, progress };
+        }
+      );
+    } catch (error) {
+      return failed("inbox-apply-finalize-failed", error);
+    }
+  }
+
+  async function settleInboxIssue(context) {
+    try {
+      const value = validateApplyContext(context, new Set([
+        "ownerId",
+        "bindingId",
+        "inboxSeq",
+        "leaseToken",
+        "reason",
+        "localSnapshot"
+      ]));
+      if (!isOpaqueString(value.reason)) throw new Error("Pull issue reason 无效。");
+      const owner = { ownerId: value.ownerId, bindingId: value.bindingId };
+      return await runTransaction(
+        [CONTROL_STORE, SIDECAR_STORE, OUTBOX_STORE, ISSUES_STORE, INBOX_STORE],
+        "readwrite",
+        async tx => {
+          const control = tx.objectStore(CONTROL_STORE);
+          const binding = await requireBinding(control, owner.ownerId, owner.bindingId);
+          if (binding.status !== "ready") return binding;
+          const writer = await requireWriterLease(
+            control,
+            owner.ownerId,
+            owner.bindingId,
+            value.leaseToken
+          );
+          if (writer.status !== "ready") return writer;
+          const inbox = tx.objectStore(INBOX_STORE);
+          const head = await requireInboxHead(inbox, owner, value.inboxSeq);
+          if (head.status !== "ready") return head;
+          const item = head.item;
+          value.localSnapshot = validateFavoriteSnapshot(
+            value.localSnapshot,
+            item.entityId,
+            true
+          );
+          const sidecar = await readRecordSidecar(
+            tx.objectStore(SIDECAR_STORE),
+            owner,
+            item.entityId
+          );
+          if (sidecar?.status === "blocked") return sidecar;
+          const pending = await readRecordOutbox(
+            tx.objectStore(OUTBOX_STORE),
+            owner,
+            item.entityId
+          );
+          if (pending?.status === "blocked") return pending;
+          const issueId = createPullIssueId(owner.ownerId, owner.bindingId, item.cursor);
+          const issue = validateIssue({
+            ownerId: owner.ownerId,
+            bindingId: owner.bindingId,
+            mutationId: issueId,
+            issueId,
+            direction: "pull",
+            entityType: item.entityType,
+            entityId: item.entityId,
+            scope: item.scope,
+            schemaVersion: item.schemaVersion,
+            kind: "conflict",
+            reason: value.reason,
+            localSnapshot: value.localSnapshot,
+            sidecarSnapshot: sidecar,
+            pendingMutationIds: pending.map(current => current.mutationId),
+            remoteChange: item.change,
+            remoteRevision: item.revision,
+            remoteCursor: item.cursor,
+            createdAt: new Date().toISOString()
+          });
+          await requestResult(tx.objectStore(ISSUES_STORE).add(issue));
+          await requestResult(inbox.delete([owner.ownerId, owner.bindingId, item.inboxSeq]));
+          const progress = await advanceAppliedCursor(control, inbox, owner, item);
+          return { status: "settled", resultStatus: "conflict", issue, item, progress };
+        }
+      );
+    } catch (error) {
+      return failed("inbox-issue-settlement-failed", error);
     }
   }
 
@@ -1403,6 +2453,17 @@
     getWorkspaceBinding,
     withFavoriteWriterLock,
     getFavoriteWriterLease,
+    getPullProgress,
+    acquirePullLease,
+    releasePullLease,
+    receivePullResult,
+    listInbox,
+    getNextInbox,
+    getPullAnchor,
+    settleInboxNoop,
+    prepareInboxApply,
+    finalizeInboxApply,
+    settleInboxIssue,
     getSidecar,
     listSidecars,
     putSidecar,

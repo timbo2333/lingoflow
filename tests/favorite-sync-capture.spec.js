@@ -104,13 +104,14 @@ test.afterEach(async ({ page }) => {
   expect(projectErrors.get(page), "页面不应出现项目自身的 JavaScript 错误").toEqual([]);
 });
 
-test("LingoFlowSyncDB v2 仅增加 syncIssues store", async ({ page }) => {
+test("LingoFlowSyncDB v3 保留 push stores 并增加 inbox", async ({ page }) => {
   const schema = await page.evaluate(async () => {
     const repository = window.LingoFlowSyncStateRepository;
     const db = await repository.openDatabase();
     const sidecarStore = db.transaction("entitySidecars", "readonly").objectStore("entitySidecars");
     const outboxStore = db.transaction("outbox", "readonly").objectStore("outbox");
     const issuesStore = db.transaction("syncIssues", "readonly").objectStore("syncIssues");
+    const inboxStore = db.transaction("inbox", "readonly").objectStore("inbox");
     return {
       name: db.name,
       version: db.version,
@@ -129,14 +130,20 @@ test("LingoFlowSyncDB v2 仅增加 syncIssues store", async ({ page }) => {
       issueIndexes: Array.from(issuesStore.indexNames).sort().map(name => ({
         name,
         keyPath: issuesStore.index(name).keyPath
+      })),
+      inboxKeyPath: inboxStore.keyPath,
+      inboxIndexes: Array.from(inboxStore.indexNames).sort().map(name => ({
+        name,
+        keyPath: inboxStore.index(name).keyPath,
+        unique: inboxStore.index(name).unique
       }))
     };
   });
 
   expect(schema).toEqual({
     name: "LingoFlowSyncDB",
-    version: 2,
-    stores: ["control", "entitySidecars", "outbox", "syncIssues"],
+    version: 3,
+    stores: ["control", "entitySidecars", "inbox", "outbox", "syncIssues"],
     sidecarKeyPath: ["ownerId", "entityType", "entityId", "scope"],
     sidecarIndexes: [{
       name: "byOwnerEntityType",
@@ -162,6 +169,19 @@ test("LingoFlowSyncDB v2 仅增加 syncIssues store", async ({ page }) => {
       {
         name: "byOwnerRecord",
         keyPath: ["ownerId", "entityType", "entityId", "scope"]
+      }
+    ],
+    inboxKeyPath: ["ownerId", "bindingId", "inboxSeq"],
+    inboxIndexes: [
+      {
+        name: "byOwnerBindingCursor",
+        keyPath: ["ownerId", "bindingId", "cursor"],
+        unique: true
+      },
+      {
+        name: "byOwnerRecordSequence",
+        keyPath: ["ownerId", "bindingId", "entityType", "entityId", "scope", "inboxSeq"],
+        unique: false
       }
     ]
   });

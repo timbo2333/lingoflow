@@ -90,6 +90,10 @@
       "reason"
     ])
   });
+  const PULL_RESULT_FIELDS = Object.freeze({
+    ready: new Set(["status", "changes", "nextCursor"]),
+    rejected: new Set(["status", "changes", "nextCursor", "reason"])
+  });
 
   function createError(code, path) {
     return { code, path };
@@ -481,10 +485,85 @@
       : { status: "valid", change, errors: [] };
   }
 
+  function validatePullResult(value) {
+    const cloned = cloneJsonValue(value);
+    if (cloned.error || !isPlainObject(cloned.value)) {
+      return {
+        status: "rejected",
+        pullResult: null,
+        errors: [cloned.error || createError("invalid-pull-result", "$")]
+      };
+    }
+
+    const pullResult = cloned.value;
+    const fields = PULL_RESULT_FIELDS[pullResult.status];
+    if (!fields) {
+      return {
+        status: "rejected",
+        pullResult: null,
+        errors: [createError("invalid-pull-result-status", "status")]
+      };
+    }
+
+    const errors = [];
+    validateExactFields(pullResult, fields, errors);
+    if (!Array.isArray(pullResult.changes)) {
+      errors.push(createError("invalid-pull-changes", "changes"));
+    }
+
+    if (pullResult.status === "rejected") {
+      if (Array.isArray(pullResult.changes) && pullResult.changes.length !== 0) {
+        errors.push(createError("rejected-pull-has-changes", "changes"));
+      }
+      if (pullResult.nextCursor !== null) {
+        errors.push(createError("rejected-pull-has-cursor", "nextCursor"));
+      }
+      if (!isOpaqueString(pullResult.reason)) {
+        errors.push(createError("invalid-pull-result-reason", "reason"));
+      }
+    } else {
+      if (!isOpaqueString(pullResult.nextCursor)) {
+        errors.push(createError("invalid-pull-next-cursor", "nextCursor"));
+      }
+      if (Array.isArray(pullResult.changes)) {
+        const cursors = new Set();
+        const changes = [];
+        for (let index = 0; index < pullResult.changes.length; index += 1) {
+          const validation = validatePullChange(pullResult.changes[index]);
+          if (!validation || validation.status !== "valid") {
+            const changeErrors = Array.isArray(validation?.errors)
+              ? validation.errors
+              : [createError("invalid-pull-change", "$")];
+            for (const error of changeErrors) {
+              const suffix = error?.path && error.path !== "$" ? `.${error.path}` : "";
+              errors.push(createError(
+                error?.code || "invalid-pull-change",
+                `changes[${index}]${suffix}`
+              ));
+            }
+            continue;
+          }
+          if (cursors.has(validation.change.cursor)) {
+            errors.push(createError("duplicate-pull-cursor", `changes[${index}].cursor`));
+            continue;
+          }
+          cursors.add(validation.change.cursor);
+          changes.push(validation.change);
+        }
+        if (!errors.length) pullResult.changes = changes;
+      }
+    }
+
+    return errors.length
+      ? { status: "rejected", pullResult: null, errors }
+      : { status: "valid", pullResult, errors: [] };
+  }
+
   window.LingoFlowCloudSyncProtocol = Object.freeze({
     validateOwnerContext,
     validateMutation,
     validateResult,
-    validatePullChange
+    validatePullChange,
+    validatePullResult
   });
 })();

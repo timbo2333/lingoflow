@@ -404,7 +404,11 @@ test("Scenario E：conflict durable journal 后 successor 保留且阻塞", asyn
       operation: "put",
       baseRevision: seed.revision,
       observedCursor: null,
-      payload: { ...baseline, note: "remote", updatedAt: "2026-09-01T20:00:00.000Z" }
+      payload: {
+        ...baseline,
+        note: "remote",
+        updatedAt: new Date(Date.parse(baseline.updatedAt) + 1000).toISOString()
+      }
     });
     await capture.update(owner, baseline.id, { note: "local A" });
 
@@ -1093,7 +1097,7 @@ test("malformed syncIssues 明确 failed，不退化为空集合", async ({ page
   expect(result).toMatchObject({ status: "failed", reason: "sync-issue-list-failed" });
 });
 
-test("v1 → v2 保留 binding、sidecar、prepared/ready request 并补齐 runtime metadata", async ({ page }) => {
+test("v1 → v3 保留 binding、sidecar、prepared/ready request 并补齐 runtime metadata", async ({ page }) => {
   await page.goto("/");
   await page.addScriptTag({ url: "/js/sync-canonical.js" });
   await page.addScriptTag({ url: "/js/cloud-sync-protocol.js" });
@@ -1193,8 +1197,14 @@ test("v1 → v2 保留 binding、sidecar、prepared/ready request 并补齐 runt
     };
   }, OWNER);
 
-  expect(upgraded.version).toBe(2);
-  expect(upgraded.stores).toEqual(["control", "entitySidecars", "outbox", "syncIssues"]);
+  expect(upgraded.version).toBe(3);
+  expect(upgraded.stores).toEqual([
+    "control",
+    "entitySidecars",
+    "inbox",
+    "outbox",
+    "syncIssues"
+  ]);
   expect(upgraded.binding.binding).toMatchObject(OWNER);
   expect(upgraded.sidecar.sidecar).toEqual(result.sidecar);
   expect(upgraded.outbox.items).toHaveLength(2);
@@ -1212,7 +1222,7 @@ test("v1 → v2 保留 binding、sidecar、prepared/ready request 并补齐 runt
   }
 });
 
-test("v1 ready mutation 升级至 v2 后以原 identity 完成真实 push settlement", async ({ page }) => {
+test("v1 ready mutation 升级至 v3 后以原 identity 完成真实 push settlement", async ({ page }) => {
   await page.goto("/");
   await page.addScriptTag({ url: "/js/sync-canonical.js" });
   await page.addScriptTag({ url: "/js/cloud-sync-protocol.js" });
@@ -1327,8 +1337,14 @@ test("v1 ready mutation 升级至 v2 后以原 identity 完成真实 push settle
     };
   }, OWNER);
 
-  expect(result.version).toBe(2);
-  expect(result.stores).toEqual(["control", "entitySidecars", "outbox", "syncIssues"]);
+  expect(result.version).toBe(3);
+  expect(result.stores).toEqual([
+    "control",
+    "entitySidecars",
+    "inbox",
+    "outbox",
+    "syncIssues"
+  ]);
   expect(result.upgraded.items).toHaveLength(1);
   expect(result.upgraded.items[0].mutationId).toBe(fixture.mutationId);
   expect(result.upgraded.items[0].request).toEqual(fixture.request);
