@@ -83,14 +83,18 @@
   function getDependencies() {
     const dependencies = {
       favorites: window.LingoFlowFavoriteRepository,
+      learning: window.LingoFlowFavoriteLearningRepository,
       capture: window.LingoFlowSyncFavoriteService,
+      learningCapture: window.LingoFlowSyncFavoriteLearningService,
       syncState: window.LingoFlowSyncStateRepository,
       pushFactory: window.LingoFlowSyncFavoritePushWorker,
       pullFactory: window.LingoFlowSyncFavoritePullWorker,
       supabase: window.LingoFlowSupabaseSyncService
     };
     if (!dependencies.favorites ||
+        !dependencies.learning ||
         !dependencies.capture ||
+        !dependencies.learningCapture ||
         typeof dependencies.syncState?.getWorkspaceBinding !== "function" ||
         typeof dependencies.pushFactory?.create !== "function" ||
         typeof dependencies.pullFactory?.create !== "function" ||
@@ -302,10 +306,25 @@
     const nextRuntime = {
       owner: workspace.owner,
       capture: dependencies.capture,
+      learningCapture: dependencies.learningCapture,
       favorites: dependencies.favorites,
+      learning: dependencies.learning,
       syncState: dependencies.syncState,
-      push: dependencies.pushFactory.create({ push: adapter.push }),
-      pull: dependencies.pullFactory.create({ pull: adapter.pull })
+      push: dependencies.pushFactory.create({
+        push: adapter.push,
+        recordRepositories: {
+          favorites: dependencies.favorites,
+          favoriteLearningStates: dependencies.learning
+        },
+        reconcileServices: [dependencies.capture, dependencies.learningCapture]
+      }),
+      pull: dependencies.pullFactory.create({
+        pull: adapter.pull,
+        recordRepositories: {
+          favorites: dependencies.favorites,
+          favoriteLearningStates: dependencies.learning
+        }
+      })
     };
     runtime = nextRuntime;
 
@@ -316,6 +335,15 @@
       return setState({
         status: "blocked",
         reason: reconciled.reason || "favorite-reconciliation-failed"
+      });
+    }
+    const learningReconciled = await nextRuntime.learningCapture.reconcile(nextRuntime.owner);
+    if (epoch !== runtimeEpoch || runtime !== nextRuntime) return getState();
+    if (learningReconciled.status !== "ready") {
+      runtime = null;
+      return setState({
+        status: "blocked",
+        reason: learningReconciled.reason || "favorite-learning-reconciliation-failed"
       });
     }
     const durable = await inspectDurableState(nextRuntime);
@@ -377,7 +405,7 @@
   }
 
   function mutationWasLocallyCommitted(result) {
-    return Boolean(result?.favorite) && [
+    return Boolean(result?.favorite || result?.favoriteLearningState) && [
       "ready",
       "unchanged",
       "local-committed-pending-reconciliation"
@@ -400,6 +428,44 @@
     const active = runtime;
     if (state.status !== "ready" || !active) return runLocalMutation(method, args);
     const result = await active.capture[method](active.owner, ...args);
+    if (runtime === active && mutationWasLocallyCommitted(result)) {
+      void continueAfterLocalMutation(active);
+    }
+    return { ...result, mode: "sync" };
+  }
+
+  function runLocalLearningMutation(favoriteId, mastered) {
+    const learning = window.LingoFlowFavoriteLearningRepository;
+    if (!learning ||
+        typeof learning.planSetMastered !== "function" ||
+        typeof learning.commitPlannedMutation !== "function") {
+      throw new Error("Favorite Learning Repository 写入边界不可用。");
+    }
+    const plan = learning.planSetMastered(favoriteId, mastered);
+    if (plan === null) {
+      return { status: "unchanged", favoriteLearningState: null, mode: "local-only" };
+    }
+    const committed = learning.commitPlannedMutation(plan);
+    if (!["committed", "unchanged"].includes(committed.status)) {
+      throw new Error(`Favorite Learning 本地写入失败：${committed.status}`);
+    }
+    return {
+      status: committed.status === "committed" ? "ready" : "unchanged",
+      favoriteLearningState: committed.favoriteLearningState,
+      mode: "local-only"
+    };
+  }
+
+  async function setMastered(favoriteId, mastered) {
+    const active = runtime;
+    if (state.status !== "ready" || !active) {
+      return runLocalLearningMutation(favoriteId, mastered);
+    }
+    const result = await active.learningCapture.setMastered(
+      active.owner,
+      favoriteId,
+      mastered
+    );
     if (runtime === active && mutationWasLocallyCommitted(result)) {
       void continueAfterLocalMutation(active);
     }
@@ -591,6 +657,7 @@
     create,
     update,
     softDelete,
-    restore
+    restore,
+    setMastered
   });
 })();

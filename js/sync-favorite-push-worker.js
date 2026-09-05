@@ -36,20 +36,31 @@
     return state;
   }
 
-  function getFavoriteRepository(value) {
-    const repository = value || window.LingoFlowFavoriteRepository;
-    if (!repository || typeof repository.getById !== "function") {
-      throw new Error("Favorite Repository read boundary 不可用。");
+  function getRecordRepositories(options) {
+    const repositories = options.recordRepositories || {
+      favorites: options.favoriteRepository || window.LingoFlowFavoriteRepository
+    };
+    if (!isPlainObject(repositories)) {
+      throw new Error("Sync record repositories 不可用。");
     }
-    return repository;
+    for (const [entityType, repository] of Object.entries(repositories)) {
+      const read = entityType === "favorites" ? repository?.getById : repository?.get;
+      if (typeof read !== "function") {
+        throw new Error("Sync record repository read boundary 不可用。");
+      }
+    }
+    return repositories;
   }
 
-  function getFavoriteService(value) {
-    const service = value || window.LingoFlowSyncFavoriteService;
-    if (!service || typeof service.reconcile !== "function") {
-      throw new Error("Sync Favorite reconciliation boundary 不可用。");
+  function getReconcileServices(options) {
+    const services = options.reconcileServices || [
+      options.favoriteService || window.LingoFlowSyncFavoriteService
+    ];
+    if (!Array.isArray(services) ||
+        services.some(service => typeof service?.reconcile !== "function")) {
+      throw new Error("Sync reconciliation boundary 不可用。");
     }
-    return service;
+    return services;
   }
 
   function isPlainObject(value) {
@@ -109,7 +120,7 @@
       bindingId: owner.bindingId,
       mutationId,
       status: "ready",
-      entityType: "favorites",
+      entityType: head.entityType,
       entityId: head.entityId,
       scope: "record",
       createdAt: new Date().toISOString(),
@@ -119,10 +130,10 @@
       candidateFingerprint: canonical.fingerprint(payload),
       request: {
         mutationId,
-        entityType: "favorites",
+        entityType: head.entityType,
         entityId: head.entityId,
         scope: "record",
-        schemaVersion: "1",
+        schemaVersion: head.request.schemaVersion,
         operation,
         baseRevision: revision,
         observedCursor: null,
@@ -143,9 +154,17 @@
     const canonical = getCanonical(options.canonical);
     const protocol = getProtocol(options.protocol);
     const state = getStateRepository(options.syncStateRepository);
-    const favorites = getFavoriteRepository(options.favoriteRepository);
-    const favoriteService = getFavoriteService(options.favoriteService);
+    const repositories = getRecordRepositories(options);
+    const reconcileServices = getReconcileServices(options);
     const push = options.push;
+
+    function readRecord(entityType, entityId) {
+      const repository = repositories[entityType];
+      if (!repository) throw new Error("Sync record repository 不可用。");
+      return entityType === "favorites"
+        ? repository.getById(entityId, { includeDeleted: true })
+        : repository.get(entityId, { includeDeleted: true });
+    }
 
     async function release(owner, item) {
       return await state.releaseMutationLease({
@@ -172,7 +191,7 @@
       const settlement = await state.withFavoriteWriterLock(owner, async () => {
         let current;
         try {
-          current = favorites.getById(item.entityId, { includeDeleted: true });
+          current = readRecord(item.entityType, item.entityId);
         } catch (error) {
           return {
             status: "failed",
@@ -184,6 +203,7 @@
 
         const listed = await state.listOutbox({
           ownerId: owner.ownerId,
+          entityType: item.entityType,
           entityId: item.entityId
         });
         if (listed.status !== "ready") return listed;
@@ -276,8 +296,10 @@
         return { status: "failed", reason: "invalid-owner-context", message: error.message };
       }
 
-      const reconciled = await favoriteService.reconcile(owner);
-      if (reconciled.status !== "ready") return reconciled;
+      for (const service of reconcileServices) {
+        const reconciled = await service.reconcile(owner);
+        if (reconciled.status !== "ready") return reconciled;
+      }
 
       const leased = await state.acquireNextReadyMutationLease(owner, runOptions);
       if (leased.status !== "leased") return leased;

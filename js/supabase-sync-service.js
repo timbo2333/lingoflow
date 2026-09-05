@@ -1,7 +1,10 @@
 (function() {
   "use strict";
 
-  const PUSH_RPC = "lingoflow_favorite_sync_push";
+  const PUSH_RPCS = Object.freeze({
+    favorites: "lingoflow_favorite_sync_push",
+    favoriteLearningStates: "lingoflow_favorite_learning_sync_push"
+  });
   const PULL_RPC = "lingoflow_favorite_sync_pull";
 
   function getProtocol(value) {
@@ -122,7 +125,9 @@
 
       const owner = ownerValidation.ownerContext;
       const mutation = mutationValidation.mutation;
-      const rawResult = await postRpc(PUSH_RPC, owner, {
+      const pushRpc = PUSH_RPCS[mutation.entityType];
+      if (!pushRpc) return rejectedPush(mutationValidation, "unsupported-entity");
+      const rawResult = await postRpc(pushRpc, owner, {
         p_expected_owner_id: owner.ownerId,
         p_mutation: mutation
       });

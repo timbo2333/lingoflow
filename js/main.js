@@ -3202,17 +3202,12 @@ async function saveFavoriteEdit(favoriteId, button) {
     );
     favoriteSaved = true;
 
-    const learningRepository = getFavoriteLearningRepository();
-    const learningState = learningRepository.get(favoriteId, { includeDeleted: true });
-    if (learningState?.deletedAt) {
-      if (mastered) {
-        const restored = learningRepository.restore(favoriteId);
-        if (!restored.mastered) learningRepository.setMastered(favoriteId, true);
-      }
-    } else if (learningState) {
-      learningRepository.setMastered(favoriteId, mastered);
-    } else if (mastered) {
-      learningRepository.setMastered(favoriteId, true);
+    const learningResult = await getFavoriteAppSync().setMastered(favoriteId, mastered);
+    if (!["ready", "unchanged", "local-committed-pending-reconciliation"]
+      .includes(learningResult?.status)) {
+      throw new Error(
+        `Favorite Learning save 未完成：${learningResult?.reason || learningResult?.status || "unknown"}`
+      );
     }
 
     if (hint) hint.textContent = "已保存";

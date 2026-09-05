@@ -20,8 +20,10 @@
     "update",
     "soft-delete",
     "restore",
+    "set-mastered",
     "drift"
   ]);
+  const SYNC_ENTITY_TYPES = new Set(["favorites", "favoriteLearningStates"]);
   const SIDECAR_FIELDS = new Set([
     "ownerId",
     "bindingId",
@@ -167,6 +169,14 @@
     return schema;
   }
 
+  function getFavoriteLearningSchema() {
+    const schema = window.LingoFlowFavoriteLearningBackupSchema;
+    if (!schema || typeof schema.validateFavoriteLearningState !== "function") {
+      throw new Error("Favorite Learning Schema 不可用。");
+    }
+    return schema;
+  }
+
   function getProtocol() {
     const protocol = window.LingoFlowCloudSyncProtocol;
     if (!protocol ||
@@ -207,6 +217,12 @@
   function controlKey(prefix, ownerId, bindingId, suffix = "") {
     const identity = getCanonical().serialize([ownerId, bindingId, suffix]);
     return `${prefix}:${identity}`;
+  }
+
+  function pullAnchorSuffix(entityType, entityId) {
+    return entityType === "favorites"
+      ? entityId
+      : `${entityType}\u0000${entityId}`;
   }
 
   function failed(reason, error = null) {
@@ -256,13 +272,20 @@
     return binding;
   }
 
-  function validateFavoriteSnapshot(value, entityId, nullable = false) {
+  function validateRecordSnapshot(value, entityType, entityId, nullable = false) {
     if (nullable && value === null) return null;
-    const snapshot = getCanonical().snapshot(value, "favorite");
-    const validation = getFavoriteSchema().validateFavorite(snapshot);
+    const snapshot = getCanonical().snapshot(value, "record");
+    const validation = entityType === "favorites"
+      ? getFavoriteSchema().validateFavorite(snapshot)
+      : entityType === "favoriteLearningStates"
+        ? getFavoriteLearningSchema().validateFavoriteLearningState(snapshot)
+        : null;
+    const snapshotId = entityType === "favorites"
+      ? validation?.favoriteId
+      : validation?.favoriteId;
     if (!validation || validation.status !== "valid" ||
-        (entityId !== null && validation.favoriteId !== entityId)) {
-      throw new Error("Favorite snapshot 无效。");
+        (entityId !== null && snapshotId !== entityId)) {
+      throw new Error("Sync record snapshot 无效。");
     }
     return snapshot;
   }
@@ -274,7 +297,7 @@
     }
     if (!isOpaqueString(sidecar.ownerId) ||
         !isOpaqueString(sidecar.bindingId) ||
-        sidecar.entityType !== "favorites" ||
+        !SYNC_ENTITY_TYPES.has(sidecar.entityType) ||
         !isOpaqueString(sidecar.entityId) ||
         sidecar.scope !== "record" ||
         sidecar.schemaVersion !== "1") {
@@ -284,8 +307,9 @@
       throw new Error("Favorite sidecar revision 无效。");
     }
 
-    const snapshot = validateFavoriteSnapshot(
+    const snapshot = validateRecordSnapshot(
       sidecar.lastSyncedSnapshot,
+      sidecar.entityType,
       sidecar.entityId,
       true
     );
@@ -314,7 +338,7 @@
         !isOpaqueString(item.bindingId) ||
         !isOpaqueString(item.mutationId) ||
         !OUTBOX_STATUSES.has(item.status) ||
-        item.entityType !== "favorites" ||
+        !SYNC_ENTITY_TYPES.has(item.entityType) ||
         !isOpaqueString(item.entityId) ||
         item.scope !== "record" ||
         !isCanonicalTimestamp(item.createdAt) ||
@@ -349,8 +373,9 @@
       throw new Error("Outbox metadata 与 wire request 不一致。");
     }
 
-    item.localBeforeSnapshot = validateFavoriteSnapshot(
+    item.localBeforeSnapshot = validateRecordSnapshot(
       item.localBeforeSnapshot,
+      item.entityType,
       item.entityId,
       true
     );
@@ -379,7 +404,7 @@
     if (!isOpaqueString(issue.ownerId) ||
         !isOpaqueString(issue.bindingId) ||
         !isOpaqueString(issue.mutationId) ||
-        issue.entityType !== "favorites" ||
+        !SYNC_ENTITY_TYPES.has(issue.entityType) ||
         !isOpaqueString(issue.entityId) ||
         issue.scope !== "record" ||
         issue.schemaVersion !== "1" ||
@@ -428,7 +453,7 @@
         issue.mutationId !== issue.issueId ||
         issue.direction !== "pull" ||
         issue.kind !== "conflict" ||
-        issue.entityType !== "favorites" ||
+        !SYNC_ENTITY_TYPES.has(issue.entityType) ||
         !isOpaqueString(issue.entityId) ||
         issue.scope !== "record" ||
         issue.schemaVersion !== "1" ||
@@ -446,8 +471,9 @@
       throw new Error("Pull sync issue identity 无效。");
     }
 
-    issue.localSnapshot = validateFavoriteSnapshot(
+    issue.localSnapshot = validateRecordSnapshot(
       issue.localSnapshot,
+      issue.entityType,
       issue.entityId,
       true
     );
@@ -526,7 +552,7 @@
     if (!isPlainObject(anchor) || !hasExactFields(anchor, PULL_ANCHOR_FIELDS) ||
         !isOpaqueString(anchor.ownerId) ||
         !isOpaqueString(anchor.bindingId) ||
-        anchor.entityType !== "favorites" ||
+        !SYNC_ENTITY_TYPES.has(anchor.entityType) ||
         !isOpaqueString(anchor.entityId) ||
         anchor.scope !== "record" ||
         anchor.schemaVersion !== "1" ||
@@ -537,7 +563,7 @@
           PULL_ANCHOR_PREFIX,
           anchor.ownerId,
           anchor.bindingId,
-          anchor.entityId
+          pullAnchorSuffix(anchor.entityType, anchor.entityId)
         )) {
       throw new Error("Pull anchor 无效。");
     }
@@ -549,13 +575,15 @@
     if (!isPlainObject(intent) || !hasExactFields(intent, APPLY_INTENT_FIELDS)) {
       throw new Error("Inbox apply intent 结构无效。");
     }
-    intent.localBeforeSnapshot = validateFavoriteSnapshot(
+    intent.localBeforeSnapshot = validateRecordSnapshot(
       intent.localBeforeSnapshot,
+      item.entityType,
       item.entityId,
       true
     );
-    intent.candidateSnapshot = validateFavoriteSnapshot(
+    intent.candidateSnapshot = validateRecordSnapshot(
       intent.candidateSnapshot,
+      item.entityType,
       item.entityId
     );
     if (intent.expectedSidecarSnapshot !== null) {
@@ -1180,6 +1208,10 @@
         !isOpaqueString(value.entityId)) {
       throw new Error("Inbox query entityId 无效。");
     }
+    if (Object.prototype.hasOwnProperty.call(value, "entityType") &&
+        !SYNC_ENTITY_TYPES.has(value.entityType)) {
+      throw new Error("Inbox query entityType 无效。");
+    }
     return value;
   }
 
@@ -1197,6 +1229,7 @@
         const items = values.map(validateInbox)
           .filter(item => item.ownerId === value.ownerId && item.bindingId === value.bindingId)
           .filter(item => !value.status || item.status === value.status)
+          .filter(item => !value.entityType || item.entityType === value.entityType)
           .filter(item => !value.entityId || item.entityId === value.entityId)
           .sort((left, right) => left.inboxSeq - right.inboxSeq);
         const applying = items.filter(item => item.status === "applying");
@@ -1225,9 +1258,11 @@
       if (!isPlainObject(value) ||
           !isOpaqueString(value.ownerId) ||
           !isOpaqueString(value.bindingId) ||
-          !isOpaqueString(value.entityId)) {
+          !isOpaqueString(value.entityId) ||
+          (value.entityType !== undefined && !SYNC_ENTITY_TYPES.has(value.entityType))) {
         throw new Error("Pull anchor identity 无效。");
       }
+      const entityType = value.entityType || "favorites";
       return await runTransaction([CONTROL_STORE], "readonly", async tx => {
         const store = tx.objectStore(CONTROL_STORE);
         const binding = await requireBinding(store, value.ownerId, value.bindingId);
@@ -1236,7 +1271,7 @@
           PULL_ANCHOR_PREFIX,
           value.ownerId,
           value.bindingId,
-          value.entityId
+          pullAnchorSuffix(entityType, value.entityId)
         )));
         return stored === undefined
           ? { status: "missing", anchor: null }
@@ -1247,9 +1282,10 @@
     }
   }
 
-  async function getSidecar(ownerId, entityId) {
+  async function getSidecar(ownerId, entityId, entityType = "favorites") {
     try {
-      if (!isOpaqueString(ownerId) || !isOpaqueString(entityId)) {
+      if (!isOpaqueString(ownerId) || !isOpaqueString(entityId) ||
+          !SYNC_ENTITY_TYPES.has(entityType)) {
         throw new Error("Favorite sidecar identity 无效。");
       }
       const values = await runTransaction([SIDECAR_STORE], "readonly", tx => (
@@ -1257,7 +1293,7 @@
       ));
       const sidecars = values.map(validateSidecar).filter(sidecar => (
         isSameFavoriteRecord(sidecar, {
-          entityType: "favorites",
+          entityType,
           entityId,
           scope: "record"
         })
@@ -1271,20 +1307,22 @@
     }
   }
 
-  async function listSidecars(ownerId) {
+  async function listSidecars(ownerId, entityType = "favorites") {
     try {
-      if (!isOpaqueString(ownerId)) throw new Error("ownerId 无效。");
+      if (!isOpaqueString(ownerId) || !SYNC_ENTITY_TYPES.has(entityType)) {
+        throw new Error("ownerId / entityType 无效。");
+      }
       const values = await runTransaction([SIDECAR_STORE], "readonly", tx => (
         requestResult(tx.objectStore(SIDECAR_STORE).getAll())
       ));
       const allSidecars = values.map(validateSidecar);
       if (allSidecars.some(sidecar => (
-        sidecar.entityType === "favorites" && sidecar.ownerId !== ownerId
+        sidecar.entityType === entityType && sidecar.ownerId !== ownerId
       ))) {
         return blocked("workspace-owner-mismatch");
       }
       const sidecars = allSidecars
-        .filter(sidecar => sidecar.ownerId === ownerId && sidecar.entityType === "favorites")
+        .filter(sidecar => sidecar.ownerId === ownerId && sidecar.entityType === entityType)
         .sort((left, right) => left.entityId.localeCompare(right.entityId));
       return { status: "ready", sidecars };
     } catch (error) {
@@ -1322,10 +1360,10 @@
     }
   }
 
-  async function readRecordSidecar(store, owner, entityId) {
+  async function readRecordSidecar(store, owner, entityType, entityId) {
     const stored = await requestResult(store.get([
       owner.ownerId,
-      "favorites",
+      entityType,
       entityId,
       "record"
     ]));
@@ -1340,10 +1378,10 @@
     return sidecar;
   }
 
-  async function readRecordOutbox(store, owner, entityId) {
+  async function readRecordOutbox(store, owner, entityType, entityId) {
     const values = await requestResult(store.index("byOwnerRecord").getAll([
       owner.ownerId,
-      "favorites",
+      entityType,
       entityId,
       "record"
     ]));
@@ -1357,10 +1395,10 @@
     ));
   }
 
-  async function readRecordIssues(store, owner, entityId) {
+  async function readRecordIssues(store, owner, entityType, entityId) {
     const values = await requestResult(store.index("byOwnerRecord").getAll([
       owner.ownerId,
-      "favorites",
+      entityType,
       entityId,
       "record"
     ]));
@@ -1408,7 +1446,7 @@
         PULL_ANCHOR_PREFIX,
         owner.ownerId,
         owner.bindingId,
-        change.entityId
+        pullAnchorSuffix(change.entityType, change.entityId)
       ),
       ownerId: owner.ownerId,
       bindingId: owner.bindingId,
@@ -1474,6 +1512,7 @@
           const sidecar = await readRecordSidecar(
             tx.objectStore(SIDECAR_STORE),
             owner,
+            item.entityType,
             item.entityId
           );
           if (sidecar?.status === "blocked") return sidecar;
@@ -1533,13 +1572,18 @@
         "expectedSidecarSnapshot"
       ]));
       const owner = { ownerId: value.ownerId, bindingId: value.bindingId };
-      value.localBeforeSnapshot = validateFavoriteSnapshot(
+      const next = await getNextInbox(owner);
+      if (next.status !== "ready") return next;
+      const expectedEntityType = next.item.entityType;
+      value.localBeforeSnapshot = validateRecordSnapshot(
         value.localBeforeSnapshot,
+        expectedEntityType,
         null,
         true
       );
-      value.candidateSnapshot = validateFavoriteSnapshot(
+      value.candidateSnapshot = validateRecordSnapshot(
         value.candidateSnapshot,
+        expectedEntityType,
         null
       );
       if (value.expectedSidecarSnapshot !== null) {
@@ -1564,9 +1608,17 @@
           if (head.status !== "ready") return head;
           const item = head.item;
           if (item.status !== "received") return blocked("inbox-item-not-received");
-          if (value.candidateSnapshot.id !== item.entityId ||
+          const candidateId = item.entityType === "favorites"
+            ? value.candidateSnapshot.id
+            : value.candidateSnapshot.favoriteId;
+          const beforeId = value.localBeforeSnapshot === null
+            ? null
+            : item.entityType === "favorites"
+              ? value.localBeforeSnapshot.id
+              : value.localBeforeSnapshot.favoriteId;
+          if (candidateId !== item.entityId ||
               (value.localBeforeSnapshot !== null &&
-                value.localBeforeSnapshot.id !== item.entityId) ||
+                beforeId !== item.entityId) ||
               !getCanonical().valuesEqual(value.candidateSnapshot, item.change.payload)) {
             return blocked("inbox-apply-candidate-changed");
           }
@@ -1574,6 +1626,7 @@
           const sidecar = await readRecordSidecar(
             tx.objectStore(SIDECAR_STORE),
             owner,
+            item.entityType,
             item.entityId
           );
           if (sidecar?.status === "blocked") return sidecar;
@@ -1583,6 +1636,7 @@
           const pending = await readRecordOutbox(
             tx.objectStore(OUTBOX_STORE),
             owner,
+            item.entityType,
             item.entityId
           );
           if (pending?.status === "blocked") return pending;
@@ -1590,6 +1644,7 @@
           const issues = await readRecordIssues(
             tx.objectStore(ISSUES_STORE),
             owner,
+            item.entityType,
             item.entityId
           );
           if (issues?.status === "blocked") return issues;
@@ -1642,7 +1697,12 @@
           const item = head.item;
           if (item.status !== "applying") return blocked("inbox-item-not-applying");
           const sidecars = tx.objectStore(SIDECAR_STORE);
-          const currentSidecar = await readRecordSidecar(sidecars, owner, item.entityId);
+          const currentSidecar = await readRecordSidecar(
+            sidecars,
+            owner,
+            item.entityType,
+            item.entityId
+          );
           if (currentSidecar?.status === "blocked") return currentSidecar;
           if (!getCanonical().valuesEqual(
             currentSidecar,
@@ -1653,6 +1713,7 @@
           const pending = await readRecordOutbox(
             tx.objectStore(OUTBOX_STORE),
             owner,
+            item.entityType,
             item.entityId
           );
           if (pending?.status === "blocked") return pending;
@@ -1660,6 +1721,7 @@
           const issues = await readRecordIssues(
             tx.objectStore(ISSUES_STORE),
             owner,
+            item.entityType,
             item.entityId
           );
           if (issues?.status === "blocked") return issues;
@@ -1720,20 +1782,23 @@
           const head = await requireInboxHead(inbox, owner, value.inboxSeq);
           if (head.status !== "ready") return head;
           const item = head.item;
-          value.localSnapshot = validateFavoriteSnapshot(
+          value.localSnapshot = validateRecordSnapshot(
             value.localSnapshot,
+            item.entityType,
             item.entityId,
             true
           );
           const sidecar = await readRecordSidecar(
             tx.objectStore(SIDECAR_STORE),
             owner,
+            item.entityType,
             item.entityId
           );
           if (sidecar?.status === "blocked") return sidecar;
           const pending = await readRecordOutbox(
             tx.objectStore(OUTBOX_STORE),
             owner,
+            item.entityType,
             item.entityId
           );
           if (pending?.status === "blocked") return pending;
@@ -1883,9 +1948,11 @@
           !isOpaqueString(value.ownerId) ||
           !isOpaqueString(value.bindingId) ||
           !isOpaqueString(value.entityId) ||
-          !isOpaqueString(value.leaseToken)) {
+          !isOpaqueString(value.leaseToken) ||
+          (value.entityType !== undefined && !SYNC_ENTITY_TYPES.has(value.entityType))) {
         throw new Error("cancelUnattemptedOutbox context 无效。");
       }
+      const entityType = value.entityType || "favorites";
       return await runTransaction([CONTROL_STORE, OUTBOX_STORE], "readwrite", async tx => {
         const control = tx.objectStore(CONTROL_STORE);
         const binding = await requireBinding(control, value.ownerId, value.bindingId);
@@ -1902,7 +1969,7 @@
         const records = (await requestResult(store.getAll()))
           .map(validateStoredOutbox)
           .filter(item => isSameFavoriteRecord(item, {
-            entityType: "favorites",
+            entityType,
             entityId: value.entityId,
             scope: "record"
           }));
@@ -2380,12 +2447,17 @@
           !isOpaqueString(value.entityId)) {
         throw new Error("Sync issue query entityId 无效。");
       }
+      if (Object.prototype.hasOwnProperty.call(value, "entityType") &&
+          !SYNC_ENTITY_TYPES.has(value.entityType)) {
+        throw new Error("Sync issue query entityType 无效。");
+      }
       const values = await runTransaction([ISSUES_STORE], "readonly", tx => (
         requestResult(tx.objectStore(ISSUES_STORE).getAll())
       ));
       const issues = values.map(validateIssue)
         .filter(issue => issue.ownerId === value.ownerId)
         .filter(issue => !value.bindingId || issue.bindingId === value.bindingId)
+        .filter(issue => !value.entityType || issue.entityType === value.entityType)
         .filter(issue => !value.entityId || issue.entityId === value.entityId)
         .sort((left, right) => (
           left.createdAt.localeCompare(right.createdAt) ||
@@ -2426,6 +2498,10 @@
           !isOpaqueString(value.entityId)) {
         throw new Error("Outbox query entityId 无效。");
       }
+      if (Object.prototype.hasOwnProperty.call(value, "entityType") &&
+          !SYNC_ENTITY_TYPES.has(value.entityType)) {
+        throw new Error("Outbox query entityType 无效。");
+      }
 
       const values = await runTransaction([OUTBOX_STORE], "readonly", tx => (
         requestResult(tx.objectStore(OUTBOX_STORE).getAll())
@@ -2433,6 +2509,7 @@
       const items = values.map(validateStoredOutbox)
         .filter(item => item.ownerId === value.ownerId)
         .filter(item => !value.status || item.status === value.status)
+        .filter(item => !value.entityType || item.entityType === value.entityType)
         .filter(item => !value.entityId || item.entityId === value.entityId)
         .sort((left, right) => (
           left.createdAt.localeCompare(right.createdAt) ||

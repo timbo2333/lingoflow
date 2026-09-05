@@ -35,6 +35,28 @@ function makeMutation(favorite, overrides = {}) {
   };
 }
 
+function makeLearningMutation(favoriteId, mastered = true, overrides = {}) {
+  const payload = {
+    favoriteId,
+    mastered,
+    createdAt: "2026-09-04T00:01:00.000Z",
+    updatedAt: "2026-09-04T00:01:00.000Z",
+    deletedAt: null
+  };
+  return {
+    mutationId: "mutation:supabase:learning:1",
+    entityType: "favoriteLearningStates",
+    entityId: favoriteId,
+    scope: "record",
+    schemaVersion: "1",
+    operation: "put",
+    baseRevision: null,
+    observedCursor: null,
+    payload,
+    ...overrides
+  };
+}
+
 async function loadAdapter(page) {
   await page.goto("/");
   await page.addScriptTag({ url: "/js/sync-canonical.js" });
@@ -145,6 +167,57 @@ test("Supabase Adapter pull 保持 opaque cursor 和 validatePullResult 合同",
   expect(JSON.parse(result.calls[0].options.body)).toEqual({
     p_expected_owner_id: OWNER_ID,
     p_after_cursor: "cursor:7"
+  });
+});
+
+test("Supabase Adapter 将 Learning push 路由到专用 authenticated RPC", async ({ page }) => {
+  const mutation = makeLearningMutation("favorite:supabase-learning");
+  const result = await page.evaluate(async ({ ownerId, projectUrl, key, token, mutation }) => {
+    const calls = [];
+    const adapter = window.LingoFlowSupabaseSyncService.create({
+      projectUrl,
+      publishableKey: key,
+      getAccessToken: async () => token,
+      fetchImpl: async (url, options) => {
+        calls.push({ url, options: structuredClone(options) });
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            status: "applied",
+            mutationId: mutation.mutationId,
+            entityType: mutation.entityType,
+            entityId: mutation.entityId,
+            scope: mutation.scope,
+            schemaVersion: mutation.schemaVersion,
+            revision: "revision:1",
+            cursor: "cursor:2"
+          })
+        };
+      }
+    });
+    return {
+      output: await adapter.push({ ownerId }, mutation),
+      calls
+    };
+  }, {
+    ownerId: OWNER_ID,
+    projectUrl: PROJECT_URL,
+    key: PUBLISHABLE_KEY,
+    token: ACCESS_TOKEN,
+    mutation
+  });
+
+  expect(result.output).toMatchObject({
+    status: "applied",
+    entityType: "favoriteLearningStates"
+  });
+  expect(result.calls[0].url).toBe(
+    `${PROJECT_URL}/rest/v1/rpc/lingoflow_favorite_learning_sync_push`
+  );
+  expect(JSON.parse(result.calls[0].options.body)).toEqual({
+    p_expected_owner_id: OWNER_ID,
+    p_mutation: mutation
   });
 });
 
@@ -282,6 +355,27 @@ test("Supabase migration 锁定三表、server ordering、RLS 和 authenticated-
   expect(migration).toContain("grant execute on function public.lingoflow_favorite_sync_pull");
   expect(migration).toContain("'reason', 'idempotency-key-reused'");
   expect(migration).toContain("'reason', 'explicit-restore-required'");
+});
+
+test("Learning migration 复用全局 change/receipt，并锁定 RLS、依赖与 RPC", () => {
+  const migration = fs.readFileSync(path.join(
+    __dirname,
+    "../supabase/migrations/20260905180000_add_favorite_learning_sync.sql"
+  ), "utf8");
+
+  expect(migration).toContain("add column entity_type text not null default 'favorites'");
+  expect(migration).toContain("create table public.favorite_learning_sync_records");
+  expect(migration).toContain("alter table public.favorite_learning_sync_records enable row level security");
+  expect(migration).toContain("owner_id = (select auth.uid())");
+  expect(migration).toContain("from public.favorite_sync_mutations");
+  expect(migration).toContain("insert into public.favorite_sync_changes");
+  expect(migration).toContain("from public.favorite_sync_records");
+  expect(migration).toContain("'reason', 'favorite-reference-deleted'");
+  expect(migration).toContain("security definer\nset search_path = ''");
+  expect(migration).toContain(
+    "grant execute on function public.lingoflow_favorite_learning_sync_push"
+  );
+  expect(migration).not.toMatch(/pg_catalog\.coalesce\s*\(/);
 });
 
 const liveConfig = {

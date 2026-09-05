@@ -80,6 +80,11 @@
     return state ? structuredClone(state) : null;
   }
 
+  function statesEqual(left, right) {
+    if (left === null || right === null) return left === right;
+    return Array.from(STATE_FIELDS).every(field => Object.is(left[field], right[field]));
+  }
+
   function getBackupCandidateFavoriteId(value) {
     if (!isPlainObject(value)) return null;
     const descriptor = Object.getOwnPropertyDescriptor(value, "favoriteId");
@@ -450,6 +455,148 @@
     return cloneState(state);
   }
 
+  function createPlan(operation, before, candidate, changed) {
+    return {
+      operation,
+      entityId: candidate.favoriteId,
+      before: cloneState(before),
+      candidate: cloneState(candidate),
+      changed: Boolean(changed)
+    };
+  }
+
+  function planSetMastered(favoriteId, value) {
+    const normalizedId = normalizeFavoriteId(favoriteId);
+    if (!normalizedId) throw new Error("缺少有效的 Favorite ID。");
+    if (typeof value !== "boolean") throw new Error("mastered 必须是布尔值。");
+
+    const current = readState(normalizedId);
+    if (!current && !value) return null;
+    if (current?.deletedAt && !value) {
+      return createPlan("set-mastered", current, current, false);
+    }
+    if (current && !current.deletedAt && current.mastered === value) {
+      return createPlan("set-mastered", current, current, false);
+    }
+
+    const now = nextTimestamp(current?.updatedAt);
+    const candidate = current
+      ? {
+          ...current,
+          mastered: value,
+          updatedAt: now,
+          deletedAt: null
+        }
+      : {
+          favoriteId: normalizedId,
+          mastered: value,
+          createdAt: now,
+          updatedAt: now,
+          deletedAt: null
+        };
+    validateState(candidate, normalizedId);
+    return createPlan(current?.deletedAt ? "restore" : "set-mastered", current, candidate, true);
+  }
+
+  function snapshotPlannedMutation(value) {
+    if (!isPlainObject(value)) throw new Error("Favorite Learning mutation plan 必须是普通对象。");
+    const plan = structuredClone(value);
+    const expectedFields = ["before", "candidate", "changed", "entityId", "operation"].sort();
+    const keys = Object.keys(plan).sort();
+    if (keys.length !== expectedFields.length ||
+        !keys.every((key, index) => key === expectedFields[index]) ||
+        !new Set(["set-mastered", "restore", "drift"]).has(plan.operation) ||
+        typeof plan.changed !== "boolean" ||
+        normalizeFavoriteId(plan.entityId) !== plan.entityId) {
+      throw new Error("Favorite Learning mutation plan 结构无效。");
+    }
+    if (plan.before !== null) validateState(plan.before, plan.entityId);
+    validateState(plan.candidate, plan.entityId);
+    if (plan.before !== null && plan.before.createdAt !== plan.candidate.createdAt) {
+      throw new Error("Favorite Learning mutation plan 不能修改 createdAt。");
+    }
+    if (plan.operation === "restore" &&
+        (plan.before === null || plan.before.deletedAt === null || plan.candidate.deletedAt !== null)) {
+      throw new Error("Favorite Learning restore plan 生命周期无效。");
+    }
+    if (plan.operation === "set-mastered" && plan.candidate.deletedAt !== null) {
+      if (plan.changed) throw new Error("Favorite Learning set-mastered plan 生命周期无效。");
+    }
+    if (plan.changed === statesEqual(plan.before, plan.candidate)) {
+      throw new Error("Favorite Learning mutation plan changed 标记无效。");
+    }
+    return plan;
+  }
+
+  function commitPlannedMutation(value) {
+    const plan = snapshotPlannedMutation(value);
+    const current = readState(plan.entityId);
+    if (!statesEqual(current, plan.before)) {
+      return {
+        status: "stale-local-state",
+        entityId: plan.entityId,
+        written: false,
+        favoriteLearningState: cloneState(current)
+      };
+    }
+    if (!plan.changed) {
+      return {
+        status: "unchanged",
+        entityId: plan.entityId,
+        written: false,
+        favoriteLearningState: cloneState(plan.candidate)
+      };
+    }
+    writeState(plan.candidate);
+    return {
+      status: "committed",
+      entityId: plan.entityId,
+      written: true,
+      favoriteLearningState: cloneState(plan.candidate)
+    };
+  }
+
+  function commitExactSnapshot(value) {
+    if (!isPlainObject(value)) {
+      throw new Error("Favorite Learning exact snapshot commit 必须是普通对象。");
+    }
+    const input = structuredClone(value);
+    const expectedFields = ["candidate", "entityId", "expectedCurrent"].sort();
+    const keys = Object.keys(input).sort();
+    if (keys.length !== expectedFields.length ||
+        !keys.every((key, index) => key === expectedFields[index]) ||
+        normalizeFavoriteId(input.entityId) !== input.entityId) {
+      throw new Error("Favorite Learning exact snapshot commit 结构无效。");
+    }
+    if (input.expectedCurrent !== null) validateState(input.expectedCurrent, input.entityId);
+    validateState(input.candidate, input.entityId);
+
+    const current = readState(input.entityId);
+    if (statesEqual(current, input.candidate)) {
+      return {
+        status: "unchanged",
+        entityId: input.entityId,
+        written: false,
+        favoriteLearningState: cloneState(input.candidate)
+      };
+    }
+    if (!statesEqual(current, input.expectedCurrent)) {
+      return {
+        status: "stale-local-state",
+        entityId: input.entityId,
+        written: false,
+        favoriteLearningState: cloneState(current)
+      };
+    }
+    writeState(input.candidate);
+    return {
+      status: "committed",
+      entityId: input.entityId,
+      written: true,
+      favoriteLearningState: cloneState(input.candidate)
+    };
+  }
+
   function setMastered(favoriteId, value) {
     const normalizedId = normalizeFavoriteId(favoriteId);
     if (!normalizedId) throw new Error("缺少有效的 Favorite ID。");
@@ -556,6 +703,9 @@
 
   window.LingoFlowFavoriteLearningRepository = Object.freeze({
     get,
+    planSetMastered,
+    commitPlannedMutation,
+    commitExactSnapshot,
     setMastered,
     remove,
     restore,

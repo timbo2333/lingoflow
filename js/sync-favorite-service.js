@@ -163,7 +163,11 @@
   async function recoverPreparedUnlocked(owner, lease) {
     const state = getStateRepository();
     const favorites = getFavoriteRepository();
-    const listed = await state.listOutbox({ ownerId: owner.ownerId, status: "prepared" });
+    const listed = await state.listOutbox({
+      ownerId: owner.ownerId,
+      entityType: "favorites",
+      status: "prepared"
+    });
     if (listed.status !== "ready") return listed;
 
     const recovered = [];
@@ -293,6 +297,7 @@
     }
     const pendingResult = await state.listOutbox({
       ownerId: owner.ownerId,
+      entityType: "favorites",
       entityId
     });
     if (pendingResult.status !== "ready") return pendingResult;
@@ -348,6 +353,7 @@
       const cancelled = await getStateRepository().cancelUnattemptedOutbox({
         ownerId: owner.ownerId,
         bindingId: owner.bindingId,
+        entityType: "favorites",
         entityId: plan.entityId,
         leaseToken: lease.leaseToken
       });
@@ -578,7 +584,10 @@
       }
       const sidecarResult = await getStateRepository().listSidecars(owner.ownerId);
       if (sidecarResult.status !== "ready") return sidecarResult;
-      const outboxResult = await getStateRepository().listOutbox({ ownerId: owner.ownerId });
+      const outboxResult = await getStateRepository().listOutbox({
+        ownerId: owner.ownerId,
+        entityType: "favorites"
+      });
       if (outboxResult.status !== "ready") return outboxResult;
 
       const drift = await buildDriftActions(

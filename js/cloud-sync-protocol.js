@@ -6,6 +6,11 @@
       schemaVersion: "1",
       scope: "record",
       operations: Object.freeze(["put", "restore"])
+    }),
+    favoriteLearningStates: Object.freeze({
+      schemaVersion: "1",
+      scope: "record",
+      operations: Object.freeze(["put", "restore"])
     })
   });
   const MUTATION_FIELDS = new Set([
@@ -214,6 +219,13 @@
     return schema && typeof schema.validateFavorite === "function" ? schema : null;
   }
 
+  function getFavoriteLearningSchema() {
+    const schema = window.LingoFlowFavoriteLearningBackupSchema;
+    return schema && typeof schema.validateFavoriteLearningState === "function"
+      ? schema
+      : null;
+  }
+
   function findPayloadSyncField(value, path = "payload") {
     if (Array.isArray(value)) {
       for (let index = 0; index < value.length; index += 1) {
@@ -265,6 +277,51 @@
     }
     const syncField = findPayloadSyncField(payload);
     if (syncField) errors.push(createError("sync-metadata-in-payload", syncField));
+  }
+
+  function validateFavoriteLearningPayload(payload, entityId, errors) {
+    const schema = getFavoriteLearningSchema();
+    if (!schema) {
+      errors.push(createError("favorite-learning-schema-unavailable", "payload"));
+      return;
+    }
+
+    let validation;
+    try {
+      validation = schema.validateFavoriteLearningState(payload);
+    } catch {
+      errors.push(createError("invalid-favorite-learning-state", "payload"));
+      return;
+    }
+    if (!validation || validation.status !== "valid") {
+      const schemaErrors = Array.isArray(validation?.errors) ? validation.errors : [];
+      if (!schemaErrors.length) {
+        errors.push(createError("invalid-favorite-learning-state", "payload"));
+      } else {
+        for (const error of schemaErrors) {
+          const suffix = error?.path && error.path !== "$" ? `.${error.path}` : "";
+          errors.push(createError(
+            error?.code || "invalid-favorite-learning-state",
+            `payload${suffix}`
+          ));
+        }
+      }
+      return;
+    }
+
+    if (validation.favoriteId !== entityId) {
+      errors.push(createError("entity-id-mismatch", "entityId"));
+    }
+    const syncField = findPayloadSyncField(payload);
+    if (syncField) errors.push(createError("sync-metadata-in-payload", syncField));
+  }
+
+  function validateEntityPayload(entityType, payload, entityId, errors) {
+    if (entityType === "favorites") {
+      validateFavoritePayload(payload, entityId, errors);
+    } else if (entityType === "favoriteLearningStates") {
+      validateFavoriteLearningPayload(payload, entityId, errors);
+    }
   }
 
   function rejectedMutation(value, errors) {
@@ -333,7 +390,12 @@
     }
 
     if (config && Object.prototype.hasOwnProperty.call(mutation, "payload")) {
-      validateFavoritePayload(mutation.payload, mutation.entityId, errors);
+      validateEntityPayload(
+        mutation.entityType,
+        mutation.payload,
+        mutation.entityId,
+        errors
+      );
     }
 
     if (errors.length) return rejectedMutation(value, errors);
@@ -437,9 +499,12 @@
       if (!isOpaqueString(result.currentCursor)) {
         errors.push(createError("invalid-cursor", "currentCursor"));
       }
-      if (result.entityType === "favorites") {
-        validateFavoritePayload(result.currentPayload, result.entityId, errors);
-      }
+      validateEntityPayload(
+        result.entityType,
+        result.currentPayload,
+        result.entityId,
+        errors
+      );
     }
 
     return errors.length
@@ -477,7 +542,7 @@
       if (!config.operations.includes(change.operation)) {
         errors.push(createError("unsupported-operation", "operation"));
       }
-      validateFavoritePayload(change.payload, change.entityId, errors);
+      validateEntityPayload(change.entityType, change.payload, change.entityId, errors);
     }
 
     return errors.length

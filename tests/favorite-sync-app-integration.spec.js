@@ -86,6 +86,14 @@ test("页面五个 Favorite writer 全部经过 App Sync boundary", async ({ pag
       softDelete: async id => {
         calls.push("softDelete");
         return { status: "ready", favorite: repository.softDelete(id) };
+      },
+      setMastered: async (id, mastered) => {
+        calls.push("setMastered");
+        return {
+          status: "ready",
+          favoriteLearningState: window.LingoFlowFavoriteLearningRepository
+            .setMastered(id, mastered)
+        };
       }
     };
     window.confirm = () => true;
@@ -122,6 +130,7 @@ test("页面五个 Favorite writer 全部经过 App Sync boundary", async ({ pag
     "create",
     "create",
     "update",
+    "setMastered",
     "softDelete",
     "softDelete"
   ]);

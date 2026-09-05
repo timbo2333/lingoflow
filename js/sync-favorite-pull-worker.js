@@ -46,14 +46,21 @@
     return state;
   }
 
-  function getFavoriteRepository(value) {
-    const repository = value || window.LingoFlowFavoriteRepository;
-    if (!repository ||
-        typeof repository.getById !== "function" ||
-        typeof repository.commitExactSnapshot !== "function") {
-      throw new Error("Favorite Repository exact apply boundary 不可用。");
+  function getRecordRepositories(options) {
+    const repositories = options.recordRepositories || {
+      favorites: options.favoriteRepository || window.LingoFlowFavoriteRepository
+    };
+    if (!isPlainObject(repositories)) {
+      throw new Error("Sync record repositories 不可用。");
     }
-    return repository;
+    for (const [entityType, repository] of Object.entries(repositories)) {
+      const read = entityType === "favorites" ? repository?.getById : repository?.get;
+      if (typeof read !== "function" ||
+          typeof repository?.commitExactSnapshot !== "function") {
+        throw new Error("Sync record exact apply boundary 不可用。");
+      }
+    }
+    return repositories;
   }
 
   function isPlainObject(value) {
@@ -84,8 +91,12 @@
     const canonical = getCanonical(options.canonical);
     const protocol = getProtocol(options.protocol);
     const state = getStateRepository(options.syncStateRepository);
-    const favorites = getFavoriteRepository(options.favoriteRepository);
+    const repositories = getRecordRepositories(options);
     const pull = options.pull;
+
+    function getRepository(entityType) {
+      return repositories[entityType] || null;
+    }
 
     async function verifyBinding(owner) {
       const result = await state.getWorkspaceBinding();
@@ -193,12 +204,34 @@
       return received;
     }
 
-    async function readCurrentFavorite(entityId) {
+    async function readCurrentRecord(entityType, entityId) {
       try {
+        const repository = getRepository(entityType);
+        if (!repository) return { status: "blocked", reason: "unsupported-local-entity" };
         return {
           status: "ready",
-          favorite: favorites.getById(entityId, { includeDeleted: true })
+          record: entityType === "favorites"
+            ? repository.getById(entityId, { includeDeleted: true })
+            : repository.get(entityId, { includeDeleted: true })
         };
+      } catch (error) {
+        return {
+          status: "failed",
+          reason: "sync-record-storage-read-failed",
+          message: error.message
+        };
+      }
+    }
+
+    function checkLearningDependency(item) {
+      if (item.entityType !== "favoriteLearningStates") return { status: "ready" };
+      const favorites = getRepository("favorites");
+      if (!favorites) return { status: "blocked", reason: "favorite-repository-unavailable" };
+      try {
+        const favorite = favorites.getById(item.entityId, { includeDeleted: true });
+        return favorite
+          ? { status: "ready", favorite }
+          : { status: "blocked", reason: "favorite-reference-pending" };
       } catch (error) {
         return {
           status: "failed",
@@ -209,7 +242,11 @@
     }
 
     async function readRecordState(owner, item) {
-      const sidecarResult = await state.getSidecar(owner.ownerId, item.entityId);
+      const sidecarResult = await state.getSidecar(
+        owner.ownerId,
+        item.entityId,
+        item.entityType
+      );
       if (sidecarResult.status !== "ready" && sidecarResult.status !== "missing") {
         return sidecarResult;
       }
@@ -219,6 +256,7 @@
       }
       const pendingResult = await state.listOutbox({
         ownerId: owner.ownerId,
+        entityType: item.entityType,
         entityId: item.entityId
       });
       if (pendingResult.status !== "ready") return pendingResult;
@@ -228,12 +266,14 @@
       const issueResult = await state.listIssues({
         ownerId: owner.ownerId,
         bindingId: owner.bindingId,
+        entityType: item.entityType,
         entityId: item.entityId
       });
       if (issueResult.status !== "ready") return issueResult;
       const anchorResult = await state.getPullAnchor({
         ownerId: owner.ownerId,
         bindingId: owner.bindingId,
+        entityType: item.entityType,
         entityId: item.entityId
       });
       if (anchorResult.status !== "ready" && anchorResult.status !== "missing") {
@@ -253,6 +293,7 @@
         anchor.revision === sidecar.serverRevision &&
         anchor.payloadFingerprint === sidecar.lastSyncedFingerprint &&
         anchor.entityId === sidecar.entityId &&
+        anchor.entityType === sidecar.entityType &&
         anchor.scope === sidecar.scope);
     }
 
@@ -312,7 +353,7 @@
       if (binding.status !== "ready") return binding;
       let committed;
       try {
-        committed = favorites.commitExactSnapshot({
+        committed = getRepository(item.entityType).commitExactSnapshot({
           entityId: item.entityId,
           expectedCurrent: intent.localBeforeSnapshot,
           candidate: intent.candidateSnapshot
@@ -399,6 +440,7 @@
         const recordInbox = await state.listInbox({
           ownerId: owner.ownerId,
           bindingId: owner.bindingId,
+          entityType: item.entityType,
           entityId: item.entityId
         });
         if (recordInbox.status !== "ready") return recordInbox;
@@ -464,7 +506,7 @@
       if (binding.status !== "ready") return { ...binding, applying: true };
       let committed;
       try {
-        committed = favorites.commitExactSnapshot({
+        committed = getRepository(item.entityType).commitExactSnapshot({
           entityId: item.entityId,
           expectedCurrent: current,
           candidate: prepared.item.applyIntent.candidateSnapshot
@@ -520,11 +562,13 @@
         const next = await state.getNextInbox(owner);
         if (next.status !== "ready") return next;
         const item = canonical.snapshot(next.item, "inbox");
-        const local = await readCurrentFavorite(item.entityId);
+        const dependency = checkLearningDependency(item);
+        if (dependency.status !== "ready") return dependency;
+        const local = await readCurrentRecord(item.entityType, item.entityId);
         if (local.status !== "ready") return local;
         return item.status === "applying"
-          ? await recoverApplying(owner, lease, item, local.favorite)
-          : await applyReceived(owner, lease, item, local.favorite);
+          ? await recoverApplying(owner, lease, item, local.record)
+          : await applyReceived(owner, lease, item, local.record);
       });
     }
 
