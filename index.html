@@ -21,8 +21,70 @@
 
   <div class="topActions">
     <span class="versionBadge">V0.6 · 稳定版</span>
+    <button id="accountButton" class="secondary compactButton" type="button">
+      👤 登录 / 注册
+    </button>
     <button class="secondary compactButton" onclick="openChangelog()">📝 更新日志</button>
     <span class="shortcutHint">⌘/Ctrl + K 快速查词</span>
+  </div>
+
+  <!-- 账号与 Favorite 云同步 -->
+  <div id="authModal" class="modalOverlay" role="dialog" aria-modal="true"
+       aria-labelledby="authModalTitle">
+    <div class="modalCard authModalCard">
+      <div class="modalHeader">
+        <div>
+          <div id="authModalTitle" class="modalTitle">👤 LingoFlow 账号</div>
+          <div class="modalSub">登录后可在自己的设备之间同步收藏；未登录时仍可完整使用本地收藏。</div>
+        </div>
+        <button id="authModalClose" class="iconClose" type="button" aria-label="关闭">×</button>
+      </div>
+
+      <div id="authSignedOutPanel">
+        <div class="authModeTabs" role="tablist" aria-label="登录或注册">
+          <button id="authSignInMode" class="secondary authModeButton active" type="button">登录</button>
+          <button id="authSignUpMode" class="secondary authModeButton" type="button">注册</button>
+        </div>
+        <form id="authForm" class="authForm">
+          <label class="settingLabel" for="authEmail">邮箱</label>
+          <input id="authEmail" type="email" autocomplete="email" required
+                 placeholder="name@example.com">
+          <label class="settingLabel" for="authPassword">密码</label>
+          <input id="authPassword" type="password" autocomplete="current-password"
+                 minlength="6" required placeholder="至少 6 个字符">
+          <button id="authSubmitButton" type="submit">登录</button>
+        </form>
+      </div>
+
+      <div id="authSignedInPanel" hidden>
+        <div class="settingItem authAccountSummary">
+          <div class="settingLabel">当前账号</div>
+          <div id="authUserEmail" class="settingValue">已登录</div>
+          <div id="authSyncSummary" class="settingSubValue">正在检查收藏同步状态…</div>
+        </div>
+
+        <div id="workspaceActivationPanel" class="workspaceActivationPanel" hidden>
+          <div class="workspaceActivationTitle">关联当前浏览器的本地收藏？</div>
+          <div id="workspaceActivationMessage" class="settingSubValue"></div>
+          <div class="authButtonRow">
+            <button id="workspaceActivateButton" type="button">关联并同步</button>
+            <button id="workspaceDeferButton" class="secondary" type="button">暂不关联</button>
+          </div>
+        </div>
+
+        <div id="workspaceBlockedPanel" class="workspaceBlockedPanel" hidden>
+          当前浏览器已有另一个账号的本地工作区。为避免收藏串号，请使用其他浏览器或浏览器 Profile。
+        </div>
+
+        <div class="authButtonRow">
+          <button id="authSyncNowButton" class="secondary" type="button">立即同步收藏</button>
+          <button id="authSignOutButton" class="secondary" type="button">退出登录</button>
+        </div>
+      </div>
+
+      <div id="authFeedback" class="authFeedback" role="status" aria-live="polite"></div>
+      <div class="settingsNote">退出登录不会删除本地收藏、同步队列或已绑定的工作区。</div>
+    </div>
   </div>
 
   <section id="inputPanel">
@@ -841,6 +903,8 @@ I felt nervous when I asked my friends for advice, but their suggestions helped 
 <script src="js/query-event-repository.js"></script>
 <script src="js/history-baseline-repository.js"></script>
 <script src="js/preferences-repository.js"></script>
+<script src="js/supabase-config.js"></script>
+<script src="js/supabase-auth-service.js"></script>
 <script src="js/sync-canonical.js"></script>
 <script src="js/cloud-sync-protocol.js"></script>
 <script src="js/sync-state-repository.js"></script>
@@ -849,6 +913,7 @@ I felt nervous when I asked my friends for advice, but their suggestions helped 
 <script src="js/sync-favorite-pull-worker.js"></script>
 <script src="js/supabase-sync-service.js"></script>
 <script src="js/sync-favorite-app-coordinator.js"></script>
+<script src="js/sync-favorite-auth-ui.js"></script>
 <script src="js/query-history-projector.js"></script>
 <script src="js/query-history-migration-coordinator.js"></script>
 <script src="js/favorite-backup-export.js"></script>

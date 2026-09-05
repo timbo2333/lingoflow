@@ -923,6 +923,89 @@
     line-height: 1.55;
   }
 
+  .authModalCard {
+    width: min(520px, 100%);
+  }
+
+  .authModeTabs,
+  .authButtonRow {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 9px;
+  }
+
+  .authModeTabs {
+    margin-bottom: 14px;
+  }
+
+  .authModeButton.active {
+    background: #1d1d1f;
+    color: #fff;
+    border-color: #1d1d1f;
+  }
+
+  .authForm {
+    display: grid;
+    gap: 8px;
+  }
+
+  .authForm input {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 11px 12px;
+    border: 1px solid #d2d2d7;
+    border-radius: 9px;
+    background: #fff;
+    color: #1d1d1f;
+    font: inherit;
+  }
+
+  .authForm button[type="submit"] {
+    margin-top: 6px;
+  }
+
+  .authAccountSummary {
+    margin-bottom: 12px;
+  }
+
+  .workspaceActivationPanel,
+  .workspaceBlockedPanel {
+    margin-bottom: 12px;
+    padding: 13px;
+    border-radius: 10px;
+  }
+
+  .workspaceActivationPanel {
+    border: 1px solid #e3d18a;
+    background: #fff9df;
+  }
+
+  .workspaceActivationTitle {
+    font-weight: 750;
+  }
+
+  .workspaceActivationPanel .authButtonRow {
+    margin-top: 11px;
+  }
+
+  .workspaceBlockedPanel {
+    border: 1px solid #f0b7b7;
+    background: #fff0f0;
+    color: #8b2424;
+    line-height: 1.55;
+  }
+
+  .authFeedback {
+    min-height: 20px;
+    margin-top: 12px;
+    color: #6e6e73;
+    font-size: 13px;
+    line-height: 1.5;
+  }
+
+  .authFeedback[data-kind="success"] { color: #26753a; }
+  .authFeedback[data-kind="error"] { color: #b42318; }
+
   @media (max-width: 680px) {
     .searchRow {
       grid-template-columns: 1fr;
@@ -1579,6 +1662,23 @@
     background: var(--app-card);
     color: var(--app-text);
     border-color: var(--app-border);
+  }
+
+  body.darkMode .authForm input {
+    background: var(--app-card);
+    color: var(--app-text);
+    border-color: var(--app-border);
+  }
+
+  body.darkMode .workspaceActivationPanel {
+    border-color: #665b2b;
+    background: #302b17;
+  }
+
+  body.darkMode .workspaceBlockedPanel {
+    border-color: #714141;
+    background: #321f1f;
+    color: #ffb4b4;
   }
 
   body.darkMode .description,
