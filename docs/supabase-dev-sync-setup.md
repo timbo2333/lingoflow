@@ -35,11 +35,25 @@ Copy `js/supabase-config.example.js` to the ignored file
 
 - `projectUrl`
 - `publishableKey`
-- the Auth user's UUID as `ownerId`
+- optionally, the Auth user's UUID as `expectedOwnerId`
 - a function that returns the current signed-in user's access token
+
+The runtime `ownerId` always comes from the authenticated `/auth/v1/user`
+response. `expectedOwnerId` is only a local assertion that blocks startup if the
+session belongs to a different user.
 
 The local config file is intentionally ignored. Do not place database passwords,
 service-role keys, admin secrets, or committed user access tokens in the repo.
+
+Open the local app with `?supabase-sync=dev` in the URL. The app only loads
+`js/supabase-config.local.js` when that explicit Dev flag is present. A normal
+page load remains local-only and does not attempt Auth, Push, or Pull.
+
+After the Dev session is verified, page startup binds the authenticated owner,
+recovers prepared Favorite mutations, reconciles local drift into the durable
+outbox, pushes ready mutations, then pulls through the existing Inbox/Apply
+path. Network failures do not undo local Favorite writes; their outbox entries
+remain available for the next page load or `online` retry.
 
 ## 4. Run the real-cloud smoke test
 

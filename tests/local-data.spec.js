@@ -106,7 +106,7 @@ test("Favorite UI 使用稳定 ID 创建和查询 word / phrase，并忽略旧�
     "checking"
   );
 
-  const result = await page.evaluate(legacyKey => {
+  const result = await page.evaluate(async legacyKey => {
     const lookupResult = {
       baseWord: "develop",
       phonetic: "/dɪˈveləp/",
@@ -122,14 +122,14 @@ test("Favorite UI 使用稳定 ID 创建和查询 word / phrase，并忽略旧�
       source: "search"
     };
 
-    const word = saveCurrentFavorite();
-    const firstPhraseResult = savePhraseFavorite({
+    const word = await saveCurrentFavorite();
+    const firstPhraseResult = await savePhraseFavorite({
       text: "make progress",
       context: "Students make progress through regular practice."
     });
     const phraseBeforeRepeat = window.LingoFlowFavoriteRepository
       .findByContent({ type: "phrase", text: "make progress" })[0];
-    const repeatedPhraseResult = savePhraseFavorite({
+    const repeatedPhraseResult = await savePhraseFavorite({
       text: "make progress",
       context: "A different article also says make progress."
     });
@@ -276,7 +276,7 @@ test("Favorite UI 编辑保持稳定身份，并将 mastered 写入独立 Learni
 });
 
 test("Favorite UI 删除使用 soft delete，并保留独立 Learning State", async ({ page }) => {
-  const setup = await page.evaluate(() => {
+  const setup = await page.evaluate(async () => {
     currentLookupState = {
       word: "Develop",
       result: {
@@ -288,7 +288,7 @@ test("Favorite UI 删除使用 soft delete，并保留独立 Learning State", as
       sentence: "People develop skills through practice.",
       source: "search"
     };
-    const favorite = saveCurrentFavorite();
+    const favorite = await saveCurrentFavorite();
     const sibling = window.LingoFlowFavoriteRepository.create({
       type: "word",
       text: "develop",

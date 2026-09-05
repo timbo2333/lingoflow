@@ -2781,6 +2781,28 @@ function getFavoriteRepository() {
   return window.LingoFlowFavoriteRepository;
 }
 
+function getFavoriteAppSync() {
+  const coordinator = window.LingoFlowFavoriteAppSync;
+  if (!coordinator ||
+      typeof coordinator.create !== "function" ||
+      typeof coordinator.update !== "function" ||
+      typeof coordinator.softDelete !== "function") {
+    throw new Error("Favorite App Sync boundary 不可用。");
+  }
+  return coordinator;
+}
+
+function requireFavoriteMutation(result, operation) {
+  if (!result?.favorite || ![
+    "ready",
+    "unchanged",
+    "local-committed-pending-reconciliation"
+  ].includes(result.status)) {
+    throw new Error(`Favorite ${operation} 未完成：${result?.reason || result?.status || "unknown"}`);
+  }
+  return result.favorite;
+}
+
 function getFavoriteLearningRepository() {
   return window.LingoFlowFavoriteLearningRepository;
 }
@@ -2840,7 +2862,7 @@ function updateFavoriteButton() {
   }
 }
 
-function saveCurrentFavorite() {
+async function saveCurrentFavorite() {
   const { word, result, sentence, source } = currentLookupState;
   if (!word) return;
 
@@ -2864,7 +2886,10 @@ function saveCurrentFavorite() {
   const origin = getFavoriteOrigin(source);
   if (origin) input.origin = origin;
 
-  const favorite = getFavoriteRepository().create(input);
+  const favorite = requireFavoriteMutation(
+    await getFavoriteAppSync().create(input),
+    "create"
+  );
   refreshFavoriteUi();
   return favorite;
 }
@@ -2874,7 +2899,7 @@ function findPhraseFavorite(text) {
   return normalizedText ? findActiveFavorites("phrase", normalizedText) : [];
 }
 
-function savePhraseFavorite(snapshot) {
+async function savePhraseFavorite(snapshot) {
   const text = normalizePhraseText(snapshot?.text || "");
   if (!text) return { saved: false, existed: false, text: "" };
 
@@ -2897,12 +2922,15 @@ function savePhraseFavorite(snapshot) {
   const origin = getFavoriteOrigin("article-selection");
   if (origin) input.origin = origin;
 
-  getFavoriteRepository().create(input);
+  requireFavoriteMutation(
+    await getFavoriteAppSync().create(input),
+    "create"
+  );
   refreshFavoriteUi();
   return { saved: true, existed: false, text };
 }
 
-function toggleCurrentFavorite() {
+async function toggleCurrentFavorite() {
   const { word, result } = currentLookupState;
   if (!word) return;
 
@@ -2916,12 +2944,15 @@ function toggleCurrentFavorite() {
 
   if (matches.length === 1) {
     if (!confirm(`取消收藏 “${matches[0].displayText || matches[0].text}” 吗？你写的释义、句子和备注会保留在最近删除记录中。`)) return;
-    getFavoriteRepository().softDelete(matches[0].id);
+    requireFavoriteMutation(
+      await getFavoriteAppSync().softDelete(matches[0].id),
+      "soft-delete"
+    );
     refreshFavoriteUi();
     return;
   }
 
-  saveCurrentFavorite();
+  await saveCurrentFavorite();
 }
 
 function openFavorites() {
@@ -3141,7 +3172,7 @@ function cancelFavoriteEdit(button) {
   renderFavorites();
 }
 
-function saveFavoriteEdit(favoriteId, button) {
+async function saveFavoriteEdit(favoriteId, button) {
   const card = button.closest(".favoriteItem");
   if (!card) return;
 
@@ -3165,7 +3196,10 @@ function saveFavoriteEdit(favoriteId, button) {
 
   let favoriteSaved = false;
   try {
-    getFavoriteRepository().update(favoriteId, patch);
+    requireFavoriteMutation(
+      await getFavoriteAppSync().update(favoriteId, patch),
+      "update"
+    );
     favoriteSaved = true;
 
     const learningRepository = getFavoriteLearningRepository();
@@ -3199,14 +3233,17 @@ function saveFavoriteEdit(favoriteId, button) {
   }, 450);
 }
 
-function removeFavorite(favoriteId) {
+async function removeFavorite(favoriteId) {
   const favorite = getFavoriteRepository().getById(favoriteId, { includeDeleted: false });
   if (!favorite) return;
 
   const label = favorite.displayText || favorite.text;
   if (!confirm(`确定取消收藏 “${label}” 吗？`)) return;
 
-  getFavoriteRepository().softDelete(favoriteId);
+  requireFavoriteMutation(
+    await getFavoriteAppSync().softDelete(favoriteId),
+    "soft-delete"
+  );
   refreshFavoriteUi();
   renderFavorites();
 }
@@ -3518,11 +3555,11 @@ function showPhraseSelectionFeedback(message) {
   });
 }
 
-function favoriteSelectedPhrase() {
+async function favoriteSelectedPhrase() {
   const snapshot = phraseSelectionSnapshot;
   if (!snapshot) return;
 
-  const result = savePhraseFavorite(snapshot);
+  const result = await savePhraseFavorite(snapshot);
   hidePhraseSelectionToolbar(true);
 
   if (result.saved) {
@@ -4217,7 +4254,7 @@ async function directSearch(explicitWord = "") {
   `;
 }
 
-function favoriteDirectSearchUnknown(word, button) {
+async function favoriteDirectSearchUnknown(word, button) {
   currentLookupState = {
     word,
     result: null,
@@ -4226,20 +4263,20 @@ function favoriteDirectSearchUnknown(word, button) {
   };
 
   if (!isFavorite(word, null)) {
-    saveCurrentFavorite();
+    await saveCurrentFavorite();
   }
 
   if (button) button.textContent = "★ 已收藏";
 }
 
-function favoriteDirectSearch(word) {
+async function favoriteDirectSearch(word) {
   if (!currentLookupState.result ||
       normalizeWord(currentLookupState.word) !== normalizeWord(word)) {
     return;
   }
 
   if (!isFavorite(currentLookupState.word, currentLookupState.result)) {
-    saveCurrentFavorite();
+    await saveCurrentFavorite();
   }
 
   const buttons = document.getElementById("directSearchResult")
@@ -6420,7 +6457,26 @@ document.addEventListener("keydown", function(event) {
   }
 });
 
+function initializeFavoriteSync() {
+  const coordinator = window.LingoFlowFavoriteAppSync;
+  if (!coordinator || typeof coordinator.bootstrap !== "function") return;
+
+  window.addEventListener("lingoflow:favorite-sync-applied", () => {
+    refreshFavoriteUi();
+    const modal = document.getElementById("favoritesModal");
+    if (modal?.classList.contains("show")) renderFavorites();
+  });
+
+  void coordinator.bootstrap().then(result => {
+    if (result.status === "ready") return coordinator.syncNow();
+    return null;
+  }).catch(error => {
+    console.warn("Favorite Sync startup unavailable:", error?.message || "unknown");
+  });
+}
+
 ensureHistoryMigration();
+initializeFavoriteSync();
 initializeDictionaryOnStartup();
 updateVocabBadges();
 applyReadingPreferences();
