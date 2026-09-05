@@ -3,12 +3,15 @@
 
   const MAX_PUSHES_PER_RUN = 100;
   const MAX_INBOX_APPLIES_PER_RUN = 500;
+  const MAX_SYNC_CYCLES_PER_RUN = 20;
+  // TODO(V0.8): add snapshot/bootstrap when change-log retention or scale requires it.
   let runtime = null;
   let runtimeEpoch = 0;
   let bootstrapPromise = null;
   let configLoadPromise = null;
   let syncPromise = null;
   let syncRequested = false;
+  let foregroundSyncScheduled = false;
   let state = Object.freeze({ status: "inactive", reason: "auth-required" });
 
   function isOpaqueString(value) {
@@ -36,6 +39,45 @@
   function deactivate(reason, details = {}) {
     resetRuntime();
     return setState({ status: "inactive", reason, ...details });
+  }
+
+  function readyState(active, syncStatus, durable = {}, details = {}) {
+    return setState({
+      status: "ready",
+      syncStatus,
+      ownerId: active.owner.ownerId,
+      bindingId: active.owner.bindingId,
+      outboxCount: durable.outboxCount || 0,
+      inboxCount: durable.inboxCount || 0,
+      pendingCount: durable.pendingCount || 0,
+      issueCount: durable.issueCount || 0,
+      ...details
+    });
+  }
+
+  async function inspectDurableState(active) {
+    const [outbox, inbox, issues] = await Promise.all([
+      active.syncState.listOutbox({ ownerId: active.owner.ownerId }),
+      active.syncState.listInbox(active.owner),
+      active.syncState.listIssues(active.owner)
+    ]);
+    if (outbox.status !== "ready" || inbox.status !== "ready" || issues.status !== "ready") {
+      const failedResult = [outbox, inbox, issues].find(result => result.status !== "ready");
+      return {
+        status: "failed",
+        reason: failedResult?.reason || "sync-state-read-failed"
+      };
+    }
+    const currentOutbox = outbox.items.filter(item => (
+      item.bindingId === active.owner.bindingId
+    ));
+    return {
+      status: "ready",
+      outboxCount: currentOutbox.length,
+      inboxCount: inbox.items.length,
+      pendingCount: currentOutbox.length + inbox.items.length,
+      issueCount: issues.issues.length
+    };
   }
 
   function getDependencies() {
@@ -261,6 +303,7 @@
       owner: workspace.owner,
       capture: dependencies.capture,
       favorites: dependencies.favorites,
+      syncState: dependencies.syncState,
       push: dependencies.pushFactory.create({ push: adapter.push }),
       pull: dependencies.pullFactory.create({ pull: adapter.pull })
     };
@@ -275,11 +318,17 @@
         reason: reconciled.reason || "favorite-reconciliation-failed"
       });
     }
-    return setState({
-      status: "ready",
-      ownerId: nextRuntime.owner.ownerId,
-      bindingId: nextRuntime.owner.bindingId
-    });
+    const durable = await inspectDurableState(nextRuntime);
+    if (epoch !== runtimeEpoch || runtime !== nextRuntime) return getState();
+    if (durable.status !== "ready") {
+      return readyState(nextRuntime, "attention", {}, {
+        reason: durable.reason
+      });
+    }
+    const syncStatus = durable.issueCount > 0
+      ? "attention"
+      : durable.pendingCount > 0 ? "pending" : "synced";
+    return readyState(nextRuntime, syncStatus, durable);
   }
 
   async function bootstrap() {
@@ -335,11 +384,25 @@
     ].includes(result.status);
   }
 
+  async function continueAfterLocalMutation(active) {
+    const durable = await inspectDurableState(active);
+    if (runtime !== active) return;
+    if (durable.status === "ready") {
+      const syncStatus = durable.issueCount > 0
+        ? "attention"
+        : durable.pendingCount > 0 ? "pending" : "synced";
+      readyState(active, syncStatus, durable);
+    }
+    await syncNow();
+  }
+
   async function runMutation(method, args) {
     const active = runtime;
     if (state.status !== "ready" || !active) return runLocalMutation(method, args);
     const result = await active.capture[method](active.owner, ...args);
-    if (runtime === active && mutationWasLocallyCommitted(result)) void syncNow();
+    if (runtime === active && mutationWasLocallyCommitted(result)) {
+      void continueAfterLocalMutation(active);
+    }
     return { ...result, mode: "sync" };
   }
 
@@ -382,42 +445,99 @@
     return { status: "blocked", reason: "inbox-drain-limit-reached", received, applied };
   }
 
-  async function performSync() {
-    const started = state.status === "ready" && runtime ? getState() : await bootstrap();
-    const active = runtime;
-    if (started.status !== "ready" || !active) return started;
+  async function performSyncCycle(active) {
+    if (runtime !== active) return { status: "inactive" };
     const pushed = await drainPush(active);
-    if (runtime !== active) return getState();
+    if (runtime !== active) return { status: "inactive" };
     if (pushed.status !== "ready") {
-      setState({ status: "ready", ownerId: active.owner.ownerId,
-        bindingId: active.owner.bindingId, lastSync: pushed });
       return { status: "pending", pushed, pulled: null };
     }
     const pulled = await receiveAndApply(active);
-    if (runtime !== active) return getState();
-    setState({ status: "ready", ownerId: active.owner.ownerId,
-      bindingId: active.owner.bindingId, lastSync: pulled });
+    if (runtime !== active) return { status: "inactive" };
     return pulled.status === "ready"
       ? { status: "completed", pushed, pulled }
       : { status: "pending", pushed, pulled };
+  }
+
+  function canContinueAfter(result) {
+    return result?.pushed?.reason === "push-drain-limit-reached" ||
+      result?.pulled?.reason === "inbox-drain-limit-reached";
+  }
+
+  async function prepareSync() {
+    const started = state.status === "ready" && runtime ? getState() : await bootstrap();
+    const active = runtime;
+    if (started.status !== "ready" || !active) return started;
+    return { status: "ready", active };
   }
 
   async function syncNow() {
     syncRequested = true;
     if (syncPromise) return await syncPromise;
     syncPromise = (async () => {
-      let result;
-      do {
+      const prepared = await prepareSync();
+      if (prepared.status !== "ready") return prepared;
+      const active = prepared.active;
+      let result = null;
+      let durable = await inspectDurableState(active);
+      if (runtime !== active) return getState();
+      if (durable.status !== "ready") {
+        readyState(active, "attention", {}, { reason: durable.reason });
+        return { status: "pending", reason: durable.reason };
+      }
+      readyState(active, "syncing", durable);
+
+      for (let cycle = 0; cycle < MAX_SYNC_CYCLES_PER_RUN; cycle += 1) {
         syncRequested = false;
-        result = await performSync();
-      } while (syncRequested);
-      return result;
+        result = await performSyncCycle(active);
+        if (runtime !== active) return getState();
+        durable = await inspectDurableState(active);
+        if (runtime !== active) return getState();
+        if (durable.status !== "ready") {
+          readyState(active, "attention", {}, {
+            reason: durable.reason,
+            lastSync: result
+          });
+          return { status: "pending", reason: durable.reason, lastSync: result };
+        }
+        if (durable.issueCount > 0) {
+          readyState(active, "attention", durable, { lastSync: result });
+          return { status: "pending", reason: "sync-issues-present", lastSync: result };
+        }
+        if (result.status === "completed" && durable.pendingCount === 0 && !syncRequested) {
+          readyState(active, "synced", durable, { lastSync: result });
+          return result;
+        }
+        if (result.status === "completed" || canContinueAfter(result) || syncRequested) {
+          readyState(active, "syncing", durable, { lastSync: result });
+          continue;
+        }
+        readyState(active, "unavailable", durable, { lastSync: result });
+        return result;
+      }
+
+      readyState(active, "pending", durable, {
+        reason: "sync-cycle-limit-reached",
+        lastSync: result
+      });
+      return { status: "pending", reason: "sync-cycle-limit-reached", lastSync: result };
     })();
     try {
       return await syncPromise;
     } finally {
       syncPromise = null;
     }
+  }
+
+  function requestForegroundSync() {
+    if (document.visibilityState !== "visible" || foregroundSyncScheduled) return;
+    foregroundSyncScheduled = true;
+    queueMicrotask(() => {
+      foregroundSyncScheduled = false;
+      void bootstrap().then(result => {
+        if (result.status === "ready") void syncNow();
+      });
+    });
   }
 
   async function create(input) {
@@ -456,10 +576,10 @@
   });
 
   window.addEventListener("online", () => {
-    void bootstrap().then(result => {
-      if (result.status === "ready") void syncNow();
-    });
+    requestForegroundSync();
   });
+  window.addEventListener("focus", requestForegroundSync);
+  document.addEventListener("visibilitychange", requestForegroundSync);
 
   window.LingoFlowFavoriteAppSync = Object.freeze({
     bootstrap,

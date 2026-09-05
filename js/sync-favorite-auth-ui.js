@@ -54,14 +54,37 @@
     return "";
   }
 
-  function syncMessage(syncState) {
-    if (syncState.status === "ready") return "收藏云同步已开启";
-    if (syncState.status === "activation-required") return "等待确认是否关联本地收藏";
-    if (syncState.reason === "activation-deferred") return "尚未关联；当前继续仅保存在本地";
-    if (syncState.reason === "workspace-owner-mismatch") return "当前浏览器已绑定其他账号";
-    if (syncState.status === "starting") return "正在启动收藏同步…";
-    if (syncState.status === "paused") return "同步已暂停，本地收藏仍可正常使用";
-    return "收藏云同步尚未启动";
+  function syncPresentation(syncState, authState) {
+    const authenticated = authState.status === "authenticated";
+    if (!authenticated) {
+      if (["paused", "failed"].includes(authState.status)) {
+        return { state: "unavailable", message: "同步暂时不可用" };
+      }
+      return { state: "local", message: "收藏仅保存在当前设备" };
+    }
+    if (syncState.status === "activation-required") {
+      return { state: "pending", message: "等待确认本地收藏" };
+    }
+    if (syncState.reason === "activation-deferred") {
+      return { state: "local", message: "收藏仅保存在当前设备" };
+    }
+    if (syncState.reason === "workspace-owner-mismatch" ||
+        syncState.syncStatus === "attention") {
+      return { state: "attention", message: "有收藏需要处理" };
+    }
+    if (syncState.status === "starting" || syncState.syncStatus === "syncing") {
+      return { state: "syncing", message: "正在同步收藏…" };
+    }
+    if (syncState.syncStatus === "synced") {
+      return { state: "synced", message: "收藏已同步" };
+    }
+    if (syncState.syncStatus === "pending") {
+      return { state: "pending", message: "有待同步收藏" };
+    }
+    if (syncState.syncStatus === "unavailable" || syncState.status === "paused") {
+      return { state: "unavailable", message: "同步暂时不可用" };
+    }
+    return { state: "unavailable", message: "收藏同步尚未启动" };
   }
 
   function maybePromptForActivation(syncState) {
@@ -77,6 +100,7 @@
     const authState = auth.getState();
     const syncState = sync.getState();
     const authenticated = authState.status === "authenticated";
+    const presentation = syncPresentation(syncState, authState);
     setHidden("authSignedOutPanel", authenticated);
     setHidden("authSignedInPanel", !authenticated);
 
@@ -87,7 +111,12 @@
     const email = element("authUserEmail");
     if (email) email.textContent = authState.user?.email || "已登录";
     const syncSummary = element("authSyncSummary");
-    if (syncSummary) syncSummary.textContent = syncMessage(syncState);
+    if (syncSummary) syncSummary.textContent = presentation.message;
+    const syncBadge = element("favoriteSyncStatusBadge");
+    if (syncBadge) {
+      syncBadge.textContent = presentation.message;
+      syncBadge.dataset.state = presentation.state;
+    }
 
     const canActivate = authenticated && (
       syncState.status === "activation-required" ||
@@ -107,7 +136,13 @@
     }
 
     const syncButton = element("authSyncNowButton");
-    if (syncButton) syncButton.disabled = busy || syncState.status !== "ready";
+    if (syncButton) {
+      syncButton.textContent = ["pending", "unavailable"].includes(presentation.state)
+        ? "重试同步"
+        : "立即同步收藏";
+      syncButton.disabled = busy || syncState.status !== "ready" ||
+        ["syncing", "attention"].includes(presentation.state);
+    }
     const signOutButton = element("authSignOutButton");
     if (signOutButton) signOutButton.disabled = busy;
     const submit = element("authSubmitButton");
