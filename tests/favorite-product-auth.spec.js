@@ -45,6 +45,12 @@ async function installProductAuthHarness(page) {
         return { data: { user: { id: ownerId, email }, session: null }, error: null };
       },
       async signInWithPassword({ email }) {
+        if (email.startsWith("failure-")) {
+          return {
+            data: { user: null, session: null },
+            error: { message: "AuthApiError: invalid_grant from RPC" }
+          };
+        }
         const ownerId = email.startsWith("beta-") ? ownerB : ownerA;
         const session = {
           access_token: `test-access-token:${ownerId}`,
@@ -156,9 +162,14 @@ test.beforeEach(async ({ page }) => {
 test("未登录保持 local-only，注册成功提示确认邮箱且不绑定 workspace", async ({ page }) => {
   await page.goto("/");
   await waitForAuth(page, "signed-out");
+  await expect(page.locator("#favoriteSyncStatusBadge"))
+    .toHaveText("收藏与学习状态仅保存在当前设备");
   const favorite = await createLocalFavorite(page, "anonymous");
 
   await openAccountModal(page);
+  await expect(page.locator("#authModal .modalSub")).toContainText("无需登录也能使用");
+  await expect(page.locator("#authPrivacyNote")).toContainText("收藏与学习状态会保存到云端");
+  await expect(page.locator("#authPrivacyNote")).toContainText("暂不提供自助删除账号");
   await page.click("#authSignUpMode");
   await page.fill("#authEmail", "alpha@example.test");
   await page.fill("#authPassword", "test-password");
@@ -196,6 +207,20 @@ test("已有匿名 Favorite 登录后必须明确确认；暂不关联不会上�
   expect(result.favorite).toEqual(favorite);
   expect(result.binding.status).toBe("missing");
   expect(result.pushes).toBe(0);
+});
+
+test("账号失败只显示用户文案，不暴露服务端技术错误", async ({ page }) => {
+  await page.goto("/");
+  await openAccountModal(page);
+  await page.fill("#authEmail", "failure-user@example.test");
+  await page.fill("#authPassword", "test-password");
+  await page.click("#authSubmitButton");
+  await waitForAuth(page, "failed");
+
+  await expect(page.locator("#authFeedback"))
+    .toHaveText("登录失败，请检查邮箱和密码后重试。");
+  await expect(page.locator("#authFeedback")).not.toContainText("AuthApiError");
+  await expect(page.locator("#authFeedback")).not.toContainText("RPC");
 });
 
 test("确认关联后保持 stable ID 上传，刷新恢复 session，退出保留数据且同账号可恢复", async ({ page }) => {
@@ -269,4 +294,6 @@ test("不同账号登录不能接管已有 workspace 或上传其本地 Favorite
   expect(result.binding.binding.ownerId).toBe(OWNER_A);
   expect(result.pushes).toBe(1);
   await expect(page.locator("#workspaceBlockedPanel")).toBeVisible();
+  await expect(page.locator("#workspaceBlockedPanel")).toContainText("使用原账号登录");
+  await expect(page.locator("#workspaceBlockedPanel")).toContainText("新的浏览器用户配置");
 });

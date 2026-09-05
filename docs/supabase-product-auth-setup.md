@@ -59,3 +59,19 @@ It must never contain an access token, refresh token, password, secret key,
 service-role key, database password, or admin credential. The ignored
 `js/supabase-config.local.js` remains available only for conditional Dev smoke
 tests and is not the normal product activation path.
+
+## V0.7 account and cloud-data deletion
+
+V0.7 does not expose self-service account deletion in the static browser app.
+A user who wants the account and cloud data deleted must contact the developer
+through the project feedback channel. After verifying the request belongs to
+that account, the developer deletes the Supabase Auth user in the Dashboard.
+
+All four sync tables reference `auth.users(id)` with `on delete cascade`, so
+deleting the Auth user also deletes that owner's Favorite records, Learning
+records, immutable changes, and idempotency receipts. Local browser data is not
+deleted remotely; the user must clear this site's browser data separately if
+they also want the device copy removed.
+
+Do not put a service-role key in this static frontend to implement deletion.
+A secure self-service deletion endpoint is deferred to V0.8.

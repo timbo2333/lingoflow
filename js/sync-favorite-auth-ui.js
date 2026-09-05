@@ -49,7 +49,18 @@
     }
     if (authState.status === "authenticating") return "正在确认账号状态…";
     if (authState.status === "paused") return "账号服务暂时不可用，本地收藏仍可正常使用。";
-    if (authState.status === "failed") return authState.message || "账号操作失败，请重试。";
+    if (authState.status === "failed") {
+      if (authState.reason === "sign-in-failed") {
+        return "登录失败，请检查邮箱和密码后重试。";
+      }
+      if (authState.reason === "sign-up-failed") {
+        return "注册失败，请检查填写内容，或稍后重试。";
+      }
+      if (authState.reason === "sign-out-failed") {
+        return "退出登录失败，请检查网络后重试。";
+      }
+      return "账号操作失败，请稍后重试。";
+    }
     if (authState.status === "unavailable") return "账号配置暂时不可用，本地功能不受影响。";
     return "";
   }
@@ -60,31 +71,31 @@
       if (["paused", "failed"].includes(authState.status)) {
         return { state: "unavailable", message: "同步暂时不可用" };
       }
-      return { state: "local", message: "收藏仅保存在当前设备" };
+      return { state: "local", message: "收藏与学习状态仅保存在当前设备" };
     }
     if (syncState.status === "activation-required") {
       return { state: "pending", message: "等待确认本地收藏" };
     }
     if (syncState.reason === "activation-deferred") {
-      return { state: "local", message: "收藏仅保存在当前设备" };
+      return { state: "local", message: "收藏与学习状态仅保存在当前设备" };
     }
     if (syncState.reason === "workspace-owner-mismatch" ||
         syncState.syncStatus === "attention") {
-      return { state: "attention", message: "有收藏需要处理" };
+      return { state: "attention", message: "有同步数据需要处理" };
     }
     if (syncState.status === "starting" || syncState.syncStatus === "syncing") {
-      return { state: "syncing", message: "正在同步收藏…" };
+      return { state: "syncing", message: "正在同步收藏与学习状态…" };
     }
     if (syncState.syncStatus === "synced") {
-      return { state: "synced", message: "收藏已同步" };
+      return { state: "synced", message: "收藏与学习状态已同步" };
     }
     if (syncState.syncStatus === "pending") {
-      return { state: "pending", message: "有待同步收藏" };
+      return { state: "pending", message: "有数据等待同步" };
     }
     if (syncState.syncStatus === "unavailable" || syncState.status === "paused") {
-      return { state: "unavailable", message: "同步暂时不可用" };
+      return { state: "unavailable", message: "云同步暂时不可用" };
     }
-    return { state: "unavailable", message: "收藏同步尚未启动" };
+    return { state: "unavailable", message: "云同步尚未启动" };
   }
 
   function maybePromptForActivation(syncState) {
@@ -131,15 +142,15 @@
     if (activationMessage && canActivate) {
       const count = Number(syncState.localFavoriteCount || 0);
       activationMessage.textContent = count > 0
-        ? `检测到当前浏览器已有 ${count} 条本地收藏。只有你明确同意后，它们才会关联到此账号并上传。`
-        : "确认后会为当前账号建立收藏同步工作区。";
+        ? `检测到当前浏览器已有 ${count} 条本地收藏。只有你明确同意后，这些收藏及其学习状态才会关联到此账号并上传。`
+        : "确认后会为当前账号开启收藏与学习状态同步。";
     }
 
     const syncButton = element("authSyncNowButton");
     if (syncButton) {
       syncButton.textContent = ["pending", "unavailable"].includes(presentation.state)
         ? "重试同步"
-        : "立即同步收藏";
+        : "立即同步";
       syncButton.disabled = busy || syncState.status !== "ready" ||
         ["syncing", "attention"].includes(presentation.state);
     }
@@ -177,12 +188,12 @@
   async function activateWorkspace() {
     if (busy) return;
     busy = true;
-    setFeedback("正在关联本地收藏并启动同步…", "info");
+    setFeedback("正在关联本地数据并启动同步…", "info");
     render();
     const result = await sync.activateWorkspace();
     busy = false;
     setFeedback(
-      result.status === "ready" ? "本地收藏已关联，云同步已启动。" : "工作区关联失败，请稍后重试。",
+      result.status === "ready" ? "本地收藏与学习状态已关联，云同步已启动。" : "关联失败，请稍后重试。",
       result.status === "ready" ? "success" : "error"
     );
     render();
@@ -203,7 +214,7 @@
     busy = false;
     if (result.status === "signed-out") {
       sync.deactivate("auth-required");
-      setFeedback("已退出登录；本地收藏和同步队列均已保留。", "success");
+      setFeedback("已退出登录；本地数据和待同步内容均已保留。", "success");
     }
     render();
   }
@@ -211,12 +222,12 @@
   async function syncNow() {
     if (busy || sync.getState().status !== "ready") return;
     busy = true;
-    setFeedback("正在同步收藏…", "info");
+    setFeedback("正在同步收藏与学习状态…", "info");
     render();
     const result = await sync.syncNow();
     busy = false;
     setFeedback(
-      result.status === "completed" ? "收藏同步完成。" : "同步暂未完成，稍后会继续重试。",
+      result.status === "completed" ? "收藏与学习状态同步完成。" : "同步暂未完成，稍后会继续重试。",
       result.status === "completed" ? "success" : "info"
     );
     render();

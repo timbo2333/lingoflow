@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>LingoFlow V0.6 · 英语点读阅读器</title>
+<title>LingoFlow V0.7 · 英语点读阅读器</title>
 
 
  <link rel="stylesheet" href="css/style.css">
@@ -20,7 +20,7 @@
   </div>
 
   <div class="topActions">
-    <span class="versionBadge">V0.6 · 稳定版</span>
+    <span class="versionBadge">V0.7 · 候选版</span>
     <button id="accountButton" class="secondary compactButton" type="button">
       👤 登录 / 注册
     </button>
@@ -37,7 +37,7 @@
       <div class="modalHeader">
         <div>
           <div id="authModalTitle" class="modalTitle">👤 LingoFlow 账号</div>
-          <div class="modalSub">登录后可在自己的设备之间同步收藏；未登录时仍可完整使用本地收藏。</div>
+          <div class="modalSub">无需登录也能使用；登录并开启云同步后，可在自己的设备之间同步收藏与学习状态。</div>
         </div>
         <button id="authModalClose" class="iconClose" type="button" aria-label="关闭">×</button>
       </div>
@@ -75,7 +75,7 @@
         </div>
 
         <div id="workspaceBlockedPanel" class="workspaceBlockedPanel" hidden>
-          当前浏览器已有另一个账号的本地工作区。为避免收藏串号，请使用其他浏览器或浏览器 Profile。
+          此浏览器已关联另一个账号。为避免数据串号，请退出后使用原账号登录；如需使用其他账号，请改用新的浏览器用户配置。
         </div>
 
         <div class="authButtonRow">
@@ -85,7 +85,9 @@
       </div>
 
       <div id="authFeedback" class="authFeedback" role="status" aria-live="polite"></div>
-      <div class="settingsNote">退出登录不会删除本地收藏、同步队列或已绑定的工作区。</div>
+      <div id="authPrivacyNote" class="settingsNote">
+        未登录时，数据主要保存在本设备。登录并开启云同步后，收藏与学习状态会保存到云端；退出登录不会删除本地数据。V0.7 暂不提供自助删除账号，如需删除账号及云端数据，请通过项目反馈渠道联系开发者处理。
+      </div>
     </div>
   </div>
 
@@ -512,7 +514,7 @@ I felt nervous when I asked my friends for advice, but their suggestions helped 
       <div class="settingsGrid">
         <div class="settingItem">
           <div class="settingLabel">当前版本</div>
-          <div class="settingValue">V0.6</div>
+          <div class="settingValue">V0.7</div>
         </div>
 
         <div class="settingItem">
@@ -738,7 +740,7 @@ I felt nervous when I asked my friends for advice, but their suggestions helped 
       <div class="modalHeader">
         <div>
           <div class="modalTitle">❓ 一分钟上手</div>
-          <div class="modalSub">LingoFlow V0.6</div>
+          <div class="modalSub">LingoFlow V0.7</div>
         </div>
         <button class="iconClose" onclick="closeModal('helpModal')">×</button>
       </div>
@@ -748,7 +750,8 @@ I felt nervous when I asked my friends for advice, but their suggestions helped 
         <div class="helpStep"><b>2. 开始阅读</b><span>粘贴英文或导入 TXT，点击“开始阅读”；文章会自动保存到“我的文章”。</span></div>
         <div class="helpStep"><b>3. 我的文章与继续阅读</b><span>阅读进度会自动保存，再次打开可恢复位置；“继续阅读”可快速回到最近阅读中的文章。</span></div>
         <div class="helpStep"><b>4. 管理文章</b><span>可查看阅读状态、按状态筛选、搜索标题或来源文件名，并从“最近删除”恢复文章。</span></div>
-        <div class="helpStep"><b>5. 阅读与学习</b><span>点词查词、朗读并收藏单词或词组；设置中的旧版兼容备份不包含当前 Favorite Entity、Learning State、“我的文章”或文章阅读进度。</span></div>
+        <div class="helpStep"><b>5. 阅读与学习</b><span>点词查词、朗读并收藏单词或词组；设置中的旧版兼容备份不包含当前收藏、学习状态、“我的文章”或文章阅读进度。</span></div>
+        <div class="helpStep"><b>6. 可选云同步</b><span>无需登录也能使用；登录后可选择同步收藏与学习状态。本地已有收藏首次关联账号前会先征求你的确认。</span></div>
       </div>
 
       <div class="shortcutBox">
@@ -770,6 +773,17 @@ I felt nervous when I asked my friends for advice, but their suggestions helped 
           <div class="modalSub">记录每个版本真正改了什么，方便以后继续迭代。</div>
         </div>
         <button class="iconClose" onclick="closeModal('changelogModal')">×</button>
+      </div>
+
+      <div class="changeVersion">
+        <div class="changeVersionTitle">V0.7</div>
+        <div class="changeDate">2026-09-05</div>
+        <ul>
+          <li>新增可选账号登录，在同一账号的设备之间同步收藏与掌握状态。</li>
+          <li>本地已有收藏首次登录时会先征求确认，未经同意不会上传。</li>
+          <li>支持新设备恢复、离线继续使用、同步状态提示与手动重试。</li>
+          <li>退出登录保留本地数据；不同账号不能接管已绑定的浏览器工作区。</li>
+        </ul>
       </div>
 
       <div class="changeVersion">

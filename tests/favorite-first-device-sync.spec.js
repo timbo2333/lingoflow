@@ -215,7 +215,8 @@ test("全新设备登录后自动 replay 云端 Favorite，并显示同步完成
     appliedCursor: "cursor:1"
   });
   expect(result.inbox).toMatchObject({ status: "ready", items: [] });
-  await expect(page.locator("#favoriteSyncStatusBadge")).toHaveText("收藏已同步");
+  await expect(page.locator("#favoriteSyncStatusBadge"))
+    .toHaveText("收藏与学习状态已同步");
 });
 
 test("完整历史按序应用，最终 tombstone 不会在新设备显示为 active", async ({ page }) => {
@@ -263,7 +264,8 @@ test("同步中到已同步可见，且 durable pending 在失败后保留并可
       meaning: "本地优先"
     })
   ));
-  await expect(page.locator("#favoriteSyncStatusBadge")).toHaveText("正在同步收藏…");
+  await expect(page.locator("#favoriteSyncStatusBadge"))
+    .toHaveText("正在同步收藏与学习状态…");
   await waitForSyncStatus(page, "unavailable");
 
   const failed = await page.evaluate(async id => {
@@ -279,7 +281,7 @@ test("同步中到已同步可见，且 durable pending 在失败后保留并可
   expect(failed.outbox.items).toHaveLength(1);
   expect(failed.state.pendingCount).toBe(1);
   expect(failed.states).toContain("pending");
-  await expect(page.locator("#favoriteSyncStatusBadge")).toHaveText("同步暂时不可用");
+  await expect(page.locator("#favoriteSyncStatusBadge")).toHaveText("云同步暂时不可用");
 
   await page.evaluate(() => {
     window.__firstDeviceCloud.failTransport = false;
@@ -332,7 +334,7 @@ test("unresolved issue 显示需要处理并停止自动重试", async ({ page }
     });
   });
   await waitForSyncStatus(page, "attention");
-  await expect(page.locator("#favoriteSyncStatusBadge")).toHaveText("有收藏需要处理");
+  await expect(page.locator("#favoriteSyncStatusBadge")).toHaveText("有同步数据需要处理");
   const counts = await page.evaluate(() => ({
     push: window.__firstDeviceCloud.pushCount,
     pull: window.__firstDeviceCloud.pullCount
