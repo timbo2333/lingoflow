@@ -20,7 +20,7 @@
   </div>
 
   <div class="topActions">
-    <span class="versionBadge">V0.7 · 候选版</span>
+    <span class="versionBadge">V0.7 · 正式版</span>
     <button id="accountButton" class="secondary compactButton" type="button">
       👤 登录 / 注册
     </button>
@@ -777,12 +777,14 @@ I felt nervous when I asked my friends for advice, but their suggestions helped 
 
       <div class="changeVersion">
         <div class="changeVersionTitle">V0.7</div>
-        <div class="changeDate">2026-09-05</div>
+        <div class="changeDate">2026-09-06</div>
         <ul>
-          <li>新增可选账号登录，在同一账号的设备之间同步收藏与掌握状态。</li>
-          <li>本地已有收藏首次登录时会先征求确认，未经同意不会上传。</li>
-          <li>支持新设备恢复、离线继续使用、同步状态提示与手动重试。</li>
-          <li>退出登录保留本地数据；不同账号不能接管已绑定的浏览器工作区。</li>
+          <li>新增 Supabase 账号登录，刷新页面后会自动恢复登录状态。</li>
+          <li>可选择开启收藏云同步；关联本地工作区前会先征求确认，未经同意不会上传。</li>
+          <li>收藏可在同一账号的设备之间同步，新设备登录后会自动恢复已有收藏。</li>
+          <li>“已掌握”和“学习中”状态可以随收藏跨设备同步。</li>
+          <li>新增同步状态提示与手动重试；网络不可用时仍可优先使用本地数据。</li>
+          <li>优化阅读页工具栏间距，让查找、语速和朗读控件排列更紧凑。</li>
         </ul>
       </div>
 

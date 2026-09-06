@@ -55,7 +55,7 @@ async function startReading(page) {
 
 test("V0.7 发布信息在主要用户入口保持一致", async ({ page }) => {
   await expect(page).toHaveTitle(/LingoFlow V0\.7/);
-  await expect(page.locator(".versionBadge")).toHaveText("V0.7 · 候选版");
+  await expect(page.locator(".versionBadge")).toHaveText("V0.7 · 正式版");
 
   await page.locator('button[onclick="openSettings()"]:visible').first().click();
   const versionSetting = page.locator(".settingItem").filter({
