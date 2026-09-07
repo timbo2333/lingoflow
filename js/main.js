@@ -2786,7 +2786,8 @@ function getFavoriteAppSync() {
   if (!coordinator ||
       typeof coordinator.create !== "function" ||
       typeof coordinator.update !== "function" ||
-      typeof coordinator.softDelete !== "function") {
+      typeof coordinator.softDelete !== "function" ||
+      typeof coordinator.setMastered !== "function") {
     throw new Error("Favorite App Sync boundary 不可用。");
   }
   return coordinator;
@@ -2801,6 +2802,19 @@ function requireFavoriteMutation(result, operation) {
     throw new Error(`Favorite ${operation} 未完成：${result?.reason || result?.status || "unknown"}`);
   }
   return result.favorite;
+}
+
+function requireFavoriteLearningMutation(result, operation) {
+  if (![
+    "ready",
+    "unchanged",
+    "local-committed-pending-reconciliation"
+  ].includes(result?.status)) {
+    throw new Error(
+      `Favorite Learning ${operation} 未完成：${result?.reason || result?.status || "unknown"}`
+    );
+  }
+  return result.favoriteLearningState || null;
 }
 
 function getFavoriteLearningRepository() {
@@ -3084,8 +3098,17 @@ function renderFavorites() {
           ` : ""}
 
           <div class="favoriteCompactBottom">
-            <div class="favoriteDate">收藏：${formatLearningDate(item.createdAt)}</div>
-            ${note ? '<div class="favoriteDate">已有备注</div>' : ''}
+            <div class="favoriteCompactMeta">
+              <div class="favoriteDate">收藏：${formatLearningDate(item.createdAt)}</div>
+              ${note ? '<div class="favoriteDate">已有备注</div>' : ''}
+            </div>
+            <button type="button"
+                    class="secondary compactButton favoriteLearningQuickButton ${item.isMastered ? 'mastered' : ''}"
+                    aria-pressed="${item.isMastered ? 'true' : 'false'}"
+                    aria-label="${item.isMastered ? '已掌握，设为学习中' : '学习中，标记已掌握'}"
+                    onclick="toggleFavoriteMastered('${escapeJs(favoriteId)}', this)">
+              ${item.isMastered ? '↩ 设为学习中' : '✓ 标记已掌握'}
+            </button>
           </div>
         </div>
 
@@ -3147,6 +3170,35 @@ function renderFavorites() {
   }).join("");
 }
 
+async function toggleFavoriteMastered(favoriteId, button) {
+  const favorite = getFavoriteRepository().getById(favoriteId, { includeDeleted: false });
+  if (!favorite || button?.disabled) return;
+
+  const currentState = getFavoriteLearningRepository().get(favoriteId);
+  const nextMastered = !Boolean(currentState?.mastered);
+  const originalLabel = button?.textContent || "";
+
+  if (button) {
+    button.disabled = true;
+    button.textContent = "正在更新…";
+  }
+
+  try {
+    requireFavoriteLearningMutation(
+      await getFavoriteAppSync().setMastered(favoriteId, nextMastered),
+      "quick-toggle"
+    );
+    renderFavorites();
+  } catch (error) {
+    console.error("Favorite Learning quick toggle error:", error);
+    if (button) {
+      button.disabled = false;
+      button.textContent = originalLabel;
+      button.title = "更新失败，请重试";
+    }
+  }
+}
+
 function editFavorite(favoriteId, button) {
   const card = button.closest(".favoriteItem");
   if (!card) return;
@@ -3202,13 +3254,10 @@ async function saveFavoriteEdit(favoriteId, button) {
     );
     favoriteSaved = true;
 
-    const learningResult = await getFavoriteAppSync().setMastered(favoriteId, mastered);
-    if (!["ready", "unchanged", "local-committed-pending-reconciliation"]
-      .includes(learningResult?.status)) {
-      throw new Error(
-        `Favorite Learning save 未完成：${learningResult?.reason || learningResult?.status || "unknown"}`
-      );
-    }
+    requireFavoriteLearningMutation(
+      await getFavoriteAppSync().setMastered(favoriteId, mastered),
+      "save"
+    );
 
     if (hint) hint.textContent = "已保存";
     refreshFavoriteUi();

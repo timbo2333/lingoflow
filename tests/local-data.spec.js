@@ -275,6 +275,117 @@ test("Favorite UI 编辑保持稳定身份，并将 mastered 写入独立 Learni
     .toBeGreaterThan(Date.parse(afterFirstSave.learning.updatedAt));
 });
 
+test("Favorite 卡片快捷切换学习状态并复用 App Sync boundary", async ({ page }) => {
+  const created = await page.evaluate(async () => {
+    currentLookupState = {
+      word: "Discoverable",
+      result: {
+        baseWord: "discoverable",
+        phonetic: "/dɪˈskʌvərəbəl/",
+        pos: "adjective",
+        meaning: "容易发现的"
+      },
+      sentence: "Learning controls should be discoverable.",
+      source: "search"
+    };
+    const favorite = await saveCurrentFavorite();
+    const coordinator = window.LingoFlowFavoriteAppSync;
+    window.__favoriteLearningQuickCalls = [];
+    window.LingoFlowFavoriteAppSync = {
+      ...coordinator,
+      async setMastered(favoriteId, mastered) {
+        window.__favoriteLearningQuickCalls.push({ favoriteId, mastered });
+        return await coordinator.setMastered(favoriteId, mastered);
+      }
+    };
+    openFavorites();
+    return favorite;
+  });
+
+  let card = page.locator(`.favoriteItem[data-favorite-id="${created.id}"]`);
+  await expect(card).toBeVisible();
+  await expect(card).not.toHaveClass(/editing/);
+  await expect(card.locator(".masterBadge")).toHaveText("学习中");
+  await expect(card.locator(".favoriteLearningQuickButton"))
+    .toHaveText("✓ 标记已掌握");
+
+  await card.locator(".favoriteLearningQuickButton").click();
+  await expect.poll(() => page.evaluate(favoriteId => (
+    window.LingoFlowFavoriteLearningRepository.get(favoriteId)?.mastered
+  ), created.id)).toBe(true);
+
+  card = page.locator(`.favoriteItem[data-favorite-id="${created.id}"]`);
+  await expect(card).not.toHaveClass(/editing/);
+  await expect(card.locator(".masterBadge")).toHaveText("✓ 已掌握");
+  await expect(card.locator(".favoriteLearningQuickButton"))
+    .toHaveText("↩ 设为学习中");
+
+  await card.locator(".favoriteLearningQuickButton").click();
+  await expect.poll(() => page.evaluate(favoriteId => (
+    window.LingoFlowFavoriteLearningRepository.get(favoriteId)?.mastered
+  ), created.id)).toBe(false);
+
+  const result = await page.evaluate(favoriteId => ({
+    calls: window.__favoriteLearningQuickCalls,
+    favorite: window.LingoFlowFavoriteRepository.getById(favoriteId),
+    learning: window.LingoFlowFavoriteLearningRepository.get(favoriteId)
+  }), created.id);
+  expect(result.calls).toEqual([
+    { favoriteId: created.id, mastered: true },
+    { favoriteId: created.id, mastered: false }
+  ]);
+  expect(result.favorite).toEqual(created);
+  expect(result.learning).toMatchObject({
+    favoriteId: created.id,
+    mastered: false
+  });
+});
+
+test("Favorite 学习状态快捷入口在移动端卡片内正常换行", async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 812 });
+  const favoriteId = await page.evaluate(() => {
+    const favorite = window.LingoFlowFavoriteRepository.create({
+      type: "word",
+      text: "responsive-discoverability-with-a-long-title",
+      displayText: "Responsive discoverability with a long title",
+      meaning: "移动端也可以直接操作学习状态",
+      note: "保留备注信息，验证底部信息与快捷按钮可以安全换行。"
+    });
+    openFavorites();
+    return favorite.id;
+  });
+
+  const card = page.locator(`.favoriteItem[data-favorite-id="${favoriteId}"]`);
+  const quickButton = card.locator(".favoriteLearningQuickButton");
+  await expect(card).toBeVisible();
+  await expect(quickButton).toBeVisible();
+
+  const layout = await page.evaluate(id => {
+    const cardElement = document.querySelector(`[data-favorite-id="${id}"]`);
+    const buttonElement = cardElement?.querySelector(".favoriteLearningQuickButton");
+    const cardBox = cardElement?.getBoundingClientRect();
+    const buttonBox = buttonElement?.getBoundingClientRect();
+    return {
+      documentFitsViewport: document.documentElement.scrollWidth <= window.innerWidth,
+      buttonInsideCard: Boolean(cardBox && buttonBox &&
+        buttonBox.left >= cardBox.left && buttonBox.right <= cardBox.right),
+      buttonHeight: buttonBox?.height || 0
+    };
+  }, favoriteId);
+
+  expect(layout).toEqual({
+    documentFitsViewport: true,
+    buttonInsideCard: true,
+    buttonHeight: expect.any(Number)
+  });
+  expect(layout.buttonHeight).toBeGreaterThanOrEqual(30);
+
+  await quickButton.click();
+  await expect(card.locator(".masterBadge")).toHaveText("✓ 已掌握");
+  await expect(card.locator(".favoriteLearningQuickButton"))
+    .toHaveText("↩ 设为学习中");
+});
+
 test("Favorite UI 删除使用 soft delete，并保留独立 Learning State", async ({ page }) => {
   const setup = await page.evaluate(async () => {
     currentLookupState = {

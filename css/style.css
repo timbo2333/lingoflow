@@ -1608,6 +1608,26 @@
     margin-top: 9px;
   }
 
+  .favoriteCompactMeta {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 5px 10px;
+  }
+
+  .favoriteLearningQuickButton {
+    flex: 0 0 auto;
+    margin-left: auto;
+    white-space: nowrap;
+    font-weight: 650;
+  }
+
+  .favoriteLearningQuickButton.mastered {
+    background: #e4f6e9;
+    color: #22733b;
+    border-color: #bddfc7;
+  }
+
   @media (max-width: 680px) {
     .favoriteTop {
       align-items: flex-start;
@@ -1615,6 +1635,10 @@
 
     .favoriteTopActions {
       max-width: 150px;
+    }
+
+    .favoriteCompactBottom {
+      align-items: flex-start;
     }
   }
 
@@ -2092,6 +2116,12 @@
   body.darkMode .masterBadge.mastered {
     background: #21472c;
     color: #bcebc8;
+  }
+
+  body.darkMode .favoriteLearningQuickButton.mastered {
+    background: #21472c;
+    color: #bcebc8;
+    border-color: #356b45;
   }
 
   body.darkMode .masterToggle {
