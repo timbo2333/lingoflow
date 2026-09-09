@@ -960,12 +960,78 @@
     font: inherit;
   }
 
+  .authPasswordField {
+    position: relative;
+  }
+
+  .authPasswordField input {
+    padding-right: 48px;
+  }
+
+  .authPasswordVisibility {
+    position: absolute;
+    top: 50%;
+    right: 5px;
+    width: 36px;
+    height: 34px;
+    padding: 0;
+    transform: translateY(-50%);
+    border: 0;
+    border-radius: 7px;
+    background: transparent;
+    color: #6e6e73;
+    font-size: 16px;
+    line-height: 1;
+  }
+
+  .authPasswordVisibility:hover,
+  .authPasswordVisibility:focus-visible {
+    background: #eeeeF1;
+    opacity: 1;
+  }
+
+  .authFieldHint {
+    margin-top: -2px;
+    color: #77777c;
+    font-size: 12px;
+  }
+
+  .authConfirmPasswordGroup {
+    display: grid;
+    gap: 8px;
+  }
+
   .authForm button[type="submit"] {
     margin-top: 6px;
   }
 
   .authAccountSummary {
     margin-bottom: 12px;
+  }
+
+  .authConfirmationPanel {
+    padding: 15px;
+    border: 1px solid #bcdcc5;
+    border-radius: 11px;
+    background: #f0faf3;
+  }
+
+  .authConfirmationTitle {
+    color: #216e37;
+    font-size: 17px;
+    font-weight: 750;
+  }
+
+  .authConfirmationMessage {
+    margin-top: 7px;
+    color: #3d5f47;
+    font-size: 14px;
+    line-height: 1.6;
+    overflow-wrap: anywhere;
+  }
+
+  .authConfirmationPanel .authButtonRow {
+    margin-top: 13px;
   }
 
   .workspaceActivationPanel,
@@ -1731,6 +1797,28 @@
     background: var(--app-card);
     color: var(--app-text);
     border-color: var(--app-border);
+  }
+
+  body.darkMode .authPasswordVisibility {
+    color: var(--app-muted);
+  }
+
+  body.darkMode .authPasswordVisibility:hover,
+  body.darkMode .authPasswordVisibility:focus-visible {
+    background: #343438;
+  }
+
+  body.darkMode .authConfirmationPanel {
+    border-color: #356b45;
+    background: #1c3423;
+  }
+
+  body.darkMode .authConfirmationTitle {
+    color: #bcebc8;
+  }
+
+  body.darkMode .authConfirmationMessage {
+    color: #cde6d3;
   }
 
   body.darkMode .workspaceActivationPanel {

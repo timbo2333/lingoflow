@@ -43,19 +43,56 @@
       </div>
 
       <div id="authSignedOutPanel">
-        <div class="authModeTabs" role="tablist" aria-label="登录或注册">
-          <button id="authSignInMode" class="secondary authModeButton active" type="button">登录</button>
-          <button id="authSignUpMode" class="secondary authModeButton" type="button">注册</button>
+        <div id="authModeTabs" class="authModeTabs" role="tablist" aria-label="登录或注册">
+          <button id="authSignInMode" class="secondary authModeButton active" type="button"
+                  role="tab" aria-selected="true">登录</button>
+          <button id="authSignUpMode" class="secondary authModeButton" type="button"
+                  role="tab" aria-selected="false">注册</button>
         </div>
-        <form id="authForm" class="authForm">
+        <form id="authForm" class="authForm" novalidate>
           <label class="settingLabel" for="authEmail">邮箱</label>
-          <input id="authEmail" type="email" autocomplete="email" required
+          <input id="authEmail" name="email" type="email" autocomplete="email"
+                 inputmode="email" required
                  placeholder="name@example.com">
           <label class="settingLabel" for="authPassword">密码</label>
-          <input id="authPassword" type="password" autocomplete="current-password"
-                 minlength="6" required placeholder="至少 6 个字符">
+          <div class="authPasswordField">
+            <input id="authPassword" name="password" type="password"
+                   autocomplete="current-password" minlength="6" required
+                   placeholder="至少 6 个字符">
+            <button id="authPasswordVisibility" class="authPasswordVisibility" type="button"
+                    aria-controls="authPassword" aria-label="显示密码" aria-pressed="false">
+              <span aria-hidden="true">👁</span>
+            </button>
+          </div>
+          <div id="authPasswordRequirement" class="authFieldHint" hidden>
+            密码至少需要 6 个字符。
+          </div>
+          <div id="authConfirmPasswordGroup" class="authConfirmPasswordGroup" hidden>
+            <label class="settingLabel" for="authConfirmPassword">确认密码</label>
+            <div class="authPasswordField">
+              <input id="authConfirmPassword" name="passwordConfirmation" type="password"
+                     autocomplete="new-password" minlength="6" required
+                     placeholder="再次输入密码">
+              <button id="authConfirmPasswordVisibility" class="authPasswordVisibility" type="button"
+                      aria-controls="authConfirmPassword" aria-label="显示确认密码" aria-pressed="false">
+                <span aria-hidden="true">👁</span>
+              </button>
+            </div>
+          </div>
           <button id="authSubmitButton" type="submit">登录</button>
         </form>
+
+        <div id="authConfirmationPanel" class="authConfirmationPanel" hidden>
+          <div id="authConfirmationTitle" class="authConfirmationTitle">验证邮件已发送</div>
+          <div class="authConfirmationMessage">
+            我们已经向 <strong id="authConfirmationEmail"></strong> 发送了确认邮件。<br>
+            请打开邮件并点击确认链接完成注册。
+          </div>
+          <div class="authButtonRow">
+            <button id="authResendConfirmationButton" type="button">重新发送确认邮件</button>
+            <button id="authReturnToSignInButton" class="secondary" type="button">返回登录</button>
+          </div>
+        </div>
       </div>
 
       <div id="authSignedInPanel" hidden>

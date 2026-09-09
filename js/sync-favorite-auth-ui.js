@@ -2,10 +2,14 @@
   "use strict";
 
   const PROMPT_SEEN_PREFIX = "lingoflowFavoriteActivationPromptSeen:";
+  const RESEND_COOLDOWN_MS = 30000;
   const auth = window.LingoFlowSupabaseAuth;
   const sync = window.LingoFlowFavoriteAppSync;
   let mode = "sign-in";
   let busy = false;
+  let confirmationDismissed = false;
+  let resendAvailableAt = 0;
+  let resendTimer = null;
 
   function element(id) {
     return document.getElementById(id);
@@ -34,35 +38,123 @@
 
   function setMode(nextMode) {
     mode = nextMode === "sign-up" ? "sign-up" : "sign-in";
-    element("authSignInMode")?.classList.toggle("active", mode === "sign-in");
-    element("authSignUpMode")?.classList.toggle("active", mode === "sign-up");
+    const signingUp = mode === "sign-up";
+    const signInMode = element("authSignInMode");
+    const signUpMode = element("authSignUpMode");
+    signInMode?.classList.toggle("active", !signingUp);
+    signUpMode?.classList.toggle("active", signingUp);
+    signInMode?.setAttribute("aria-selected", String(!signingUp));
+    signUpMode?.setAttribute("aria-selected", String(signingUp));
     const password = element("authPassword");
-    if (password) password.autocomplete = mode === "sign-in" ? "current-password" : "new-password";
+    if (password) password.autocomplete = signingUp ? "new-password" : "current-password";
+    setHidden("authConfirmPasswordGroup", !signingUp);
+    setHidden("authPasswordRequirement", !signingUp);
     const submit = element("authSubmitButton");
-    if (submit) submit.textContent = mode === "sign-in" ? "登录" : "注册";
+    if (submit) submit.textContent = signingUp ? "注册" : "登录";
     setFeedback("");
+  }
+
+  function passwordPolicy() {
+    const policy = auth?.getPasswordPolicy?.();
+    return {
+      minimumLength: Number.isInteger(policy?.minimumLength) ? policy.minimumLength : 6,
+      message: typeof policy?.message === "string"
+        ? policy.message
+        : "密码至少需要 6 个字符。"
+    };
+  }
+
+  function togglePasswordVisibility(inputId, button) {
+    const input = element(inputId);
+    if (!input || !button) return;
+    const showing = input.type === "text";
+    input.type = showing ? "password" : "text";
+    button.setAttribute("aria-pressed", String(!showing));
+    button.setAttribute("aria-label", showing
+      ? (inputId === "authConfirmPassword" ? "显示确认密码" : "显示密码")
+      : (inputId === "authConfirmPassword" ? "隐藏确认密码" : "隐藏密码"));
+    const icon = button.querySelector("[aria-hidden='true']");
+    if (icon) icon.textContent = showing ? "👁" : "🙈";
+  }
+
+  function clearPasswordInput(inputId, buttonId) {
+    const input = element(inputId);
+    const button = element(buttonId);
+    if (input) {
+      input.value = "";
+      input.type = "password";
+    }
+    if (button) {
+      button.setAttribute("aria-pressed", "false");
+      button.setAttribute("aria-label", inputId === "authConfirmPassword"
+        ? "显示确认密码"
+        : "显示密码");
+      const icon = button.querySelector("[aria-hidden='true']");
+      if (icon) icon.textContent = "👁";
+    }
+  }
+
+  function validationMessage(emailBox, password, confirmPassword) {
+    const email = String(emailBox?.value || "").trim();
+    if (!email) return "请输入邮箱。";
+    const parts = email.split("@");
+    if (emailBox?.validity?.typeMismatch || parts.length !== 2 ||
+        !parts[0] || !parts[1] || /\s/.test(email)) {
+      return "请输入有效邮箱地址。";
+    }
+    if (!password) return "请输入密码。";
+    const policy = passwordPolicy();
+    if (password.length < policy.minimumLength) return policy.message;
+    if (mode === "sign-up" && !confirmPassword) return "请再次输入密码。";
+    if (mode === "sign-up" && password !== confirmPassword) {
+      return "两次输入的密码不一致";
+    }
+    return "";
   }
 
   function authMessage(authState) {
     if (authState.status === "confirmation-required") {
-      return "注册成功，请检查邮箱并点击确认链接，然后返回此页面登录。";
+      if (authState.reason === "confirmation-resent") return "验证邮件已重新发送";
+      if (authState.reason === "resending-confirmation") return "正在重新发送验证邮件…";
+      if (authState.reason === "resend-failed") {
+        return authState.message || "暂时无法重新发送验证邮件，请稍后重试。";
+      }
+      return "验证邮件已发送";
     }
     if (authState.status === "authenticating") return "正在确认账号状态…";
     if (authState.status === "paused") return "账号服务暂时不可用，本地收藏仍可正常使用。";
     if (authState.status === "failed") {
-      if (authState.reason === "sign-in-failed") {
-        return "登录失败，请检查邮箱和密码后重试。";
-      }
-      if (authState.reason === "sign-up-failed") {
-        return "注册失败，请检查填写内容，或稍后重试。";
-      }
-      if (authState.reason === "sign-out-failed") {
-        return "退出登录失败，请检查网络后重试。";
-      }
-      return "账号操作失败，请稍后重试。";
+      return authState.message || "账号操作暂时无法完成，请稍后重试。";
     }
     if (authState.status === "unavailable") return "账号配置暂时不可用，本地功能不受影响。";
     return "";
+  }
+
+  function authFeedbackKind(authState) {
+    if (authState.status === "failed" || authState.reason === "resend-failed") return "error";
+    if (authState.reason === "check-email" || authState.reason === "confirmation-resent") {
+      return "success";
+    }
+    return "info";
+  }
+
+  function updateResendButton() {
+    const button = element("authResendConfirmationButton");
+    if (!button) return;
+    const remaining = Math.max(0, Math.ceil((resendAvailableAt - Date.now()) / 1000));
+    button.disabled = busy || remaining > 0;
+    button.textContent = remaining > 0
+      ? `重新发送确认邮件（${remaining}s）`
+      : "重新发送确认邮件";
+    if (resendTimer) clearTimeout(resendTimer);
+    resendTimer = remaining > 0
+      ? setTimeout(updateResendButton, 1000)
+      : null;
+  }
+
+  function startResendCooldown() {
+    resendAvailableAt = Date.now() + RESEND_COOLDOWN_MS;
+    updateResendButton();
   }
 
   function syncPresentation(syncState, authState) {
@@ -111,9 +203,25 @@
     const authState = auth.getState();
     const syncState = sync.getState();
     const authenticated = authState.status === "authenticated";
+    const confirmationActive = authState.status === "confirmation-required" &&
+      !confirmationDismissed;
     const presentation = syncPresentation(syncState, authState);
     setHidden("authSignedOutPanel", authenticated);
     setHidden("authSignedInPanel", !authenticated);
+    setHidden("authModeTabs", confirmationActive);
+    setHidden("authForm", confirmationActive);
+    setHidden("authConfirmationPanel", !confirmationActive);
+
+    const confirmationEmail = element("authConfirmationEmail");
+    if (confirmationEmail) {
+      confirmationEmail.textContent = authState.email || element("authEmail")?.value || "该邮箱";
+    }
+    const confirmationTitle = element("authConfirmationTitle");
+    if (confirmationTitle) {
+      confirmationTitle.textContent = authState.reason === "confirmation-resent"
+        ? "验证邮件已重新发送"
+        : "验证邮件已发送";
+    }
 
     const accountButton = element("accountButton");
     if (accountButton) {
@@ -158,31 +266,69 @@
     if (signOutButton) signOutButton.disabled = busy;
     const submit = element("authSubmitButton");
     if (submit) submit.disabled = busy || authState.status === "authenticating";
+    updateResendButton();
 
-    const message = authMessage(authState);
-    if (message) setFeedback(message, authState.status === "failed" ? "error" : "info");
+    const message = confirmationDismissed && authState.status === "confirmation-required"
+      ? ""
+      : authMessage(authState);
+    if (message) setFeedback(message, authFeedbackKind(authState));
     maybePromptForActivation(syncState);
   }
 
   async function submitAuth(event) {
     event.preventDefault();
     if (busy || !auth) return;
-    const email = element("authEmail")?.value || "";
+    const emailBox = element("authEmail");
+    const email = emailBox?.value || "";
     const passwordBox = element("authPassword");
     const password = passwordBox?.value || "";
+    const confirmPasswordBox = element("authConfirmPassword");
+    const confirmPassword = confirmPasswordBox?.value || "";
+    const invalid = validationMessage(emailBox, password, confirmPassword);
+    if (invalid) {
+      setFeedback(invalid, "error");
+      return;
+    }
+    if (mode === "sign-up") confirmationDismissed = false;
     busy = true;
     setFeedback(mode === "sign-in" ? "正在登录…" : "正在注册…", "info");
     render();
     const result = mode === "sign-in"
       ? await auth.signIn({ email, password })
       : await auth.signUp({ email, password });
-    if (passwordBox) passwordBox.value = "";
+    if (["authenticated", "confirmation-required"].includes(result.status)) {
+      clearPasswordInput("authPassword", "authPasswordVisibility");
+      clearPasswordInput("authConfirmPassword", "authConfirmPasswordVisibility");
+    }
     if (result.status === "authenticated") {
       await sync.bootstrap();
       setFeedback("登录成功。", "success");
     }
     busy = false;
     render();
+  }
+
+  async function resendConfirmation() {
+    if (busy || Date.now() < resendAvailableAt || !auth) return;
+    const authState = auth.getState();
+    const email = authState.email || element("authEmail")?.value || "";
+    busy = true;
+    setFeedback("正在重新发送验证邮件…", "info");
+    updateResendButton();
+    const result = await auth.resendSignUpConfirmation({ email });
+    busy = false;
+    confirmationDismissed = false;
+    startResendCooldown();
+    render();
+    return result;
+  }
+
+  function returnToSignIn() {
+    confirmationDismissed = true;
+    setMode("sign-in");
+    setFeedback("邮箱确认后，请使用原邮箱和密码登录。", "info");
+    render();
+    element("authPassword")?.focus();
   }
 
   async function activateWorkspace() {
@@ -240,7 +386,15 @@
   });
   element("authSignInMode")?.addEventListener("click", () => setMode("sign-in"));
   element("authSignUpMode")?.addEventListener("click", () => setMode("sign-up"));
+  element("authPasswordVisibility")?.addEventListener("click", event => {
+    togglePasswordVisibility("authPassword", event.currentTarget);
+  });
+  element("authConfirmPasswordVisibility")?.addEventListener("click", event => {
+    togglePasswordVisibility("authConfirmPassword", event.currentTarget);
+  });
   element("authForm")?.addEventListener("submit", submitAuth);
+  element("authResendConfirmationButton")?.addEventListener("click", resendConfirmation);
+  element("authReturnToSignInButton")?.addEventListener("click", returnToSignIn);
   element("workspaceActivateButton")?.addEventListener("click", activateWorkspace);
   element("workspaceDeferButton")?.addEventListener("click", deferWorkspace);
   element("authSignOutButton")?.addEventListener("click", signOut);

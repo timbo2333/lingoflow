@@ -18,6 +18,7 @@ async function installProductAuthHarness(page) {
     const SESSION_KEY = "__lingoflowTestAuthSession";
     const PUSH_COUNT_KEY = "__lingoflowTestPushCount";
     const callbacks = new Set();
+    window.__productAuthCalls = { signUp: [], resend: [], signIn: [] };
     const readSession = () => {
       const raw = localStorage.getItem(SESSION_KEY);
       return raw ? JSON.parse(raw) : null;
@@ -25,6 +26,7 @@ async function installProductAuthHarness(page) {
     const notify = (event, session) => {
       for (const callback of callbacks) callback(event, session);
     };
+    window.__productAuthEmit = notify;
     const auth = {
       async getSession() {
         return { data: { session: readSession() }, error: null };
@@ -41,14 +43,50 @@ async function installProductAuthHarness(page) {
         return { data: { subscription: { unsubscribe: () => callbacks.delete(callback) } } };
       },
       async signUp({ email }) {
+        window.__productAuthCalls.signUp.push({ email });
+        if (email.startsWith("weak-server-")) {
+          return {
+            data: { user: null, session: null },
+            error: {
+              code: "weak_password",
+              reasons: ["characters"],
+              message: "AuthApiError: Password should be stronger"
+            }
+          };
+        }
+        if (email.startsWith("network-")) {
+          throw new TypeError("Failed to fetch auth endpoint");
+        }
         const ownerId = email.startsWith("beta-") ? ownerB : ownerA;
         return { data: { user: { id: ownerId, email }, session: null }, error: null };
       },
+      async resend({ type, email, options }) {
+        window.__productAuthCalls.resend.push({
+          type,
+          email,
+          redirectPath: new URL(options.emailRedirectTo).pathname
+        });
+        if (email.startsWith("resend-rate-")) {
+          return {
+            data: null,
+            error: {
+              code: "over_email_send_rate_limit",
+              status: 429,
+              message: "AuthApiError: email rate limit exceeded"
+            }
+          };
+        }
+        return { data: { messageId: "confirmation-message" }, error: null };
+      },
       async signInWithPassword({ email }) {
+        window.__productAuthCalls.signIn.push({ email });
         if (email.startsWith("failure-")) {
           return {
             data: { user: null, session: null },
-            error: { message: "AuthApiError: invalid_grant from RPC" }
+            error: {
+              code: "invalid_credentials",
+              message: "AuthApiError: invalid_grant from RPC"
+            }
           };
         }
         const ownerId = email.startsWith("beta-") ? ownerB : ownerA;
@@ -155,11 +193,21 @@ async function signIn(page, email = "alpha@example.test") {
   await waitForAuth(page, "authenticated");
 }
 
+async function signUpAwaitingConfirmation(page, email = "alpha@example.test") {
+  await openAccountModal(page);
+  await page.click("#authSignUpMode");
+  await page.fill("#authEmail", email);
+  await page.fill("#authPassword", "test-password");
+  await page.fill("#authConfirmPassword", "test-password");
+  await page.click("#authSubmitButton");
+  await waitForAuth(page, "confirmation-required");
+}
+
 test.beforeEach(async ({ page }) => {
   await installProductAuthHarness(page);
 });
 
-test("未登录保持 local-only，注册成功提示确认邮箱且不绑定 workspace", async ({ page }) => {
+test("未登录保持 local-only，session=null 的注册成功进入邮箱确认状态且不绑定 workspace", async ({ page }) => {
   await page.goto("/");
   await waitForAuth(page, "signed-out");
   await expect(page.locator("#favoriteSyncStatusBadge"))
@@ -170,11 +218,7 @@ test("未登录保持 local-only，注册成功提示确认邮箱且不绑定 wo
   await expect(page.locator("#authModal .modalSub")).toContainText("无需登录也能使用");
   await expect(page.locator("#authPrivacyNote")).toContainText("收藏与学习状态会保存到云端");
   await expect(page.locator("#authPrivacyNote")).toContainText("暂不提供自助删除账号");
-  await page.click("#authSignUpMode");
-  await page.fill("#authEmail", "alpha@example.test");
-  await page.fill("#authPassword", "test-password");
-  await page.click("#authSubmitButton");
-  await waitForAuth(page, "confirmation-required");
+  await signUpAwaitingConfirmation(page);
 
   const result = await page.evaluate(async id => ({
     favorite: window.LingoFlowFavoriteRepository.getById(id),
@@ -184,7 +228,156 @@ test("未登录保持 local-only，注册成功提示确认邮箱且不绑定 wo
   expect(result.favorite).toEqual(favorite);
   expect(result.binding).toEqual({ status: "missing", binding: null });
   expect(result.pushes).toBe(0);
-  await expect(page.locator("#authFeedback")).toContainText("检查邮箱");
+  await expect(page.locator("#authConfirmationPanel")).toBeVisible();
+  await expect(page.locator("#authConfirmationTitle")).toHaveText("验证邮件已发送");
+  await expect(page.locator("#authConfirmationEmail")).toHaveText("alpha@example.test");
+  await expect(page.locator("#authFeedback")).toHaveText("验证邮件已发送");
+  await expect(page.locator("#authFeedback")).toHaveAttribute("data-kind", "success");
+  await expect(page.locator("#authFeedback")).not.toContainText("注册失败");
+  await expect(page.locator("#authEmail")).toHaveValue("alpha@example.test");
+  await expect(page.locator("#authPassword")).toHaveValue("");
+  await expect(page.locator("#authConfirmPassword")).toHaveValue("");
+
+  await page.evaluate(() => window.__productAuthEmit("INITIAL_SESSION", null));
+  await expect.poll(() => page.evaluate(() => (
+    window.LingoFlowSupabaseAuth.getState().status
+  ))).toBe("confirmation-required");
+  await expect(page.locator("#authConfirmationPanel")).toBeVisible();
+});
+
+test("登录与注册密码框支持键盘显示隐藏且不改变 value", async ({ page }) => {
+  await page.goto("/");
+  await openAccountModal(page);
+
+  const password = page.locator("#authPassword");
+  const passwordToggle = page.locator("#authPasswordVisibility");
+  await password.fill("keyboard-secret");
+  await expect(password).toHaveAttribute("type", "password");
+  await expect(passwordToggle).toHaveAttribute("aria-label", "显示密码");
+  await passwordToggle.focus();
+  await page.keyboard.press("Enter");
+  await expect(password).toHaveAttribute("type", "text");
+  await expect(password).toHaveValue("keyboard-secret");
+  await expect(passwordToggle).toHaveAttribute("aria-label", "隐藏密码");
+  await passwordToggle.click();
+  await expect(password).toHaveAttribute("type", "password");
+  await expect(password).toHaveValue("keyboard-secret");
+
+  await page.click("#authSignUpMode");
+  const confirmation = page.locator("#authConfirmPassword");
+  const confirmationToggle = page.locator("#authConfirmPasswordVisibility");
+  await expect(confirmation).toBeVisible();
+  await confirmation.fill("confirmation-secret");
+  await confirmationToggle.focus();
+  await page.keyboard.press("Space");
+  await expect(confirmation).toHaveAttribute("type", "text");
+  await expect(confirmation).toHaveValue("confirmation-secret");
+  await expect(confirmationToggle).toHaveAttribute("aria-label", "隐藏确认密码");
+});
+
+test("注册前验证明确提示且不会调用 Supabase signUp", async ({ page }) => {
+  await page.goto("/");
+  await openAccountModal(page);
+  await page.click("#authSignUpMode");
+
+  await page.click("#authSubmitButton");
+  await expect(page.locator("#authFeedback")).toHaveText("请输入邮箱。");
+
+  await page.fill("#authEmail", "invalid-email");
+  await page.click("#authSubmitButton");
+  await expect(page.locator("#authFeedback")).toHaveText("请输入有效邮箱地址。");
+
+  await page.fill("#authEmail", "validation@example.test");
+  await page.click("#authSubmitButton");
+  await expect(page.locator("#authFeedback")).toHaveText("请输入密码。");
+
+  await page.fill("#authPassword", "12345");
+  await page.click("#authSubmitButton");
+  await expect(page.locator("#authFeedback")).toHaveText("密码至少需要 6 个字符。");
+
+  await page.fill("#authPassword", "123456");
+  await page.click("#authSubmitButton");
+  await expect(page.locator("#authFeedback")).toHaveText("请再次输入密码。");
+
+  await page.fill("#authConfirmPassword", "654321");
+  await page.click("#authSubmitButton");
+  await expect(page.locator("#authFeedback")).toHaveText("两次输入的密码不一致");
+  await expect(page.locator("#authEmail")).toHaveValue("validation@example.test");
+  await expect(page.locator("#authPassword")).toHaveValue("123456");
+  await expect(page.locator("#authConfirmPassword")).toHaveValue("654321");
+
+  expect(await page.evaluate(() => window.__productAuthCalls.signUp)).toEqual([]);
+});
+
+test("等待确认状态可重新发送并通过 cooldown 防止连续点击", async ({ page }) => {
+  await page.goto("/");
+  await signUpAwaitingConfirmation(page, "resend-success@example.test");
+
+  await page.click("#authResendConfirmationButton");
+  await expect.poll(() => page.evaluate(() => window.LingoFlowSupabaseAuth.getState().reason))
+    .toBe("confirmation-resent");
+  await expect(page.locator("#authConfirmationTitle")).toHaveText("验证邮件已重新发送");
+  await expect(page.locator("#authFeedback")).toHaveText("验证邮件已重新发送");
+  await expect(page.locator("#authResendConfirmationButton")).toBeDisabled();
+  await expect(page.locator("#authResendConfirmationButton"))
+    .toContainText("重新发送确认邮件（");
+
+  expect(await page.evaluate(() => window.__productAuthCalls.resend)).toEqual([{
+    type: "signup",
+    email: "resend-success@example.test",
+    redirectPath: "/"
+  }]);
+
+  await page.click("#authReturnToSignInButton");
+  await expect(page.locator("#authConfirmationPanel")).toBeHidden();
+  await expect(page.locator("#authForm")).toBeVisible();
+  await expect(page.locator("#authSignInMode")).toHaveClass(/active/);
+  await expect(page.locator("#authEmail")).toHaveValue("resend-success@example.test");
+});
+
+test("重新发送频率限制只显示普通用户文案", async ({ page }) => {
+  await page.goto("/");
+  await signUpAwaitingConfirmation(page, "resend-rate-user@example.test");
+  await page.click("#authResendConfirmationButton");
+
+  await expect.poll(() => page.evaluate(() => {
+    const state = window.LingoFlowSupabaseAuth.getState();
+    return { reason: state.reason, errorCode: state.errorCode };
+  })).toEqual({
+    reason: "resend-failed",
+    errorCode: "over_email_send_rate_limit"
+  });
+  await expect(page.locator("#authConfirmationPanel")).toBeVisible();
+  await expect(page.locator("#authFeedback"))
+    .toHaveText("操作过于频繁，请稍后再试。");
+  await expect(page.locator("#authFeedback")).not.toContainText("AuthApiError");
+  await expect(page.locator("#authFeedback")).not.toContainText("rate limit");
+});
+
+test("服务端 weak password 与网络异常映射为安全用户文案", async ({ page }) => {
+  await page.goto("/");
+  await openAccountModal(page);
+  await page.click("#authSignUpMode");
+  await page.fill("#authEmail", "weak-server-user@example.test");
+  await page.fill("#authPassword", "server-accepted-length");
+  await page.fill("#authConfirmPassword", "server-accepted-length");
+  await page.click("#authSubmitButton");
+  await waitForAuth(page, "failed");
+
+  expect(await page.evaluate(() => window.LingoFlowSupabaseAuth.getState().errorCode))
+    .toBe("weak_password");
+  await expect(page.locator("#authFeedback"))
+    .toHaveText("密码需要包含更多种类的字符（如字母、数字或符号）。");
+  await expect(page.locator("#authFeedback")).not.toContainText("AuthApiError");
+
+  await page.fill("#authEmail", "network-user@example.test");
+  await page.click("#authSubmitButton");
+  await waitForAuth(page, "failed");
+  expect(await page.evaluate(() => window.LingoFlowSupabaseAuth.getState().errorCode))
+    .toBe("network_error");
+  await expect(page.locator("#authFeedback"))
+    .toHaveText("网络连接异常，请稍后重试。");
+  await expect(page.locator("#authFeedback")).not.toContainText("Failed to fetch");
 });
 
 test("已有匿名 Favorite 登录后必须明确确认；暂不关联不会上传", async ({ page }) => {

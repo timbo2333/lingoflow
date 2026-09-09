@@ -3,6 +3,7 @@
 
   const AUTH_REQUESTED_KEY = "lingoflowSupabaseAuthRequested";
   const SDK_TIMEOUT_MS = 15000;
+  const MIN_PASSWORD_LENGTH = 6;
   let client = null;
   let clientPromise = null;
   let initializePromise = null;
@@ -120,6 +121,7 @@
           return;
         }
         if (event === "INITIAL_SESSION") {
+          if (state.status === "confirmation-required") return;
           setState({ status: "signed-out", reason: "not-signed-in" });
         }
       });
@@ -217,12 +219,122 @@
     }
   }
 
+  function validationError(message) {
+    const error = new Error(message);
+    error.code = "validation_failed";
+    return error;
+  }
+
+  function normalizeEmail(value) {
+    const email = String(value || "").trim();
+    const parts = email.split("@");
+    if (!email || parts.length !== 2 || !parts[0] || !parts[1] || /\s/.test(email)) {
+      throw validationError("请输入有效邮箱地址。");
+    }
+    return email;
+  }
+
   function normalizeCredentials(value) {
-    const email = String(value?.email || "").trim();
+    const email = normalizeEmail(value?.email);
     const password = String(value?.password || "");
-    if (!email || !email.includes("@")) throw new Error("请输入有效邮箱。");
-    if (password.length < 6) throw new Error("密码至少需要 6 个字符。");
+    if (!password) throw validationError("请输入密码。");
+    if (password.length < MIN_PASSWORD_LENGTH) {
+      throw validationError(`密码至少需要 ${MIN_PASSWORD_LENGTH} 个字符。`);
+    }
     return { email, password };
+  }
+
+  function normalizedErrorCode(error) {
+    const code = typeof error?.code === "string" ? error.code.trim().toLowerCase() : "";
+    if (code) return code;
+    const name = typeof error?.name === "string" ? error.name.trim().toLowerCase() : "";
+    if (error instanceof TypeError ||
+        ["authretryablefetcherror", "fetcherror", "networkerror"].includes(name) ||
+        error?.originalError instanceof TypeError) {
+      return "network_error";
+    }
+    return "unknown_error";
+  }
+
+  function isRateLimitError(error, code) {
+    return Number(error?.status) === 429 ||
+      code.includes("rate_limit") ||
+      code === "over_request_rate_limit" ||
+      code === "over_email_send_rate_limit";
+  }
+
+  function weakPasswordMessage(error) {
+    const reasons = Array.isArray(error?.reasons) ? new Set(error.reasons) : new Set();
+    const guidance = [];
+    if (reasons.has("length")) {
+      guidance.push(`密码至少需要 ${MIN_PASSWORD_LENGTH} 个字符`);
+    }
+    if (reasons.has("characters")) {
+      guidance.push("密码需要包含更多种类的字符（如字母、数字或符号）");
+    }
+    if (reasons.has("pwned")) {
+      guidance.push("这个密码过于常见或已泄露，请更换一个密码");
+    }
+    return guidance.length > 0
+      ? `${guidance.join("；")}。`
+      : `密码至少需要 ${MIN_PASSWORD_LENGTH} 个字符。`;
+  }
+
+  function mapAuthError(operation, error) {
+    const errorCode = normalizedErrorCode(error);
+    if (isRateLimitError(error, errorCode)) {
+      return {
+        errorCode,
+        message: "操作过于频繁，请稍后再试。"
+      };
+    }
+    if (errorCode === "validation_failed") {
+      return {
+        errorCode,
+        message: "请检查邮箱或密码格式。"
+      };
+    }
+    if (errorCode === "weak_password") {
+      return {
+        errorCode,
+        message: weakPasswordMessage(error)
+      };
+    }
+    if (["network_error", "network_request_failed", "fetch_failed"].includes(errorCode)) {
+      return {
+        errorCode,
+        message: "网络连接异常，请稍后重试。"
+      };
+    }
+    if (operation === "sign-in" && errorCode === "email_not_confirmed") {
+      return {
+        errorCode,
+        message: "邮箱尚未验证，请先打开确认邮件完成验证。"
+      };
+    }
+    if (operation === "sign-in" && errorCode === "invalid_credentials") {
+      return {
+        errorCode,
+        message: "登录失败，请检查邮箱和密码后重试。"
+      };
+    }
+    const fallback = {
+      "sign-up": "注册暂时无法完成，请稍后重试。",
+      "sign-in": "登录暂时无法完成，请稍后重试。",
+      resend: "暂时无法重新发送验证邮件，请稍后重试。",
+      "sign-out": "退出登录失败，请检查网络后重试。"
+    };
+    return {
+      errorCode,
+      message: fallback[operation] || "账号操作暂时无法完成，请稍后重试。"
+    };
+  }
+
+  function getPasswordPolicy() {
+    return Object.freeze({
+      minimumLength: MIN_PASSWORD_LENGTH,
+      message: `密码至少需要 ${MIN_PASSWORD_LENGTH} 个字符。`
+    });
   }
 
   function emailRedirectTo() {
@@ -240,18 +352,63 @@
         options: { emailRedirectTo: emailRedirectTo() }
       });
       if (result?.error) throw result.error;
+      const user = publicUser(result?.data?.user);
       if (!result?.data?.session) {
+        if (!user) {
+          const error = new Error("Sign-up response did not include a user.");
+          error.code = "unexpected_response";
+          throw error;
+        }
         return setState({
           status: "confirmation-required",
-          reason: "check-email"
+          reason: "check-email",
+          email: user.email || credentials.email
         });
       }
       return await refreshAuthenticatedState();
     } catch (error) {
+      const mapped = mapAuthError("sign-up", error);
       return setState({
         status: "failed",
         reason: "sign-up-failed",
-        message: error?.message || "注册失败。"
+        ...mapped
+      });
+    }
+  }
+
+  async function resendSignUpConfirmation(value) {
+    let email = "";
+    try {
+      email = normalizeEmail(value?.email);
+      setState({
+        status: "confirmation-required",
+        reason: "resending-confirmation",
+        email
+      });
+      const activeClient = await ensureClient({ markRequested: true });
+      if (typeof activeClient.auth.resend !== "function") {
+        const error = new Error("Auth resend is unavailable.");
+        error.code = "unsupported_operation";
+        throw error;
+      }
+      const result = await activeClient.auth.resend({
+        type: "signup",
+        email,
+        options: { emailRedirectTo: emailRedirectTo() }
+      });
+      if (result?.error) throw result.error;
+      return setState({
+        status: "confirmation-required",
+        reason: "confirmation-resent",
+        email
+      });
+    } catch (error) {
+      const mapped = mapAuthError("resend", error);
+      return setState({
+        status: "confirmation-required",
+        reason: "resend-failed",
+        email,
+        ...mapped
       });
     }
   }
@@ -266,10 +423,11 @@
       if (result?.error) throw result.error;
       return await refreshAuthenticatedState();
     } catch (error) {
+      const mapped = mapAuthError("sign-in", error);
       return setState({
         status: "failed",
         reason: "sign-in-failed",
-        message: error?.message || "登录失败。"
+        ...mapped
       });
     }
   }
@@ -281,10 +439,11 @@
       if (result?.error) throw result.error;
       return setState({ status: "signed-out", reason: "signed-out" });
     } catch (error) {
+      const mapped = mapAuthError("sign-out", error);
       return setState({
         status: "failed",
         reason: "sign-out-failed",
-        message: error?.message || "退出登录失败。"
+        ...mapped
       });
     }
   }
@@ -323,7 +482,9 @@
   window.LingoFlowSupabaseAuth = Object.freeze({
     initialize,
     getState,
+    getPasswordPolicy,
     signUp,
+    resendSignUpConfirmation,
     signIn,
     signOut,
     getSessionContext,
