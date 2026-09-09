@@ -114,14 +114,21 @@
           return;
         }
         if (session?.user?.id) {
-          setState({ status: "authenticating", reason: "validating-session" });
+          const verifyingOtp = state.status === "verifying";
+          setState({
+            status: verifyingOtp ? "verifying" : "authenticating",
+            reason: verifyingOtp ? "verifying-otp" : "validating-session",
+            ...(verifyingOtp && state.email ? { email: state.email } : {})
+          });
           queueMicrotask(() => {
             void refreshAuthenticatedState().catch(() => {});
           });
           return;
         }
         if (event === "INITIAL_SESSION") {
-          if (state.status === "confirmation-required") return;
+          if (["confirmation-required", "otp-required", "verifying"].includes(state.status)) {
+            return;
+          }
           setState({ status: "signed-out", reason: "not-signed-in" });
         }
       });
@@ -244,6 +251,14 @@
     return { email, password };
   }
 
+  function normalizeEmailOtp(value) {
+    const token = String(value || "");
+    if (!/^\d{6,10}$/.test(token)) {
+      throw validationError("请输入 6–10 位数字验证码。");
+    }
+    return token;
+  }
+
   function normalizedErrorCode(error) {
     const code = typeof error?.code === "string" ? error.code.trim().toLowerCase() : "";
     if (code) return code;
@@ -291,7 +306,9 @@
     if (errorCode === "validation_failed") {
       return {
         errorCode,
-        message: "请检查邮箱或密码格式。"
+        message: operation === "verify"
+          ? "请输入 6–10 位数字验证码。"
+          : "请检查邮箱或密码格式。"
       };
     }
     if (errorCode === "weak_password") {
@@ -309,7 +326,7 @@
     if (operation === "sign-in" && errorCode === "email_not_confirmed") {
       return {
         errorCode,
-        message: "邮箱尚未验证，请先打开确认邮件完成验证。"
+        message: "邮箱尚未验证，请先完成验证码验证。"
       };
     }
     if (operation === "sign-in" && errorCode === "invalid_credentials") {
@@ -318,10 +335,22 @@
         message: "登录失败，请检查邮箱和密码后重试。"
       };
     }
+    if (operation === "verify" && [
+      "otp_expired",
+      "token_expired",
+      "invalid_otp",
+      "bad_code_verifier"
+    ].includes(errorCode)) {
+      return {
+        errorCode,
+        message: "验证码不正确或已过期，请重新输入。"
+      };
+    }
     const fallback = {
       "sign-up": "注册暂时无法完成，请稍后重试。",
       "sign-in": "登录暂时无法完成，请稍后重试。",
-      resend: "暂时无法重新发送验证邮件，请稍后重试。",
+      resend: "暂时无法重新发送验证码，请稍后重试。",
+      verify: "邮箱验证暂时无法完成，请稍后重试。",
       "sign-out": "退出登录失败，请检查网络后重试。"
     };
     return {
@@ -360,8 +389,8 @@
           throw error;
         }
         return setState({
-          status: "confirmation-required",
-          reason: "check-email",
+          status: "otp-required",
+          reason: "otp-sent",
           email: user.email || credentials.email
         });
       }
@@ -381,8 +410,8 @@
     try {
       email = normalizeEmail(value?.email);
       setState({
-        status: "confirmation-required",
-        reason: "resending-confirmation",
+        status: "otp-required",
+        reason: "resending-otp",
         email
       });
       const activeClient = await ensureClient({ markRequested: true });
@@ -398,15 +427,64 @@
       });
       if (result?.error) throw result.error;
       return setState({
-        status: "confirmation-required",
-        reason: "confirmation-resent",
+        status: "otp-required",
+        reason: "otp-resent",
         email
       });
     } catch (error) {
       const mapped = mapAuthError("resend", error);
       return setState({
-        status: "confirmation-required",
+        status: "otp-required",
         reason: "resend-failed",
+        email,
+        ...mapped
+      });
+    }
+  }
+
+  async function verifySignUpOtp(value) {
+    let email = "";
+    try {
+      email = normalizeEmail(value?.email);
+      const token = normalizeEmailOtp(value?.token);
+      setState({ status: "verifying", reason: "verifying-otp", email });
+      const activeClient = await ensureClient({ markRequested: true });
+      if (typeof activeClient.auth.verifyOtp !== "function") {
+        const error = new Error("Auth OTP verification is unavailable.");
+        error.code = "unsupported_operation";
+        throw error;
+      }
+      const result = await activeClient.auth.verifyOtp({
+        email,
+        token,
+        type: "email"
+      });
+      if (result?.error) throw result.error;
+      const session = result?.data?.session || null;
+      const user = publicUser(result?.data?.user || session?.user);
+      if (!session || !isOpaqueString(session.access_token) || !user) {
+        const error = new Error("OTP verification response did not include a session.");
+        error.code = "unexpected_response";
+        throw error;
+      }
+      const verified = await readVerifiedSession();
+      if (verified.status !== "ready") {
+        const error = new Error("Verified session is unavailable.");
+        error.code = ["session-read-failed", "auth-network-unavailable"].includes(verified.reason)
+          ? "network_error"
+          : "unexpected_response";
+        throw error;
+      }
+      return setState({
+        status: "authenticated",
+        reason: "email-verified",
+        user: verified.user
+      });
+    } catch (error) {
+      const mapped = mapAuthError("verify", error);
+      return setState({
+        status: "otp-required",
+        reason: "otp-verification-failed",
         email,
         ...mapped
       });
@@ -485,6 +563,7 @@
     getPasswordPolicy,
     signUp,
     resendSignUpConfirmation,
+    verifySignUpOtp,
     signIn,
     signOut,
     getSessionContext,

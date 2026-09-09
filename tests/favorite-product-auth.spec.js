@@ -18,7 +18,14 @@ async function installProductAuthHarness(page) {
     const SESSION_KEY = "__lingoflowTestAuthSession";
     const PUSH_COUNT_KEY = "__lingoflowTestPushCount";
     const callbacks = new Set();
-    window.__productAuthCalls = { signUp: [], resend: [], signIn: [] };
+    window.__productAuthCalls = { signUp: [], resend: [], verifyOtp: [], signIn: [] };
+    window.__productAuthStates = [];
+    window.addEventListener("lingoflow:auth-state", event => {
+      window.__productAuthStates.push({
+        status: event.detail?.status,
+        reason: event.detail?.reason
+      });
+    });
     const readSession = () => {
       const raw = localStorage.getItem(SESSION_KEY);
       return raw ? JSON.parse(raw) : null;
@@ -77,6 +84,26 @@ async function installProductAuthHarness(page) {
           };
         }
         return { data: { messageId: "confirmation-message" }, error: null };
+      },
+      async verifyOtp({ email, token, type }) {
+        window.__productAuthCalls.verifyOtp.push({ email, type });
+        if (!["123456", "12345678"].includes(token)) {
+          return {
+            data: { user: null, session: null },
+            error: {
+              code: "otp_expired",
+              message: "Token has expired or is invalid"
+            }
+          };
+        }
+        const ownerId = email.startsWith("beta-") ? ownerB : ownerA;
+        const session = {
+          access_token: `test-access-token:${ownerId}`,
+          user: { id: ownerId, email }
+        };
+        localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+        notify("SIGNED_IN", session);
+        return { data: { user: session.user, session }, error: null };
       },
       async signInWithPassword({ email }) {
         window.__productAuthCalls.signIn.push({ email });
@@ -193,21 +220,21 @@ async function signIn(page, email = "alpha@example.test") {
   await waitForAuth(page, "authenticated");
 }
 
-async function signUpAwaitingConfirmation(page, email = "alpha@example.test") {
+async function signUpAwaitingOtp(page, email = "alpha@example.test") {
   await openAccountModal(page);
   await page.click("#authSignUpMode");
   await page.fill("#authEmail", email);
   await page.fill("#authPassword", "test-password");
   await page.fill("#authConfirmPassword", "test-password");
   await page.click("#authSubmitButton");
-  await waitForAuth(page, "confirmation-required");
+  await waitForAuth(page, "otp-required");
 }
 
 test.beforeEach(async ({ page }) => {
   await installProductAuthHarness(page);
 });
 
-test("未登录保持 local-only，session=null 的注册成功进入邮箱确认状态且不绑定 workspace", async ({ page }) => {
+test("未登录保持 local-only，session=null 的注册成功进入 OTP 状态且不绑定 workspace", async ({ page }) => {
   await page.goto("/");
   await waitForAuth(page, "signed-out");
   await expect(page.locator("#favoriteSyncStatusBadge"))
@@ -218,7 +245,7 @@ test("未登录保持 local-only，session=null 的注册成功进入邮箱确�
   await expect(page.locator("#authModal .modalSub")).toContainText("无需登录也能使用");
   await expect(page.locator("#authPrivacyNote")).toContainText("收藏与学习状态会保存到云端");
   await expect(page.locator("#authPrivacyNote")).toContainText("暂不提供自助删除账号");
-  await signUpAwaitingConfirmation(page);
+  await signUpAwaitingOtp(page);
 
   const result = await page.evaluate(async id => ({
     favorite: window.LingoFlowFavoriteRepository.getById(id),
@@ -228,10 +255,13 @@ test("未登录保持 local-only，session=null 的注册成功进入邮箱确�
   expect(result.favorite).toEqual(favorite);
   expect(result.binding).toEqual({ status: "missing", binding: null });
   expect(result.pushes).toBe(0);
-  await expect(page.locator("#authConfirmationPanel")).toBeVisible();
-  await expect(page.locator("#authConfirmationTitle")).toHaveText("验证邮件已发送");
-  await expect(page.locator("#authConfirmationEmail")).toHaveText("alpha@example.test");
-  await expect(page.locator("#authFeedback")).toHaveText("验证邮件已发送");
+  await expect(page.locator("#authOtpPanel")).toBeVisible();
+  await expect(page.locator("#authOtpTitle")).toHaveText("验证码已发送");
+  await expect(page.locator("#authOtpEmail")).toHaveText("alpha@example.test");
+  await expect(page.locator("#authOtpPanel")).toContainText("发送了邮箱验证码");
+  await expect(page.locator("#authOtpPanel")).toContainText("请输入邮件中的验证码");
+  await expect(page.locator("body")).not.toContainText("6 位验证码");
+  await expect(page.locator("#authFeedback")).toHaveText("验证码已发送");
   await expect(page.locator("#authFeedback")).toHaveAttribute("data-kind", "success");
   await expect(page.locator("#authFeedback")).not.toContainText("注册失败");
   await expect(page.locator("#authEmail")).toHaveValue("alpha@example.test");
@@ -241,13 +271,16 @@ test("未登录保持 local-only，session=null 的注册成功进入邮箱确�
   await page.evaluate(() => window.__productAuthEmit("INITIAL_SESSION", null));
   await expect.poll(() => page.evaluate(() => (
     window.LingoFlowSupabaseAuth.getState().status
-  ))).toBe("confirmation-required");
-  await expect(page.locator("#authConfirmationPanel")).toBeVisible();
+  ))).toBe("otp-required");
+  await expect(page.locator("#authOtpPanel")).toBeVisible();
 });
 
 test("登录与注册密码框支持键盘显示隐藏且不改变 value", async ({ page }) => {
   await page.goto("/");
   await openAccountModal(page);
+
+  const confirmPasswordGroup = page.locator("#authConfirmPasswordGroup");
+  await expect(confirmPasswordGroup).toBeHidden();
 
   const password = page.locator("#authPassword");
   const passwordToggle = page.locator("#authPasswordVisibility");
@@ -273,6 +306,13 @@ test("登录与注册密码框支持键盘显示隐藏且不改变 value", async
   await expect(confirmation).toHaveAttribute("type", "text");
   await expect(confirmation).toHaveValue("confirmation-secret");
   await expect(confirmationToggle).toHaveAttribute("aria-label", "隐藏确认密码");
+
+  await page.click("#authSignInMode");
+  await expect(confirmPasswordGroup).toBeHidden();
+  await page.click("#authSignUpMode");
+  await expect(confirmPasswordGroup).toBeVisible();
+  await page.click("#authSignInMode");
+  await expect(confirmPasswordGroup).toBeHidden();
 });
 
 test("注册前验证明确提示且不会调用 Supabase signUp", async ({ page }) => {
@@ -309,36 +349,142 @@ test("注册前验证明确提示且不会调用 Supabase signUp", async ({ page
   expect(await page.evaluate(() => window.__productAuthCalls.signUp)).toEqual([]);
 });
 
-test("等待确认状态可重新发送并通过 cooldown 防止连续点击", async ({ page }) => {
+test("OTP 只接受 6–10 位数字，5 位、11 位与非数字不会提交", async ({ page }) => {
   await page.goto("/");
-  await signUpAwaitingConfirmation(page, "resend-success@example.test");
+  await signUpAwaitingOtp(page, "otp-validation@example.test");
 
-  await page.click("#authResendConfirmationButton");
+  await page.click("#authVerifyOtpButton");
+  await expect(page.locator("#authFeedback")).toHaveText("请输入验证码。");
+
+  await page.fill("#authOtpCode", "12345");
+  await page.press("#authOtpCode", "Enter");
+  await expect(page.locator("#authFeedback")).toHaveText("请输入 6–10 位数字验证码。");
+
+  await page.fill("#authOtpCode", "");
+  await page.locator("#authOtpCode").pressSequentially("12a34");
+  await expect(page.locator("#authOtpCode")).toHaveValue("1234");
+  await page.press("#authOtpCode", "Enter");
+  await expect(page.locator("#authFeedback")).toHaveText("请输入 6–10 位数字验证码。");
+
+  await page.fill("#authOtpCode", "");
+  await page.locator("#authOtpCode").pressSequentially("12345678901");
+  await expect(page.locator("#authOtpCode")).toHaveValue("1234567890");
+
+  await page.evaluate(() => {
+    document.getElementById("authOtpCode").value = "12345678901";
+  });
+  await page.click("#authVerifyOtpButton");
+  await expect(page.locator("#authFeedback")).toHaveText("请输入 6–10 位数字验证码。");
+  expect(await page.evaluate(() => window.__productAuthCalls.verifyOtp)).toEqual([]);
+});
+
+test("8 位 verifyOtp 成功后进入 authenticated 并保持 Workspace Activation 边界", async ({ page }) => {
+  await page.goto("/");
+  const favorite = await createLocalFavorite(page, "otp-activation");
+  await signUpAwaitingOtp(page, "otp-success@example.test");
+
+  await page.fill("#authOtpCode", "12345678");
+  await page.press("#authOtpCode", "Enter");
+  await waitForAuth(page, "authenticated");
+  await waitForSync(page, "activation-required", "anonymous-favorites-require-consent");
+
+  await expect(page.locator("#authFeedback")).toHaveText("邮箱验证成功");
+  await expect(page.locator("#authFeedback")).toHaveAttribute("data-kind", "success");
+  await expect(page.locator("#authOtpPanel")).toBeHidden();
+  expect(await page.evaluate(() => window.__productAuthCalls.verifyOtp)).toEqual([{
+    email: "otp-success@example.test",
+    type: "email"
+  }]);
+  expect(await page.evaluate(() => window.__productAuthStates)).toEqual(
+    expect.arrayContaining([
+      { status: "authenticating", reason: "signing-up" },
+      { status: "otp-required", reason: "otp-sent" },
+      { status: "verifying", reason: "verifying-otp" },
+      { status: "authenticated", reason: "email-verified" }
+    ])
+  );
+  const result = await page.evaluate(async id => ({
+    favorite: window.LingoFlowFavoriteRepository.getById(id),
+    binding: await window.LingoFlowSyncStateRepository.getWorkspaceBinding(),
+    pushes: Number(localStorage.getItem("__lingoflowTestPushCount") || 0)
+  }), favorite.id);
+  expect(result.favorite.id).toBe(favorite.id);
+  expect(result.binding).toEqual({ status: "missing", binding: null });
+  expect(result.pushes).toBe(0);
+});
+
+test("6 位 OTP 仍可完成验证", async ({ page }) => {
+  await page.goto("/");
+  await signUpAwaitingOtp(page, "otp-six-digit@example.test");
+
+  await page.fill("#authOtpCode", "123456");
+  await page.press("#authOtpCode", "Enter");
+  await waitForAuth(page, "authenticated");
+
+  await expect(page.locator("#authFeedback")).toHaveText("邮箱验证成功");
+  expect(await page.evaluate(() => window.__productAuthCalls.verifyOtp)).toEqual([{
+    email: "otp-six-digit@example.test",
+    type: "email"
+  }]);
+});
+
+test("verifyOtp 失败保留邮箱与验证码并显示友好文案", async ({ page }) => {
+  await page.goto("/");
+  await signUpAwaitingOtp(page, "otp-failure@example.test");
+  await page.fill("#authOtpCode", "000000");
+  await page.click("#authVerifyOtpButton");
+
+  await expect.poll(() => page.evaluate(() => {
+    const state = window.LingoFlowSupabaseAuth.getState();
+    return { status: state.status, reason: state.reason, errorCode: state.errorCode };
+  })).toEqual({
+    status: "otp-required",
+    reason: "otp-verification-failed",
+    errorCode: "otp_expired"
+  });
+  await expect(page.locator("#authOtpPanel")).toBeVisible();
+  await expect(page.locator("#authOtpEmail")).toHaveText("otp-failure@example.test");
+  await expect(page.locator("#authOtpCode")).toHaveValue("000000");
+  await expect(page.locator("#authFeedback"))
+    .toHaveText("验证码不正确或已过期，请重新输入。");
+  await expect(page.locator("#authFeedback")).not.toContainText("Token");
+});
+
+test("OTP 状态可重新发送并通过 cooldown 防止连续点击", async ({ page }) => {
+  await page.goto("/");
+  await signUpAwaitingOtp(page, "resend-success@example.test");
+
+  await page.fill("#authOtpCode", "123456");
+  await page.click("#authResendOtpButton");
   await expect.poll(() => page.evaluate(() => window.LingoFlowSupabaseAuth.getState().reason))
-    .toBe("confirmation-resent");
-  await expect(page.locator("#authConfirmationTitle")).toHaveText("验证邮件已重新发送");
-  await expect(page.locator("#authFeedback")).toHaveText("验证邮件已重新发送");
-  await expect(page.locator("#authResendConfirmationButton")).toBeDisabled();
-  await expect(page.locator("#authResendConfirmationButton"))
-    .toContainText("重新发送确认邮件（");
+    .toBe("otp-resent");
+  await expect(page.locator("#authOtpTitle")).toHaveText("验证码已重新发送");
+  await expect(page.locator("#authFeedback")).toHaveText("验证码已重新发送");
+  await expect(page.locator("#authOtpCode")).toHaveValue("");
+  await expect(page.locator("#authResendOtpButton")).toBeDisabled();
+  await expect(page.locator("#authResendOtpButton"))
+    .toContainText("重新发送验证码（60s）");
 
   expect(await page.evaluate(() => window.__productAuthCalls.resend)).toEqual([{
     type: "signup",
     email: "resend-success@example.test",
     redirectPath: "/"
   }]);
+  await page.evaluate(() => document.getElementById("authResendOtpButton").click());
+  expect(await page.evaluate(() => window.__productAuthCalls.resend)).toHaveLength(1);
 
   await page.click("#authReturnToSignInButton");
-  await expect(page.locator("#authConfirmationPanel")).toBeHidden();
+  await expect(page.locator("#authOtpPanel")).toBeHidden();
   await expect(page.locator("#authForm")).toBeVisible();
   await expect(page.locator("#authSignInMode")).toHaveClass(/active/);
+  await expect(page.locator("#authConfirmPasswordGroup")).toBeHidden();
   await expect(page.locator("#authEmail")).toHaveValue("resend-success@example.test");
 });
 
 test("重新发送频率限制只显示普通用户文案", async ({ page }) => {
   await page.goto("/");
-  await signUpAwaitingConfirmation(page, "resend-rate-user@example.test");
-  await page.click("#authResendConfirmationButton");
+  await signUpAwaitingOtp(page, "resend-rate-user@example.test");
+  await page.click("#authResendOtpButton");
 
   await expect.poll(() => page.evaluate(() => {
     const state = window.LingoFlowSupabaseAuth.getState();
@@ -347,7 +493,7 @@ test("重新发送频率限制只显示普通用户文案", async ({ page }) => 
     reason: "resend-failed",
     errorCode: "over_email_send_rate_limit"
   });
-  await expect(page.locator("#authConfirmationPanel")).toBeVisible();
+  await expect(page.locator("#authOtpPanel")).toBeVisible();
   await expect(page.locator("#authFeedback"))
     .toHaveText("操作过于频繁，请稍后再试。");
   await expect(page.locator("#authFeedback")).not.toContainText("AuthApiError");

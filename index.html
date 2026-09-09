@@ -82,14 +82,23 @@
           <button id="authSubmitButton" type="submit">登录</button>
         </form>
 
-        <div id="authConfirmationPanel" class="authConfirmationPanel" hidden>
-          <div id="authConfirmationTitle" class="authConfirmationTitle">验证邮件已发送</div>
-          <div class="authConfirmationMessage">
-            我们已经向 <strong id="authConfirmationEmail"></strong> 发送了确认邮件。<br>
-            请打开邮件并点击确认链接完成注册。
+        <div id="authOtpPanel" class="authOtpPanel" hidden>
+          <div id="authOtpTitle" class="authOtpTitle">验证码已发送</div>
+          <div class="authOtpMessage">
+            我们已经向 <strong id="authOtpEmail"></strong> 发送了邮箱验证码。
           </div>
+          <form id="authOtpForm" class="authOtpForm" novalidate>
+            <label class="settingLabel" for="authOtpCode">邮箱验证码</label>
+            <input id="authOtpCode" name="emailOtp" type="text"
+                   inputmode="numeric" autocomplete="one-time-code"
+                   pattern="[0-9]{6,10}" maxlength="10" required
+                   placeholder="请输入邮箱验证码"
+                   aria-describedby="authOtpMessageHint">
+            <div id="authOtpMessageHint" class="authFieldHint">请输入邮件中的验证码。</div>
+            <button id="authVerifyOtpButton" type="submit">确认注册</button>
+          </form>
           <div class="authButtonRow">
-            <button id="authResendConfirmationButton" type="button">重新发送确认邮件</button>
+            <button id="authResendOtpButton" type="button">重新发送验证码</button>
             <button id="authReturnToSignInButton" class="secondary" type="button">返回登录</button>
           </div>
         </div>

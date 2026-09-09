@@ -2,7 +2,7 @@
   "use strict";
 
   const PROMPT_SEEN_PREFIX = "lingoflowFavoriteActivationPromptSeen:";
-  const RESEND_COOLDOWN_MS = 30000;
+  const RESEND_COOLDOWN_MS = 60000;
   const auth = window.LingoFlowSupabaseAuth;
   const sync = window.LingoFlowFavoriteAppSync;
   let mode = "sign-in";
@@ -113,15 +113,24 @@
   }
 
   function authMessage(authState) {
-    if (authState.status === "confirmation-required") {
-      if (authState.reason === "confirmation-resent") return "验证邮件已重新发送";
-      if (authState.reason === "resending-confirmation") return "正在重新发送验证邮件…";
-      if (authState.reason === "resend-failed") {
-        return authState.message || "暂时无法重新发送验证邮件，请稍后重试。";
+    if (authState.status === "otp-required") {
+      if (authState.reason === "otp-resent") return "验证码已重新发送";
+      if (authState.reason === "resending-otp") return "正在重新发送验证码…";
+      if (authState.reason === "otp-verification-failed") {
+        return authState.message || "验证码不正确或已过期，请重新输入。";
       }
-      return "验证邮件已发送";
+      if (authState.reason === "resend-failed") {
+        return authState.message || "暂时无法重新发送验证码，请稍后重试。";
+      }
+      return "验证码已发送";
     }
-    if (authState.status === "authenticating") return "正在确认账号状态…";
+    if (authState.status === "verifying") return "正在验证…";
+    if (authState.status === "authenticating") {
+      return authState.reason === "signing-up" ? "正在发送验证码…" : "正在确认账号状态…";
+    }
+    if (authState.status === "authenticated" && authState.reason === "email-verified") {
+      return "邮箱验证成功";
+    }
     if (authState.status === "paused") return "账号服务暂时不可用，本地收藏仍可正常使用。";
     if (authState.status === "failed") {
       return authState.message || "账号操作暂时无法完成，请稍后重试。";
@@ -131,21 +140,24 @@
   }
 
   function authFeedbackKind(authState) {
-    if (authState.status === "failed" || authState.reason === "resend-failed") return "error";
-    if (authState.reason === "check-email" || authState.reason === "confirmation-resent") {
+    if (authState.status === "failed" ||
+        ["resend-failed", "otp-verification-failed"].includes(authState.reason)) {
+      return "error";
+    }
+    if (["otp-sent", "otp-resent", "email-verified"].includes(authState.reason)) {
       return "success";
     }
     return "info";
   }
 
   function updateResendButton() {
-    const button = element("authResendConfirmationButton");
+    const button = element("authResendOtpButton");
     if (!button) return;
     const remaining = Math.max(0, Math.ceil((resendAvailableAt - Date.now()) / 1000));
     button.disabled = busy || remaining > 0;
     button.textContent = remaining > 0
-      ? `重新发送确认邮件（${remaining}s）`
-      : "重新发送确认邮件";
+      ? `重新发送验证码（${remaining}s）`
+      : "重新发送验证码";
     if (resendTimer) clearTimeout(resendTimer);
     resendTimer = remaining > 0
       ? setTimeout(updateResendButton, 1000)
@@ -203,24 +215,24 @@
     const authState = auth.getState();
     const syncState = sync.getState();
     const authenticated = authState.status === "authenticated";
-    const confirmationActive = authState.status === "confirmation-required" &&
+    const otpActive = ["otp-required", "verifying"].includes(authState.status) &&
       !confirmationDismissed;
     const presentation = syncPresentation(syncState, authState);
     setHidden("authSignedOutPanel", authenticated);
     setHidden("authSignedInPanel", !authenticated);
-    setHidden("authModeTabs", confirmationActive);
-    setHidden("authForm", confirmationActive);
-    setHidden("authConfirmationPanel", !confirmationActive);
+    setHidden("authModeTabs", otpActive);
+    setHidden("authForm", otpActive);
+    setHidden("authOtpPanel", !otpActive);
 
-    const confirmationEmail = element("authConfirmationEmail");
-    if (confirmationEmail) {
-      confirmationEmail.textContent = authState.email || element("authEmail")?.value || "该邮箱";
+    const otpEmail = element("authOtpEmail");
+    if (otpEmail) {
+      otpEmail.textContent = authState.email || element("authEmail")?.value || "该邮箱";
     }
-    const confirmationTitle = element("authConfirmationTitle");
-    if (confirmationTitle) {
-      confirmationTitle.textContent = authState.reason === "confirmation-resent"
-        ? "验证邮件已重新发送"
-        : "验证邮件已发送";
+    const otpTitle = element("authOtpTitle");
+    if (otpTitle) {
+      otpTitle.textContent = authState.reason === "otp-resent"
+        ? "验证码已重新发送"
+        : "验证码已发送";
     }
 
     const accountButton = element("accountButton");
@@ -266,9 +278,15 @@
     if (signOutButton) signOutButton.disabled = busy;
     const submit = element("authSubmitButton");
     if (submit) submit.disabled = busy || authState.status === "authenticating";
+    const verifyOtpButton = element("authVerifyOtpButton");
+    if (verifyOtpButton) {
+      verifyOtpButton.disabled = busy || authState.status === "verifying";
+      verifyOtpButton.textContent = authState.status === "verifying" ? "正在验证…" : "确认注册";
+    }
     updateResendButton();
 
-    const message = confirmationDismissed && authState.status === "confirmation-required"
+    const message = confirmationDismissed &&
+      ["otp-required", "verifying"].includes(authState.status)
       ? ""
       : authMessage(authState);
     if (message) setFeedback(message, authFeedbackKind(authState));
@@ -291,18 +309,60 @@
     }
     if (mode === "sign-up") confirmationDismissed = false;
     busy = true;
-    setFeedback(mode === "sign-in" ? "正在登录…" : "正在注册…", "info");
+    setFeedback(mode === "sign-in" ? "正在登录…" : "正在发送验证码…", "info");
     render();
     const result = mode === "sign-in"
       ? await auth.signIn({ email, password })
       : await auth.signUp({ email, password });
-    if (["authenticated", "confirmation-required"].includes(result.status)) {
+    if (["authenticated", "otp-required"].includes(result.status)) {
       clearPasswordInput("authPassword", "authPasswordVisibility");
       clearPasswordInput("authConfirmPassword", "authConfirmPasswordVisibility");
+    }
+    if (result.status === "otp-required") {
+      const otpCode = element("authOtpCode");
+      if (otpCode) otpCode.value = "";
     }
     if (result.status === "authenticated") {
       await sync.bootstrap();
       setFeedback("登录成功。", "success");
+    }
+    busy = false;
+    render();
+  }
+
+  function preventInvalidOtpInsertion(event) {
+    if (event.inputType?.startsWith("insert") && event.data && !/^\d+$/.test(event.data)) {
+      event.preventDefault();
+    }
+  }
+
+  function otpValidationMessage(token) {
+    if (!token) return "请输入验证码。";
+    if (!/^\d+$/.test(token)) return "验证码只能包含数字。";
+    if (token.length < 6 || token.length > 10) return "请输入 6–10 位数字验证码。";
+    return "";
+  }
+
+  async function submitOtp(event) {
+    event.preventDefault();
+    if (busy || !auth) return;
+    const token = element("authOtpCode")?.value || "";
+    const invalid = otpValidationMessage(token);
+    if (invalid) {
+      setFeedback(invalid, "error");
+      return;
+    }
+    const authState = auth.getState();
+    const email = authState.email || element("authEmail")?.value || "";
+    busy = true;
+    setFeedback("正在验证…", "info");
+    render();
+    const result = await auth.verifySignUpOtp({ email, token });
+    if (result.status === "authenticated") {
+      const otpCode = element("authOtpCode");
+      if (otpCode) otpCode.value = "";
+      await sync.bootstrap();
+      setFeedback("邮箱验证成功", "success");
     }
     busy = false;
     render();
@@ -313,11 +373,15 @@
     const authState = auth.getState();
     const email = authState.email || element("authEmail")?.value || "";
     busy = true;
-    setFeedback("正在重新发送验证邮件…", "info");
+    setFeedback("正在重新发送验证码…", "info");
     updateResendButton();
     const result = await auth.resendSignUpConfirmation({ email });
     busy = false;
     confirmationDismissed = false;
+    if (result.reason === "otp-resent") {
+      const otpCode = element("authOtpCode");
+      if (otpCode) otpCode.value = "";
+    }
     startResendCooldown();
     render();
     return result;
@@ -326,7 +390,9 @@
   function returnToSignIn() {
     confirmationDismissed = true;
     setMode("sign-in");
-    setFeedback("邮箱确认后，请使用原邮箱和密码登录。", "info");
+    const otpCode = element("authOtpCode");
+    if (otpCode) otpCode.value = "";
+    setFeedback("请使用原邮箱和密码登录。", "info");
     render();
     element("authPassword")?.focus();
   }
@@ -393,7 +459,9 @@
     togglePasswordVisibility("authConfirmPassword", event.currentTarget);
   });
   element("authForm")?.addEventListener("submit", submitAuth);
-  element("authResendConfirmationButton")?.addEventListener("click", resendConfirmation);
+  element("authOtpCode")?.addEventListener("beforeinput", preventInvalidOtpInsertion);
+  element("authOtpForm")?.addEventListener("submit", submitOtp);
+  element("authResendOtpButton")?.addEventListener("click", resendConfirmation);
   element("authReturnToSignInButton")?.addEventListener("click", returnToSignIn);
   element("workspaceActivateButton")?.addEventListener("click", activateWorkspace);
   element("workspaceDeferButton")?.addEventListener("click", deferWorkspace);

@@ -1001,6 +1001,10 @@
     gap: 8px;
   }
 
+  .authConfirmPasswordGroup[hidden] {
+    display: none;
+  }
+
   .authForm button[type="submit"] {
     margin-top: 6px;
   }
@@ -1009,20 +1013,20 @@
     margin-bottom: 12px;
   }
 
-  .authConfirmationPanel {
+  .authOtpPanel {
     padding: 15px;
     border: 1px solid #bcdcc5;
     border-radius: 11px;
     background: #f0faf3;
   }
 
-  .authConfirmationTitle {
+  .authOtpTitle {
     color: #216e37;
     font-size: 17px;
     font-weight: 750;
   }
 
-  .authConfirmationMessage {
+  .authOtpMessage {
     margin-top: 7px;
     color: #3d5f47;
     font-size: 14px;
@@ -1030,7 +1034,27 @@
     overflow-wrap: anywhere;
   }
 
-  .authConfirmationPanel .authButtonRow {
+  .authOtpForm {
+    display: grid;
+    gap: 8px;
+    margin-top: 13px;
+  }
+
+  .authOtpForm input {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 11px 12px;
+    border: 1px solid #b8cdbd;
+    border-radius: 9px;
+    background: #fff;
+    color: #1d1d1f;
+    font: inherit;
+    font-size: 18px;
+    letter-spacing: 0.16em;
+  }
+
+  .authOtpForm button[type="submit"],
+  .authOtpPanel .authButtonRow {
     margin-top: 13px;
   }
 
@@ -1808,17 +1832,23 @@
     background: #343438;
   }
 
-  body.darkMode .authConfirmationPanel {
+  body.darkMode .authOtpPanel {
     border-color: #356b45;
     background: #1c3423;
   }
 
-  body.darkMode .authConfirmationTitle {
+  body.darkMode .authOtpTitle {
     color: #bcebc8;
   }
 
-  body.darkMode .authConfirmationMessage {
+  body.darkMode .authOtpMessage {
     color: #cde6d3;
+  }
+
+  body.darkMode .authOtpForm input {
+    border-color: var(--app-border);
+    background: #202024;
+    color: var(--app-text);
   }
 
   body.darkMode .workspaceActivationPanel {
