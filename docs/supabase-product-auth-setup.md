@@ -11,24 +11,38 @@ In the Supabase Dashboard, open:
 
 `Authentication → URL Configuration`
 
-Set the production **Site URL** to the exact GitHub Pages application URL:
+Set the production **Site URL** to the official product domain:
+
+```text
+https://readlingoflow.com/
+```
+
+Add these **Redirect URLs**:
+
+Official product redirect:
+
+```text
+https://readlingoflow.com/
+```
+
+Legacy GitHub Pages compatibility redirect:
 
 ```text
 https://timbo2333.github.io/lingoflow/
 ```
 
-Add these **Redirect URLs** for the current production and local test entry
-points:
+Local development redirects:
 
 ```text
-https://timbo2333.github.io/lingoflow/
 http://127.0.0.1:4173/
 http://localhost:4173/
 ```
 
-If the deployed Pages URL differs, use its exact HTTPS URL instead. Keep Email
-Confirmation enabled. The signup request passes the current page URL as
-`emailRedirectTo`, so the confirmation link must be allowed here.
+If the official product domain changes, use its exact HTTPS URL for the Site
+URL and primary redirect. Keep the legacy GitHub Pages URL only as a
+compatibility redirect. Keep Email Confirmation enabled. The signup request
+passes the current page URL as `emailRedirectTo`, so every supported product or
+development entry point must be allowed here.
 
 ## Product behavior
 
