@@ -7,6 +7,7 @@
   let client = null;
   let clientPromise = null;
   let initializePromise = null;
+  let recoverySessionActive = false;
   let state = Object.freeze({ status: "signed-out", reason: "not-signed-in" });
 
   function isOpaqueString(value) {
@@ -48,6 +49,13 @@
     const hash = new URLSearchParams(window.location.hash.replace(/^#/, ""));
     return search.has("code") || search.has("token_hash") ||
       hash.has("access_token") || hash.has("refresh_token") || hash.has("error");
+  }
+
+  function authCallbackFailed() {
+    const search = new URLSearchParams(window.location.search);
+    const hash = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+    return search.has("error") || search.has("error_code") ||
+      hash.has("error") || hash.has("error_code");
   }
 
   function authWasRequested() {
@@ -109,11 +117,36 @@
         throw new Error("Supabase Auth client 不完整。");
       }
       created.auth.onAuthStateChange((event, session) => {
+        if (event === "PASSWORD_RECOVERY") {
+          const user = publicUser(session?.user);
+          if (!user) {
+            recoverySessionActive = false;
+            setState({
+              status: "recovery-invalid",
+              reason: "recovery-link-invalid",
+              message: "重置链接已失效，请重新申请。"
+            });
+            return;
+          }
+          recoverySessionActive = true;
+          markAuthRequested();
+          setState({ status: "password-recovery", reason: "recovery-session", user });
+          return;
+        }
         if (event === "SIGNED_OUT") {
+          recoverySessionActive = false;
           setState({ status: "signed-out", reason: "signed-out" });
           return;
         }
         if (session?.user?.id) {
+          if (recoverySessionActive) {
+            setState({
+              status: "password-recovery",
+              reason: state.status === "password-recovery" ? state.reason : "recovery-session",
+              user: publicUser(session.user)
+            });
+            return;
+          }
           const verifyingOtp = state.status === "verifying";
           setState({
             status: verifyingOtp ? "verifying" : "authenticating",
@@ -126,7 +159,15 @@
           return;
         }
         if (event === "INITIAL_SESSION") {
-          if (["confirmation-required", "otp-required", "verifying"].includes(state.status)) {
+          if ([
+            "confirmation-required",
+            "otp-required",
+            "verifying",
+            "reset-request",
+            "reset-requesting",
+            "reset-email-sent",
+            "recovery-invalid"
+          ].includes(state.status)) {
             return;
           }
           setState({ status: "signed-out", reason: "not-signed-in" });
@@ -203,6 +244,13 @@
       return setState({ status: "signed-out", reason: verified.reason });
     }
     if (verified.status !== "ready") return authFailure(verified.reason, verified.error);
+    if (recoverySessionActive) {
+      return setState({
+        status: "password-recovery",
+        reason: state.status === "password-recovery" ? state.reason : "recovery-session",
+        user: verified.user
+      });
+    }
     return setState({ status: "authenticated", user: verified.user });
   }
 
@@ -213,6 +261,14 @@
     }
     if (!authWasRequested()) {
       return setState({ status: "signed-out", reason: "not-signed-in" });
+    }
+    if (authCallbackFailed()) {
+      recoverySessionActive = false;
+      return setState({
+        status: "recovery-invalid",
+        reason: "recovery-link-invalid",
+        message: "重置链接已失效，请重新申请。"
+      });
     }
 
     initializePromise = (async () => {
@@ -243,12 +299,17 @@
 
   function normalizeCredentials(value) {
     const email = normalizeEmail(value?.email);
-    const password = String(value?.password || "");
+    const password = normalizePassword(value?.password);
+    return { email, password };
+  }
+
+  function normalizePassword(value) {
+    const password = String(value || "");
     if (!password) throw validationError("请输入密码。");
     if (password.length < MIN_PASSWORD_LENGTH) {
       throw validationError(`密码至少需要 ${MIN_PASSWORD_LENGTH} 个字符。`);
     }
-    return { email, password };
+    return password;
   }
 
   function normalizeEmailOtp(value) {
@@ -304,11 +365,15 @@
       };
     }
     if (errorCode === "validation_failed") {
+      const validationMessage = {
+        "request-password-reset": "请输入有效的邮箱地址",
+        "update-password": error?.message || `密码至少需要 ${MIN_PASSWORD_LENGTH} 个字符。`
+      };
       return {
         errorCode,
-        message: operation === "verify"
+        message: validationMessage[operation] || (operation === "verify"
           ? "请输入 6–10 位数字验证码。"
-          : "请检查邮箱或密码格式。"
+          : "请检查邮箱或密码格式。")
       };
     }
     if (errorCode === "weak_password") {
@@ -346,11 +411,27 @@
         message: "验证码不正确或已过期，请重新输入。"
       };
     }
+    if (operation === "update-password" && (
+      Number(error?.status) === 401 || Number(error?.status) === 403 || [
+        "bad_jwt",
+        "jwt_expired",
+        "refresh_token_not_found",
+        "session_not_found",
+        "token_expired"
+      ].includes(errorCode)
+    )) {
+      return {
+        errorCode,
+        message: "重置链接已失效，请重新申请。"
+      };
+    }
     const fallback = {
       "sign-up": "注册暂时无法完成，请稍后重试。",
       "sign-in": "登录暂时无法完成，请稍后重试。",
       resend: "暂时无法重新发送验证码，请稍后重试。",
       verify: "邮箱验证暂时无法完成，请稍后重试。",
+      "request-password-reset": "暂时无法重置密码，请稍后再试。",
+      "update-password": "暂时无法重置密码，请稍后再试。",
       "sign-out": "退出登录失败，请检查网络后重试。"
     };
     return {
@@ -510,6 +591,111 @@
     }
   }
 
+  function beginPasswordResetRequest(value = {}) {
+    const email = typeof value.email === "string" ? value.email.trim() : "";
+    return setState({
+      status: "reset-request",
+      reason: "password-reset-request",
+      ...(email ? { email } : {})
+    });
+  }
+
+  function cancelPasswordResetRequest() {
+    if ([
+      "reset-request",
+      "reset-requesting",
+      "reset-email-sent",
+      "recovery-invalid"
+    ].includes(state.status)) {
+      return setState({ status: "signed-out", reason: "not-signed-in" });
+    }
+    return getState();
+  }
+
+  async function requestPasswordReset(value) {
+    let email = "";
+    try {
+      email = normalizeEmail(value?.email);
+      setState({ status: "reset-requesting", reason: "sending-password-reset", email });
+      const activeClient = await ensureClient({ markRequested: true });
+      if (typeof activeClient.auth.resetPasswordForEmail !== "function") {
+        const error = new Error("Password reset request is unavailable.");
+        error.code = "unsupported_operation";
+        throw error;
+      }
+      const result = await activeClient.auth.resetPasswordForEmail(email, {
+        redirectTo: emailRedirectTo()
+      });
+      if (result?.error) throw result.error;
+      return setState({
+        status: "reset-email-sent",
+        reason: "password-reset-email-sent",
+        email
+      });
+    } catch (error) {
+      const mapped = mapAuthError("request-password-reset", error);
+      return setState({
+        status: "reset-request",
+        reason: "password-reset-request-failed",
+        ...(email ? { email } : {}),
+        ...mapped
+      });
+    }
+  }
+
+  async function updatePassword(value) {
+    const recoveryUser = publicUser(state.user);
+    try {
+      if (!recoverySessionActive || state.status !== "password-recovery" || !recoveryUser) {
+        const error = new Error("Password recovery session is unavailable.");
+        error.code = "session_not_found";
+        throw error;
+      }
+      const password = normalizePassword(value?.password);
+      setState({
+        status: "password-recovery",
+        reason: "updating-password",
+        user: recoveryUser
+      });
+      const activeClient = await ensureClient({ markRequested: true });
+      if (typeof activeClient.auth.updateUser !== "function") {
+        const error = new Error("Password update is unavailable.");
+        error.code = "unsupported_operation";
+        throw error;
+      }
+      const result = await activeClient.auth.updateUser({ password });
+      if (result?.error) throw result.error;
+      const updatedUser = publicUser(result?.data?.user);
+      if (updatedUser && updatedUser.id !== recoveryUser.id) {
+        const error = new Error("Authenticated owner changed during password update.");
+        error.code = "authenticated_owner_mismatch";
+        throw error;
+      }
+      const verified = await readVerifiedSession();
+      if (verified.status !== "ready" || verified.user.id !== recoveryUser.id) {
+        const error = new Error("Updated password session is unavailable.");
+        error.code = verified.status === "paused" ? "network_error" : "session_not_found";
+        throw error;
+      }
+      recoverySessionActive = false;
+      return setState({
+        status: "authenticated",
+        reason: "password-updated",
+        user: verified.user
+      });
+    } catch (error) {
+      const mapped = mapAuthError("update-password", error);
+      const linkInvalid = mapped.message === "重置链接已失效，请重新申请。";
+      if (linkInvalid) recoverySessionActive = false;
+      return setState({
+        status: linkInvalid ? "recovery-invalid" : "password-recovery",
+        reason: linkInvalid ? "recovery-link-invalid" : "password-update-failed",
+        ...(recoveryUser ? { user: recoveryUser } : {}),
+        ...mapped
+      });
+    }
+  }
+
   async function signOut() {
     try {
       const activeClient = await ensureClient({ markRequested: true });
@@ -565,6 +751,10 @@
     resendSignUpConfirmation,
     verifySignUpOtp,
     signIn,
+    beginPasswordResetRequest,
+    cancelPasswordResetRequest,
+    requestPasswordReset,
+    updatePassword,
     signOut,
     getSessionContext,
     getAccessToken

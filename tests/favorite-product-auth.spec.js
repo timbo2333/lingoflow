@@ -18,8 +18,16 @@ async function installProductAuthHarness(page) {
     const SESSION_KEY = "__lingoflowTestAuthSession";
     const PUSH_COUNT_KEY = "__lingoflowTestPushCount";
     const callbacks = new Set();
-    window.__productAuthCalls = { signUp: [], resend: [], verifyOtp: [], signIn: [] };
+    window.__productAuthCalls = {
+      signUp: [],
+      resend: [],
+      verifyOtp: [],
+      signIn: [],
+      resetPassword: [],
+      updateUser: []
+    };
     window.__productAuthStates = [];
+    const passwords = new Map();
     window.addEventListener("lingoflow:auth-state", event => {
       window.__productAuthStates.push({
         status: event.detail?.status,
@@ -34,6 +42,16 @@ async function installProductAuthHarness(page) {
       for (const callback of callbacks) callback(event, session);
     };
     window.__productAuthEmit = notify;
+    window.__productAuthBeginRecovery = email => {
+      const ownerId = email.startsWith("beta-") ? ownerB : ownerA;
+      const session = {
+        access_token: `test-access-token:${ownerId}`,
+        user: { id: ownerId, email }
+      };
+      localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+      notify("SIGNED_IN", session);
+      notify("PASSWORD_RECOVERY", session);
+    };
     const auth = {
       async getSession() {
         return { data: { session: readSession() }, error: null };
@@ -105,9 +123,54 @@ async function installProductAuthHarness(page) {
         notify("SIGNED_IN", session);
         return { data: { user: session.user, session }, error: null };
       },
-      async signInWithPassword({ email }) {
+      async resetPasswordForEmail(email, options) {
+        window.__productAuthCalls.resetPassword.push({
+          email,
+          redirectOrigin: new URL(options.redirectTo).origin,
+          redirectPath: new URL(options.redirectTo).pathname
+        });
+        if (email.startsWith("reset-rate-")) {
+          return {
+            data: null,
+            error: {
+              code: "over_email_send_rate_limit",
+              status: 429,
+              message: "AuthApiError: recovery email rate limit exceeded"
+            }
+          };
+        }
+        if (email.startsWith("reset-network-")) {
+          throw new TypeError("Failed to fetch password recovery endpoint");
+        }
+        return { data: {}, error: null };
+      },
+      async updateUser(attributes) {
+        window.__productAuthCalls.updateUser.push({ fields: Object.keys(attributes).sort() });
+        const session = readSession();
+        if (!session) {
+          return {
+            data: { user: null },
+            error: { code: "session_not_found", status: 401, message: "JWT expired" }
+          };
+        }
+        if (attributes.password === "weak-password") {
+          return {
+            data: { user: null },
+            error: {
+              code: "weak_password",
+              reasons: ["characters"],
+              message: "AuthApiError: Password should be stronger"
+            }
+          };
+        }
+        passwords.set(session.user.email, attributes.password);
+        notify("USER_UPDATED", session);
+        return { data: { user: session.user }, error: null };
+      },
+      async signInWithPassword({ email, password }) {
         window.__productAuthCalls.signIn.push({ email });
-        if (email.startsWith("failure-")) {
+        const expectedPassword = passwords.get(email) || "test-password";
+        if (email.startsWith("failure-") || password !== expectedPassword) {
           return {
             data: { user: null, session: null },
             error: {
@@ -211,11 +274,11 @@ async function openAccountModal(page) {
   }
 }
 
-async function signIn(page, email = "alpha@example.test") {
+async function signIn(page, email = "alpha@example.test", password = "test-password") {
   await openAccountModal(page);
   await page.click("#authSignInMode");
   await page.fill("#authEmail", email);
-  await page.fill("#authPassword", "test-password");
+  await page.fill("#authPassword", password);
   await page.click("#authSubmitButton");
   await waitForAuth(page, "authenticated");
 }
@@ -256,6 +319,7 @@ test("未登录保持 local-only，session=null 的注册成功进入 OTP 状态
   expect(result.binding).toEqual({ status: "missing", binding: null });
   expect(result.pushes).toBe(0);
   await expect(page.locator("#authOtpPanel")).toBeVisible();
+  await expect(page.locator("#authForgotPasswordButton")).toBeHidden();
   await expect(page.locator("#authOtpTitle")).toHaveText("验证码已发送");
   await expect(page.locator("#authOtpEmail")).toHaveText("alpha@example.test");
   await expect(page.locator("#authOtpPanel")).toContainText("发送了邮箱验证码");
@@ -281,6 +345,7 @@ test("登录与注册密码框支持键盘显示隐藏且不改变 value", async
 
   const confirmPasswordGroup = page.locator("#authConfirmPasswordGroup");
   await expect(confirmPasswordGroup).toBeHidden();
+  await expect(page.locator("#authForgotPasswordButton")).toBeVisible();
 
   const password = page.locator("#authPassword");
   const passwordToggle = page.locator("#authPasswordVisibility");
@@ -297,6 +362,7 @@ test("登录与注册密码框支持键盘显示隐藏且不改变 value", async
   await expect(password).toHaveValue("keyboard-secret");
 
   await page.click("#authSignUpMode");
+  await expect(page.locator("#authForgotPasswordButton")).toBeHidden();
   const confirmation = page.locator("#authConfirmPassword");
   const confirmationToggle = page.locator("#authConfirmPasswordVisibility");
   await expect(confirmation).toBeVisible();
@@ -309,10 +375,87 @@ test("登录与注册密码框支持键盘显示隐藏且不改变 value", async
 
   await page.click("#authSignInMode");
   await expect(confirmPasswordGroup).toBeHidden();
+  await expect(page.locator("#authForgotPasswordButton")).toBeVisible();
   await page.click("#authSignUpMode");
   await expect(confirmPasswordGroup).toBeVisible();
   await page.click("#authSignInMode");
   await expect(confirmPasswordGroup).toBeHidden();
+});
+
+test("忘记密码入口仅在登录显示，邮箱校验通过后发送正确 recovery redirect", async ({ page }) => {
+  await page.goto("/");
+  await openAccountModal(page);
+  await expect(page.locator("#authForgotPasswordButton")).toBeVisible();
+  await page.click("#authForgotPasswordButton");
+
+  await expect(page.locator("#authResetRequestPanel")).toBeVisible();
+  await expect(page.locator("#authModeTabs")).toBeHidden();
+  await page.fill("#authResetEmail", "invalid-email");
+  await page.click("#authResetRequestButton");
+  await expect(page.locator("#authFeedback")).toHaveText("请输入有效的邮箱地址");
+  expect(await page.evaluate(() => window.__productAuthCalls.resetPassword)).toEqual([]);
+
+  await page.fill("#authResetEmail", "reset-user@example.test");
+  await page.press("#authResetEmail", "Enter");
+  await expect.poll(() => page.evaluate(() => (
+    window.LingoFlowSupabaseAuth.getState().status
+  ))).toBe("reset-email-sent");
+  await expect(page.locator("#authFeedback"))
+    .toHaveText("密码重置邮件已发送，请检查邮箱");
+  await expect(page.locator("#authResetRequestTitle")).toHaveText("邮件已发送");
+
+  const pageUrl = new URL(page.url());
+  expect(await page.evaluate(() => window.__productAuthCalls.resetPassword)).toEqual([{
+    email: "reset-user@example.test",
+    redirectOrigin: pageUrl.origin,
+    redirectPath: "/"
+  }]);
+
+  await page.click("#authResetReturnToSignInButton");
+  await expect(page.locator("#authForm")).toBeVisible();
+  await expect(page.locator("#authForgotPasswordButton")).toBeVisible();
+  await expect(page.locator("#authEmail")).toHaveValue("reset-user@example.test");
+});
+
+test("密码重置邮件限流与网络错误只显示安全中文文案", async ({ page }) => {
+  await page.goto("/");
+  await openAccountModal(page);
+  await page.click("#authForgotPasswordButton");
+  await page.fill("#authResetEmail", "reset-rate-user@example.test");
+  await page.click("#authResetRequestButton");
+
+  await expect.poll(() => page.evaluate(() => {
+    const state = window.LingoFlowSupabaseAuth.getState();
+    return { status: state.status, reason: state.reason, errorCode: state.errorCode };
+  })).toEqual({
+    status: "reset-request",
+    reason: "password-reset-request-failed",
+    errorCode: "over_email_send_rate_limit"
+  });
+  await expect(page.locator("#authFeedback")).toHaveText("操作过于频繁，请稍后再试。");
+
+  await page.fill("#authResetEmail", "reset-network-user@example.test");
+  await page.click("#authResetRequestButton");
+  await expect.poll(() => page.evaluate(() => (
+    window.LingoFlowSupabaseAuth.getState().errorCode
+  ))).toBe("network_error");
+  await expect(page.locator("#authFeedback")).toHaveText("网络连接异常，请稍后重试。");
+  await expect(page.locator("#authFeedback")).not.toContainText("AuthApiError");
+  await expect(page.locator("#authFeedback")).not.toContainText("recovery");
+});
+
+test("失效恢复链接进入重新申请状态且不显示技术错误", async ({ page }) => {
+  await page.goto("/#error=access_denied&error_code=otp_expired");
+  await expect.poll(() => page.evaluate(() => (
+    window.LingoFlowSupabaseAuth.getState().status
+  ))).toBe("recovery-invalid");
+
+  await expect(page.locator("#authModal")).toHaveClass(/show/);
+  await expect(page.locator("#authResetRequestPanel")).toBeVisible();
+  await expect(page.locator("#authResetRequestTitle")).toHaveText("重置链接已失效");
+  await expect(page.locator("#authFeedback")).toHaveText("重置链接已失效，请重新申请。");
+  await expect(page.locator("#authFeedback")).not.toContainText("otp_expired");
+  await expect(page.locator("#authFeedback")).not.toContainText("token");
 });
 
 test("注册前验证明确提示且不会调用 Supabase signUp", async ({ page }) => {
@@ -524,6 +667,99 @@ test("服务端 weak password 与网络异常映射为安全用户文案", async
   await expect(page.locator("#authFeedback"))
     .toHaveText("网络连接异常，请稍后重试。");
   await expect(page.locator("#authFeedback")).not.toContainText("Failed to fetch");
+});
+
+test("recovery session 更新密码后保持 owner、workspace 与本地数据并可重新登录", async ({ page }) => {
+  await page.goto("/");
+  await signIn(page);
+  await waitForSync(page, "ready");
+  const favorite = await createLocalFavorite(page, "password-recovery-data");
+  await expect.poll(() => page.evaluate(() => (
+    Number(localStorage.getItem("__lingoflowTestPushCount") || 0)
+  ))).toBe(1);
+  await page.evaluate(id => {
+    window.LingoFlowFavoriteLearningRepository.setMastered(id, true);
+  }, favorite.id);
+  await expect.poll(() => page.evaluate(id => (
+    window.LingoFlowFavoriteLearningRepository.get(id)?.mastered
+  ), favorite.id)).toBe(true);
+
+  const before = await page.evaluate(async id => ({
+    favorite: window.LingoFlowFavoriteRepository.getById(id),
+    learning: window.LingoFlowFavoriteLearningRepository.get(id),
+    binding: await window.LingoFlowSyncStateRepository.getWorkspaceBinding(),
+    pushes: Number(localStorage.getItem("__lingoflowTestPushCount") || 0)
+  }), favorite.id);
+  await page.click("#authModalClose");
+  await page.evaluate(() => window.__productAuthBeginRecovery("alpha@example.test"));
+  await waitForAuth(page, "password-recovery");
+
+  await expect(page.locator("#authModal")).toHaveClass(/show/);
+  await expect(page.locator("#authPasswordRecoveryPanel")).toBeVisible();
+  await expect(page.locator("#authPasswordRecoveryPanel")).toContainText("设置新密码");
+  const newPassword = page.locator("#authNewPassword");
+  await newPassword.fill("new-test-password");
+  await page.click("#authNewPasswordVisibility");
+  await expect(newPassword).toHaveAttribute("type", "text");
+  await expect(newPassword).toHaveValue("new-test-password");
+  await page.click("#authNewPasswordVisibility");
+  const newPasswordConfirmation = page.locator("#authNewPasswordConfirmation");
+  await newPasswordConfirmation.fill("different-password");
+  await page.click("#authNewPasswordConfirmationVisibility");
+  await expect(newPasswordConfirmation).toHaveAttribute("type", "text");
+  await expect(newPasswordConfirmation).toHaveValue("different-password");
+  await page.click("#authNewPasswordConfirmationVisibility");
+  await page.click("#authUpdatePasswordButton");
+  await expect(page.locator("#authFeedback")).toHaveText("两次输入的密码不一致");
+  expect(await page.evaluate(() => window.__productAuthCalls.updateUser)).toEqual([]);
+
+  await page.fill("#authNewPassword", "weak-password");
+  await page.fill("#authNewPasswordConfirmation", "weak-password");
+  await page.click("#authUpdatePasswordButton");
+  await expect.poll(() => page.evaluate(() => (
+    window.LingoFlowSupabaseAuth.getState().reason
+  ))).toBe("password-update-failed");
+  await expect(page.locator("#authFeedback"))
+    .toHaveText("密码需要包含更多种类的字符（如字母、数字或符号）。");
+  await expect(page.locator("#authFeedback")).not.toContainText("AuthApiError");
+
+  await page.fill("#authNewPassword", "new-test-password");
+  await page.fill("#authNewPasswordConfirmation", "new-test-password");
+  await page.press("#authNewPasswordConfirmation", "Enter");
+  await waitForAuth(page, "authenticated");
+  await waitForSync(page, "ready");
+  await expect(page.locator("#authFeedback")).toHaveText("密码已更新");
+  await expect(page.locator("#authPasswordUpdatedNotice")).toBeVisible();
+  expect(await page.evaluate(() => window.__productAuthCalls.updateUser)).toEqual([
+    { fields: ["password"] },
+    { fields: ["password"] }
+  ]);
+
+  const after = await page.evaluate(async ({ id, password }) => ({
+    favorite: window.LingoFlowFavoriteRepository.getById(id),
+    learning: window.LingoFlowFavoriteLearningRepository.get(id),
+    binding: await window.LingoFlowSyncStateRepository.getWorkspaceBinding(),
+    pushes: Number(localStorage.getItem("__lingoflowTestPushCount") || 0),
+    passwordStored: Object.values(localStorage).some(value => value.includes(password))
+  }), { id: favorite.id, password: "new-test-password" });
+  expect(after.favorite).toEqual(before.favorite);
+  expect(after.learning).toEqual(before.learning);
+  expect(after.binding).toEqual(before.binding);
+  expect(after.binding.binding.ownerId).toBe(OWNER_A);
+  expect(after.pushes).toBe(before.pushes);
+  expect(after.passwordStored).toBe(false);
+
+  await page.click("#authContinueAfterPasswordUpdate");
+  await expect(page.locator("#authModal")).not.toHaveClass(/show/);
+  await openAccountModal(page);
+  await page.click("#authSignOutButton");
+  await waitForAuth(page, "signed-out");
+  await signIn(page, "alpha@example.test", "new-test-password");
+  await waitForSync(page, "ready");
+  const reloginBinding = await page.evaluate(async () => (
+    await window.LingoFlowSyncStateRepository.getWorkspaceBinding()
+  ));
+  expect(reloginBinding).toEqual(before.binding);
 });
 
 test("已有匿名 Favorite 登录后必须明确确认；暂不关联不会上传", async ({ page }) => {

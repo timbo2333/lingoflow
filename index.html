@@ -80,6 +80,9 @@
             </div>
           </div>
           <button id="authSubmitButton" type="submit">登录</button>
+          <button id="authForgotPasswordButton" class="authTextButton" type="button">
+            忘记密码？
+          </button>
         </form>
 
         <div id="authOtpPanel" class="authOtpPanel" hidden>
@@ -102,9 +105,63 @@
             <button id="authReturnToSignInButton" class="secondary" type="button">返回登录</button>
           </div>
         </div>
+
+        <div id="authResetRequestPanel" class="authResetPanel" hidden>
+          <div id="authResetRequestTitle" class="authResetTitle">重置密码</div>
+          <div id="authResetRequestMessage" class="authResetMessage">
+            输入注册邮箱，我们会向你发送密码重置邮件。
+          </div>
+          <form id="authResetRequestForm" class="authForm" novalidate>
+            <label class="settingLabel" for="authResetEmail">邮箱</label>
+            <input id="authResetEmail" name="resetEmail" type="email"
+                   autocomplete="email" inputmode="email" required
+                   placeholder="name@example.com">
+            <button id="authResetRequestButton" type="submit">发送密码重置邮件</button>
+          </form>
+          <div class="authButtonRow">
+            <button id="authResetReturnToSignInButton" class="secondary" type="button">
+              返回登录
+            </button>
+          </div>
+        </div>
+
+        <div id="authPasswordRecoveryPanel" class="authResetPanel" hidden>
+          <div class="authResetTitle">设置新密码</div>
+          <div class="authResetMessage">请输入并确认你的新密码。</div>
+          <form id="authPasswordRecoveryForm" class="authForm" novalidate>
+            <label class="settingLabel" for="authNewPassword">新密码</label>
+            <div class="authPasswordField">
+              <input id="authNewPassword" name="newPassword" type="password"
+                     autocomplete="new-password" minlength="6" required
+                     placeholder="至少 6 个字符">
+              <button id="authNewPasswordVisibility" class="authPasswordVisibility" type="button"
+                      aria-controls="authNewPassword" aria-label="显示新密码" aria-pressed="false">
+                <span aria-hidden="true">👁</span>
+              </button>
+            </div>
+            <div class="authFieldHint">密码至少需要 6 个字符。</div>
+            <label class="settingLabel" for="authNewPasswordConfirmation">确认新密码</label>
+            <div class="authPasswordField">
+              <input id="authNewPasswordConfirmation" name="newPasswordConfirmation" type="password"
+                     autocomplete="new-password" minlength="6" required
+                     placeholder="再次输入新密码">
+              <button id="authNewPasswordConfirmationVisibility" class="authPasswordVisibility" type="button"
+                      aria-controls="authNewPasswordConfirmation" aria-label="显示确认新密码"
+                      aria-pressed="false">
+                <span aria-hidden="true">👁</span>
+              </button>
+            </div>
+            <button id="authUpdatePasswordButton" type="submit">更新密码</button>
+          </form>
+        </div>
       </div>
 
       <div id="authSignedInPanel" hidden>
+        <div id="authPasswordUpdatedNotice" class="authPasswordUpdatedNotice" hidden>
+          <div class="authResetTitle">密码已更新</div>
+          <div class="authResetMessage">当前登录状态保持有效，可以继续使用 LingoFlow。</div>
+          <button id="authContinueAfterPasswordUpdate" type="button">继续使用</button>
+        </div>
         <div class="settingItem authAccountSummary">
           <div class="settingLabel">当前账号</div>
           <div id="authUserEmail" class="settingValue">已登录</div>

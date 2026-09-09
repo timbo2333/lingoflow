@@ -8,6 +8,7 @@
   let mode = "sign-in";
   let busy = false;
   let confirmationDismissed = false;
+  let passwordUpdateAcknowledged = false;
   let resendAvailableAt = 0;
   let resendTimer = null;
 
@@ -49,9 +50,19 @@
     if (password) password.autocomplete = signingUp ? "new-password" : "current-password";
     setHidden("authConfirmPasswordGroup", !signingUp);
     setHidden("authPasswordRequirement", !signingUp);
+    setHidden("authForgotPasswordButton", signingUp);
     const submit = element("authSubmitButton");
     if (submit) submit.textContent = signingUp ? "注册" : "登录";
     setFeedback("");
+  }
+
+  function passwordFieldName(inputId) {
+    const names = {
+      authConfirmPassword: "确认密码",
+      authNewPassword: "新密码",
+      authNewPasswordConfirmation: "确认新密码"
+    };
+    return names[inputId] || "密码";
   }
 
   function passwordPolicy() {
@@ -70,9 +81,7 @@
     const showing = input.type === "text";
     input.type = showing ? "password" : "text";
     button.setAttribute("aria-pressed", String(!showing));
-    button.setAttribute("aria-label", showing
-      ? (inputId === "authConfirmPassword" ? "显示确认密码" : "显示密码")
-      : (inputId === "authConfirmPassword" ? "隐藏确认密码" : "隐藏密码"));
+    button.setAttribute("aria-label", `${showing ? "显示" : "隐藏"}${passwordFieldName(inputId)}`);
     const icon = button.querySelector("[aria-hidden='true']");
     if (icon) icon.textContent = showing ? "👁" : "🙈";
   }
@@ -86,9 +95,7 @@
     }
     if (button) {
       button.setAttribute("aria-pressed", "false");
-      button.setAttribute("aria-label", inputId === "authConfirmPassword"
-        ? "显示确认密码"
-        : "显示密码");
+      button.setAttribute("aria-label", `显示${passwordFieldName(inputId)}`);
       const icon = button.querySelector("[aria-hidden='true']");
       if (icon) icon.textContent = "👁";
     }
@@ -112,7 +119,41 @@
     return "";
   }
 
+  function resetEmailValidationMessage(emailBox) {
+    const email = String(emailBox?.value || "").trim();
+    const parts = email.split("@");
+    if (!email || emailBox?.validity?.typeMismatch || parts.length !== 2 ||
+        !parts[0] || !parts[1] || /\s/.test(email)) {
+      return "请输入有效的邮箱地址";
+    }
+    return "";
+  }
+
+  function newPasswordValidationMessage(password, confirmation) {
+    if (!password) return "请输入新密码。";
+    const policy = passwordPolicy();
+    if (password.length < policy.minimumLength) return policy.message;
+    if (!confirmation) return "请再次输入新密码。";
+    if (password !== confirmation) return "两次输入的密码不一致";
+    return "";
+  }
+
   function authMessage(authState) {
+    if (authState.status === "reset-requesting") return "正在发送密码重置邮件…";
+    if (authState.status === "reset-email-sent") return "密码重置邮件已发送，请检查邮箱";
+    if (authState.status === "reset-request" && authState.reason === "password-reset-request-failed") {
+      return authState.message || "暂时无法重置密码，请稍后再试。";
+    }
+    if (authState.status === "recovery-invalid") {
+      return "重置链接已失效，请重新申请。";
+    }
+    if (authState.status === "password-recovery") {
+      if (authState.reason === "updating-password") return "正在更新密码…";
+      if (authState.reason === "password-update-failed") {
+        return authState.message || "暂时无法重置密码，请稍后再试。";
+      }
+      return "请设置新密码。";
+    }
     if (authState.status === "otp-required") {
       if (authState.reason === "otp-resent") return "验证码已重新发送";
       if (authState.reason === "resending-otp") return "正在重新发送验证码…";
@@ -131,6 +172,9 @@
     if (authState.status === "authenticated" && authState.reason === "email-verified") {
       return "邮箱验证成功";
     }
+    if (authState.status === "authenticated" && authState.reason === "password-updated") {
+      return "密码已更新";
+    }
     if (authState.status === "paused") return "账号服务暂时不可用，本地收藏仍可正常使用。";
     if (authState.status === "failed") {
       return authState.message || "账号操作暂时无法完成，请稍后重试。";
@@ -141,10 +185,22 @@
 
   function authFeedbackKind(authState) {
     if (authState.status === "failed" ||
-        ["resend-failed", "otp-verification-failed"].includes(authState.reason)) {
+        [
+          "resend-failed",
+          "otp-verification-failed",
+          "password-reset-request-failed",
+          "password-update-failed",
+          "recovery-link-invalid"
+        ].includes(authState.reason)) {
       return "error";
     }
-    if (["otp-sent", "otp-resent", "email-verified"].includes(authState.reason)) {
+    if ([
+      "otp-sent",
+      "otp-resent",
+      "email-verified",
+      "password-reset-email-sent",
+      "password-updated"
+    ].includes(authState.reason)) {
       return "success";
     }
     return "info";
@@ -170,7 +226,7 @@
   }
 
   function syncPresentation(syncState, authState) {
-    const authenticated = authState.status === "authenticated";
+    const authenticated = ["authenticated", "password-recovery"].includes(authState.status);
     if (!authenticated) {
       if (["paused", "failed"].includes(authState.status)) {
         return { state: "unavailable", message: "同步暂时不可用" };
@@ -217,12 +273,48 @@
     const authenticated = authState.status === "authenticated";
     const otpActive = ["otp-required", "verifying"].includes(authState.status) &&
       !confirmationDismissed;
+    const recoveryActive = authState.status === "password-recovery";
+    const recoveryInvalid = authState.status === "recovery-invalid";
+    const resetRequestActive = recoveryInvalid || [
+      "reset-request",
+      "reset-requesting",
+      "reset-email-sent"
+    ].includes(authState.status);
+    const specialFlowActive = otpActive || recoveryActive || resetRequestActive;
+    if (recoveryActive) passwordUpdateAcknowledged = false;
     const presentation = syncPresentation(syncState, authState);
     setHidden("authSignedOutPanel", authenticated);
     setHidden("authSignedInPanel", !authenticated);
-    setHidden("authModeTabs", otpActive);
-    setHidden("authForm", otpActive);
+    setHidden("authModeTabs", specialFlowActive);
+    setHidden("authForm", specialFlowActive);
     setHidden("authOtpPanel", !otpActive);
+    setHidden("authResetRequestPanel", !resetRequestActive);
+    setHidden("authPasswordRecoveryPanel", !recoveryActive);
+    setHidden(
+      "authPasswordUpdatedNotice",
+      authState.reason !== "password-updated" || passwordUpdateAcknowledged
+    );
+
+    if (recoveryActive || recoveryInvalid) {
+      element("authModal")?.classList.add("show");
+    }
+
+    const resetEmail = element("authResetEmail");
+    if (resetEmail && !resetEmail.value && authState.email) resetEmail.value = authState.email;
+    const resetTitle = element("authResetRequestTitle");
+    const resetMessage = element("authResetRequestMessage");
+    if (resetTitle) {
+      resetTitle.textContent = recoveryInvalid
+        ? "重置链接已失效"
+        : authState.status === "reset-email-sent" ? "邮件已发送" : "重置密码";
+    }
+    if (resetMessage) {
+      resetMessage.textContent = recoveryInvalid
+        ? "请重新申请密码重置邮件。"
+        : authState.status === "reset-email-sent"
+          ? "密码重置邮件已发送，请检查邮箱。"
+          : "输入注册邮箱，我们会向你发送密码重置邮件。";
+    }
 
     const otpEmail = element("authOtpEmail");
     if (otpEmail) {
@@ -237,7 +329,9 @@
 
     const accountButton = element("accountButton");
     if (accountButton) {
-      accountButton.textContent = authenticated ? "👤 已登录" : "👤 登录 / 注册";
+      accountButton.textContent = recoveryActive
+        ? "👤 设置新密码"
+        : authenticated ? "👤 已登录" : "👤 登录 / 注册";
     }
     const email = element("authUserEmail");
     if (email) email.textContent = authState.user?.email || "已登录";
@@ -282,6 +376,22 @@
     if (verifyOtpButton) {
       verifyOtpButton.disabled = busy || authState.status === "verifying";
       verifyOtpButton.textContent = authState.status === "verifying" ? "正在验证…" : "确认注册";
+    }
+    const resetRequestButton = element("authResetRequestButton");
+    if (resetRequestButton) {
+      resetRequestButton.disabled = busy || authState.status === "reset-requesting";
+      resetRequestButton.textContent = authState.status === "reset-requesting"
+        ? "正在发送…"
+        : authState.status === "reset-email-sent"
+          ? "重新发送密码重置邮件"
+          : "发送密码重置邮件";
+    }
+    const updatePasswordButton = element("authUpdatePasswordButton");
+    if (updatePasswordButton) {
+      updatePasswordButton.disabled = busy || authState.reason === "updating-password";
+      updatePasswordButton.textContent = authState.reason === "updating-password"
+        ? "正在更新…"
+        : "更新密码";
     }
     updateResendButton();
 
@@ -387,6 +497,79 @@
     return result;
   }
 
+  function beginPasswordResetRequest() {
+    if (busy || !auth) return;
+    const currentEmail = element("authEmail")?.value || "";
+    const resetEmail = element("authResetEmail");
+    if (resetEmail) resetEmail.value = currentEmail;
+    auth.beginPasswordResetRequest({ email: currentEmail });
+    setFeedback("");
+    render();
+    resetEmail?.focus();
+  }
+
+  async function submitPasswordResetRequest(event) {
+    event.preventDefault();
+    if (busy || !auth) return;
+    const emailBox = element("authResetEmail");
+    const invalid = resetEmailValidationMessage(emailBox);
+    if (invalid) {
+      setFeedback(invalid, "error");
+      return;
+    }
+    busy = true;
+    setFeedback("正在发送密码重置邮件…", "info");
+    render();
+    await auth.requestPasswordReset({ email: emailBox.value });
+    busy = false;
+    render();
+  }
+
+  function returnFromPasswordResetRequest() {
+    if (busy || !auth) return;
+    const email = element("authResetEmail")?.value || "";
+    const authEmail = element("authEmail");
+    if (authEmail) authEmail.value = email;
+    auth.cancelPasswordResetRequest();
+    setMode("sign-in");
+    setFeedback("");
+    render();
+    element("authPassword")?.focus();
+  }
+
+  async function submitNewPassword(event) {
+    event.preventDefault();
+    if (busy || !auth) return;
+    const password = element("authNewPassword")?.value || "";
+    const confirmation = element("authNewPasswordConfirmation")?.value || "";
+    const invalid = newPasswordValidationMessage(password, confirmation);
+    if (invalid) {
+      setFeedback(invalid, "error");
+      return;
+    }
+    busy = true;
+    setFeedback("正在更新密码…", "info");
+    render();
+    const result = await auth.updatePassword({ password });
+    if (result.status === "authenticated") {
+      clearPasswordInput("authNewPassword", "authNewPasswordVisibility");
+      clearPasswordInput(
+        "authNewPasswordConfirmation",
+        "authNewPasswordConfirmationVisibility"
+      );
+      await sync.bootstrap();
+      setFeedback("密码已更新", "success");
+    }
+    busy = false;
+    render();
+  }
+
+  function continueAfterPasswordUpdate() {
+    passwordUpdateAcknowledged = true;
+    setHidden("authPasswordUpdatedNotice", true);
+    closeModal();
+  }
+
   function returnToSignIn() {
     confirmationDismissed = true;
     setMode("sign-in");
@@ -458,11 +641,28 @@
   element("authConfirmPasswordVisibility")?.addEventListener("click", event => {
     togglePasswordVisibility("authConfirmPassword", event.currentTarget);
   });
+  element("authForgotPasswordButton")?.addEventListener("click", beginPasswordResetRequest);
   element("authForm")?.addEventListener("submit", submitAuth);
   element("authOtpCode")?.addEventListener("beforeinput", preventInvalidOtpInsertion);
   element("authOtpForm")?.addEventListener("submit", submitOtp);
   element("authResendOtpButton")?.addEventListener("click", resendConfirmation);
   element("authReturnToSignInButton")?.addEventListener("click", returnToSignIn);
+  element("authResetRequestForm")?.addEventListener("submit", submitPasswordResetRequest);
+  element("authResetReturnToSignInButton")?.addEventListener(
+    "click",
+    returnFromPasswordResetRequest
+  );
+  element("authNewPasswordVisibility")?.addEventListener("click", event => {
+    togglePasswordVisibility("authNewPassword", event.currentTarget);
+  });
+  element("authNewPasswordConfirmationVisibility")?.addEventListener("click", event => {
+    togglePasswordVisibility("authNewPasswordConfirmation", event.currentTarget);
+  });
+  element("authPasswordRecoveryForm")?.addEventListener("submit", submitNewPassword);
+  element("authContinueAfterPasswordUpdate")?.addEventListener(
+    "click",
+    continueAfterPasswordUpdate
+  );
   element("workspaceActivateButton")?.addEventListener("click", activateWorkspace);
   element("workspaceDeferButton")?.addEventListener("click", deferWorkspace);
   element("authSignOutButton")?.addEventListener("click", signOut);

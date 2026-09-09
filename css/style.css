@@ -938,6 +938,11 @@
     margin-bottom: 14px;
   }
 
+  .authModeTabs[hidden],
+  .authForm[hidden] {
+    display: none;
+  }
+
   .authModeButton.active {
     background: #1d1d1f;
     color: #fff;
@@ -1009,6 +1014,22 @@
     margin-top: 6px;
   }
 
+  .authTextButton {
+    justify-self: end;
+    padding: 3px 0;
+    border: 0;
+    background: transparent;
+    color: #1769aa;
+    font-size: 13px;
+  }
+
+  .authTextButton:hover,
+  .authTextButton:focus-visible {
+    background: transparent;
+    text-decoration: underline;
+    opacity: 1;
+  }
+
   .authAccountSummary {
     margin-bottom: 12px;
   }
@@ -1056,6 +1077,43 @@
   .authOtpForm button[type="submit"],
   .authOtpPanel .authButtonRow {
     margin-top: 13px;
+  }
+
+  .authResetPanel {
+    padding: 15px;
+    border: 1px solid #cfd8e3;
+    border-radius: 11px;
+    background: #f5f8fc;
+  }
+
+  .authResetPanel[hidden],
+  .authPasswordUpdatedNotice[hidden] {
+    display: none;
+  }
+
+  .authResetTitle {
+    color: #263b52;
+    font-size: 17px;
+    font-weight: 750;
+  }
+
+  .authResetMessage {
+    margin: 7px 0 13px;
+    color: #536579;
+    font-size: 14px;
+    line-height: 1.6;
+  }
+
+  .authResetPanel .authButtonRow {
+    margin-top: 13px;
+  }
+
+  .authPasswordUpdatedNotice {
+    margin-bottom: 14px;
+    padding: 14px;
+    border: 1px solid #bcdcc5;
+    border-radius: 11px;
+    background: #f0faf3;
   }
 
   .workspaceActivationPanel,
@@ -1849,6 +1907,28 @@
     border-color: var(--app-border);
     background: #202024;
     color: var(--app-text);
+  }
+
+  body.darkMode .authResetPanel {
+    border-color: #445568;
+    background: #202934;
+  }
+
+  body.darkMode .authResetTitle {
+    color: #d8e6f5;
+  }
+
+  body.darkMode .authResetMessage {
+    color: #b8c7d8;
+  }
+
+  body.darkMode .authPasswordUpdatedNotice {
+    border-color: #356b45;
+    background: #1c3423;
+  }
+
+  body.darkMode .authTextButton {
+    color: #7dbcf0;
   }
 
   body.darkMode .workspaceActivationPanel {
