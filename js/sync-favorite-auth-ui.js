@@ -11,6 +11,7 @@
   let passwordUpdateAcknowledged = false;
   let resendAvailableAt = 0;
   let resendTimer = null;
+  const authBackdropPointerIds = new Set();
 
   function element(id) {
     return document.getElementById(id);
@@ -34,7 +35,27 @@
   }
 
   function closeModal() {
+    authBackdropPointerIds.clear();
     element("authModal")?.classList.remove("show");
+  }
+
+  function handleBackdropPointerDown(event) {
+    const modal = element("authModal");
+    if (event.target === modal) {
+      authBackdropPointerIds.add(event.pointerId);
+    } else {
+      authBackdropPointerIds.delete(event.pointerId);
+    }
+  }
+
+  function handleBackdropPointerUp(event) {
+    const modal = element("authModal");
+    const startedOnBackdrop = authBackdropPointerIds.delete(event.pointerId);
+    if (startedOnBackdrop && event.target === modal) closeModal();
+  }
+
+  function handleBackdropPointerCancel(event) {
+    authBackdropPointerIds.delete(event.pointerId);
   }
 
   function setMode(nextMode) {
@@ -630,9 +651,9 @@
 
   element("accountButton")?.addEventListener("click", openModal);
   element("authModalClose")?.addEventListener("click", closeModal);
-  element("authModal")?.addEventListener("click", event => {
-    if (event.target === element("authModal")) closeModal();
-  });
+  element("authModal")?.addEventListener("pointerdown", handleBackdropPointerDown);
+  element("authModal")?.addEventListener("pointerup", handleBackdropPointerUp);
+  element("authModal")?.addEventListener("pointercancel", handleBackdropPointerCancel);
   element("authSignInMode")?.addEventListener("click", () => setMode("sign-in"));
   element("authSignUpMode")?.addEventListener("click", () => setMode("sign-up"));
   element("authPasswordVisibility")?.addEventListener("click", event => {

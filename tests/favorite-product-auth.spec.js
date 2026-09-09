@@ -297,6 +297,59 @@ test.beforeEach(async ({ page }) => {
   await installProductAuthHarness(page);
 });
 
+test("账号 Modal 仅在 pointer 起止都位于 backdrop 时关闭", async ({ page }) => {
+  await page.goto("/");
+  await waitForAuth(page, "signed-out");
+  await openAccountModal(page);
+  await page.fill("#authEmail", "selection@example.test");
+
+  const inputBox = await page.locator("#authEmail").boundingBox();
+  const modalCardBox = await page.locator("#authModal .modalCard").boundingBox();
+  expect(inputBox).not.toBeNull();
+  expect(modalCardBox).not.toBeNull();
+
+  await page.mouse.move(inputBox.x + inputBox.width / 2, inputBox.y + inputBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(modalCardBox.x - 10, modalCardBox.y + modalCardBox.height / 2);
+  await page.mouse.up();
+
+  await expect(page.locator("#authModal")).toHaveClass(/show/);
+  await expect(page.locator("#authEmail")).toHaveValue("selection@example.test");
+
+  await page.mouse.click(modalCardBox.x - 10, modalCardBox.y + modalCardBox.height / 2);
+  await expect(page.locator("#authModal")).not.toHaveClass(/show/);
+
+  await openAccountModal(page);
+  await page.click("#authModalClose");
+  await expect(page.locator("#authModal")).not.toHaveClass(/show/);
+});
+
+test("共用 Modal backdrop 规则同样忽略从输入框开始的拖动", async ({ page }) => {
+  await page.goto("/");
+  await page.evaluate(() => document.getElementById("favoritesModal").classList.add("show"));
+  await page.fill("#favoriteFilterInput", "preserved filter");
+
+  const inputBox = await page.locator("#favoriteFilterInput").boundingBox();
+  const modalCardBox = await page.locator("#favoritesModal .modalCard").boundingBox();
+  expect(inputBox).not.toBeNull();
+  expect(modalCardBox).not.toBeNull();
+
+  await page.mouse.move(inputBox.x + inputBox.width / 2, inputBox.y + inputBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(modalCardBox.x - 10, modalCardBox.y + modalCardBox.height / 2);
+  await page.mouse.up();
+
+  await expect(page.locator("#favoritesModal")).toHaveClass(/show/);
+  await expect(page.locator("#favoriteFilterInput")).toHaveValue("preserved filter");
+
+  await page.mouse.click(modalCardBox.x - 10, modalCardBox.y + modalCardBox.height / 2);
+  await expect(page.locator("#favoritesModal")).not.toHaveClass(/show/);
+
+  await page.evaluate(() => document.getElementById("favoritesModal").classList.add("show"));
+  await page.keyboard.press("Escape");
+  await expect(page.locator("#favoritesModal")).not.toHaveClass(/show/);
+});
+
 test("未登录保持 local-only，session=null 的注册成功进入 OTP 状态且不绑定 workspace", async ({ page }) => {
   await page.goto("/");
   await waitForAuth(page, "signed-out");

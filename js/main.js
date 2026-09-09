@@ -4486,7 +4486,10 @@ document.getElementById("articleFindInput").addEventListener("keydown", event =>
    模态框与设置
    ========================= */
 
+const modalBackdropPointerIds = new Map();
+
 function closeModal(id) {
+  modalBackdropPointerIds.delete(id);
   if (id === "myArticlesModal") {
     closeMyArticlesModal();
     return;
@@ -4494,8 +4497,29 @@ function closeModal(id) {
   document.getElementById(id).classList.remove("show");
 }
 
-function modalBackdropClose(event, id) {
-  if (event.target.id === id) closeModal(id);
+function modalBackdropPointerDown(event, id) {
+  const modal = document.getElementById(id);
+  const pointers = modalBackdropPointerIds.get(id);
+  if (event.target !== modal) {
+    pointers?.delete(event.pointerId);
+    if (pointers && pointers.size === 0) modalBackdropPointerIds.delete(id);
+    return;
+  }
+  if (!pointers) modalBackdropPointerIds.set(id, new Set());
+  modalBackdropPointerIds.get(id).add(event.pointerId);
+}
+
+function modalBackdropPointerUp(event, id) {
+  const pointers = modalBackdropPointerIds.get(id);
+  const startedOnBackdrop = pointers?.delete(event.pointerId) || false;
+  if (pointers && pointers.size === 0) modalBackdropPointerIds.delete(id);
+  if (startedOnBackdrop && event.target === document.getElementById(id)) closeModal(id);
+}
+
+function modalBackdropPointerCancel(event, id) {
+  const pointers = modalBackdropPointerIds.get(id);
+  pointers?.delete(event.pointerId);
+  if (pointers && pointers.size === 0) modalBackdropPointerIds.delete(id);
 }
 
 function formatBytes(bytes) {

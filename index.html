@@ -475,7 +475,9 @@ I felt nervous when I asked my friends for advice, but their suggestions helped 
   <!-- 我的文章 -->
   <div id="myArticlesModal" class="modalOverlay" role="dialog" aria-modal="true"
        aria-labelledby="myArticlesTitle"
-       onclick="modalBackdropClose(event, 'myArticlesModal')">
+       onpointerdown="modalBackdropPointerDown(event, 'myArticlesModal')"
+       onpointerup="modalBackdropPointerUp(event, 'myArticlesModal')"
+       onpointercancel="modalBackdropPointerCancel(event, 'myArticlesModal')">
     <div class="modalCard myArticlesModalCard">
       <div class="modalHeader">
         <div>
@@ -540,7 +542,10 @@ I felt nervous when I asked my friends for advice, but their suggestions helped 
   </div>
 
   <!-- 查询记录 -->
-  <div id="vocabModal" class="modalOverlay" onclick="modalBackdropClose(event, 'vocabModal')">
+  <div id="vocabModal" class="modalOverlay"
+       onpointerdown="modalBackdropPointerDown(event, 'vocabModal')"
+       onpointerup="modalBackdropPointerUp(event, 'vocabModal')"
+       onpointercancel="modalBackdropPointerCancel(event, 'vocabModal')">
     <div class="modalCard">
       <div class="modalHeader">
         <div>
@@ -570,7 +575,10 @@ I felt nervous when I asked my friends for advice, but their suggestions helped 
   </div>
 
   <!-- 我的收藏 -->
-  <div id="favoritesModal" class="modalOverlay" onclick="modalBackdropClose(event, 'favoritesModal')">
+  <div id="favoritesModal" class="modalOverlay"
+       onpointerdown="modalBackdropPointerDown(event, 'favoritesModal')"
+       onpointerup="modalBackdropPointerUp(event, 'favoritesModal')"
+       onpointercancel="modalBackdropPointerCancel(event, 'favoritesModal')">
     <div class="modalCard favoritesModalCard">
       <div class="modalHeader">
         <div>
@@ -604,7 +612,10 @@ I felt nervous when I asked my friends for advice, but their suggestions helped 
   </div>
 
   <!-- 设置 -->
-  <div id="settingsModal" class="modalOverlay" onclick="modalBackdropClose(event, 'settingsModal')">
+  <div id="settingsModal" class="modalOverlay"
+       onpointerdown="modalBackdropPointerDown(event, 'settingsModal')"
+       onpointerup="modalBackdropPointerUp(event, 'settingsModal')"
+       onpointercancel="modalBackdropPointerCancel(event, 'settingsModal')">
     <div class="modalCard">
       <div class="modalHeader">
         <div>
@@ -800,7 +811,10 @@ I felt nervous when I asked my friends for advice, but their suggestions helped 
   </div>
 
   <!-- 阅读显示 -->
-  <div id="readingSettingsModal" class="modalOverlay" onclick="modalBackdropClose(event, 'readingSettingsModal')">
+  <div id="readingSettingsModal" class="modalOverlay"
+       onpointerdown="modalBackdropPointerDown(event, 'readingSettingsModal')"
+       onpointerup="modalBackdropPointerUp(event, 'readingSettingsModal')"
+       onpointercancel="modalBackdropPointerCancel(event, 'readingSettingsModal')">
     <div class="modalCard smallModalCard">
       <div class="modalHeader">
         <div>
@@ -838,7 +852,10 @@ I felt nervous when I asked my friends for advice, but their suggestions helped 
   </div>
 
   <!-- 帮助中心 -->
-  <div id="helpModal" class="modalOverlay" onclick="modalBackdropClose(event, 'helpModal')">
+  <div id="helpModal" class="modalOverlay"
+       onpointerdown="modalBackdropPointerDown(event, 'helpModal')"
+       onpointerup="modalBackdropPointerUp(event, 'helpModal')"
+       onpointercancel="modalBackdropPointerCancel(event, 'helpModal')">
     <div class="modalCard">
       <div class="modalHeader">
         <div>
@@ -868,7 +885,10 @@ I felt nervous when I asked my friends for advice, but their suggestions helped 
   </div>
 
   <!-- 更新日志 -->
-  <div id="changelogModal" class="modalOverlay" onclick="modalBackdropClose(event, 'changelogModal')">
+  <div id="changelogModal" class="modalOverlay"
+       onpointerdown="modalBackdropPointerDown(event, 'changelogModal')"
+       onpointerup="modalBackdropPointerUp(event, 'changelogModal')"
+       onpointercancel="modalBackdropPointerCancel(event, 'changelogModal')">
     <div class="modalCard changelogCard">
       <div class="modalHeader">
         <div>
