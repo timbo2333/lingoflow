@@ -382,6 +382,12 @@
         message: weakPasswordMessage(error)
       };
     }
+    if (operation === "update-password" && errorCode === "same_password") {
+      return {
+        errorCode,
+        message: "新密码不能与原密码相同，请设置一个不同的密码。"
+      };
+    }
     if (["network_error", "network_request_failed", "fetch_failed"].includes(errorCode)) {
       return {
         errorCode,

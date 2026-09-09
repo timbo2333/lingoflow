@@ -163,6 +163,15 @@ async function installProductAuthHarness(page) {
             }
           };
         }
+        if (attributes.password === "same-password") {
+          return {
+            data: { user: null },
+            error: {
+              code: "same_password",
+              message: "AuthApiError: New password should be different from the old password."
+            }
+          };
+        }
         passwords.set(session.user.email, attributes.password);
         notify("USER_UPDATED", session);
         return { data: { user: session.user }, error: null };
@@ -720,6 +729,31 @@ test("服务端 weak password 与网络异常映射为安全用户文案", async
   await expect(page.locator("#authFeedback"))
     .toHaveText("网络连接异常，请稍后重试。");
   await expect(page.locator("#authFeedback")).not.toContainText("Failed to fetch");
+});
+
+test("same_password 显示明确提示并保留新密码输入", async ({ page }) => {
+  await page.goto("/");
+  await signIn(page);
+  await page.click("#authModalClose");
+  await page.evaluate(() => window.__productAuthBeginRecovery("alpha@example.test"));
+  await waitForAuth(page, "password-recovery");
+
+  await page.fill("#authNewPassword", "same-password");
+  await page.fill("#authNewPasswordConfirmation", "same-password");
+  await page.click("#authUpdatePasswordButton");
+
+  await expect.poll(() => page.evaluate(() => {
+    const state = window.LingoFlowSupabaseAuth.getState();
+    return { reason: state.reason, errorCode: state.errorCode };
+  })).toEqual({
+    reason: "password-update-failed",
+    errorCode: "same_password"
+  });
+  await expect(page.locator("#authFeedback"))
+    .toHaveText("新密码不能与原密码相同，请设置一个不同的密码。");
+  await expect(page.locator("#authFeedback")).not.toContainText("暂时无法重置密码");
+  await expect(page.locator("#authNewPassword")).toHaveValue("same-password");
+  await expect(page.locator("#authNewPasswordConfirmation")).toHaveValue("same-password");
 });
 
 test("recovery session 更新密码后保持 owner、workspace 与本地数据并可重新登录", async ({ page }) => {
