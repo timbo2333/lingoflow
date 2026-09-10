@@ -9,6 +9,7 @@
   let busy = false;
   let confirmationDismissed = false;
   let passwordUpdateAcknowledged = false;
+  let accountSwitchConfirming = false;
   let resendAvailableAt = 0;
   let resendTimer = null;
   const authBackdropPointerIds = new Set();
@@ -27,6 +28,17 @@
     if (!target) return;
     target.textContent = message || "";
     target.dataset.kind = kind;
+  }
+
+  function maskAccountLabel(value) {
+    const label = String(value || "").trim();
+    const atIndex = label.indexOf("@");
+    if (atIndex <= 0) return label || "当前账号";
+    const local = label.slice(0, atIndex);
+    const domain = label.slice(atIndex);
+    if (local.length <= 2) return `${local.slice(0, 1)}***${domain}`;
+    if (local.length <= 7) return `${local.slice(0, 2)}****${local.slice(-1)}${domain}`;
+    return `${local.slice(0, 4)}****${local.slice(-3)}${domain}`;
   }
 
   function openModal() {
@@ -368,11 +380,26 @@
       syncState.status === "activation-required" ||
       syncState.reason === "activation-deferred"
     );
+    const accountConflict = authenticated &&
+      syncState.reason === "workspace-owner-mismatch";
+    if (!accountConflict) accountSwitchConfirming = false;
     setHidden("workspaceActivationPanel", !canActivate);
-    setHidden(
-      "workspaceBlockedPanel",
-      !(authenticated && syncState.reason === "workspace-owner-mismatch")
-    );
+    setHidden("workspaceBlockedPanel", !accountConflict);
+    setHidden("workspaceConflictDecision", !accountConflict || accountSwitchConfirming);
+    setHidden("workspaceSwitchConfirmation", !accountConflict || !accountSwitchConfirming);
+    setHidden("authSignedInActions", accountConflict);
+    const currentAccountLabel = element("workspaceCurrentAccountLabel");
+    if (currentAccountLabel && accountConflict) {
+      currentAccountLabel.textContent = maskAccountLabel(
+        syncState.currentAccountLabel || authState.user?.email
+      );
+    }
+    const boundAccountLabel = element("workspaceBoundAccountLabel");
+    if (boundAccountLabel && accountConflict) {
+      boundAccountLabel.textContent = syncState.boundAccountLabel
+        ? maskAccountLabel(syncState.boundAccountLabel)
+        : "此前关联的账号（本地未保存邮箱信息）";
+    }
     const activationMessage = element("workspaceActivationMessage");
     if (activationMessage && canActivate) {
       const count = Number(syncState.localFavoriteCount || 0);
@@ -391,6 +418,16 @@
     }
     const signOutButton = element("authSignOutButton");
     if (signOutButton) signOutButton.disabled = busy;
+    for (const id of [
+      "workspaceUseOriginalAccountButton",
+      "workspaceChooseCurrentAccountButton",
+      "workspaceBackupAndSwitchButton",
+      "workspaceDirectSwitchButton",
+      "workspaceCancelSwitchButton"
+    ]) {
+      const button = element(id);
+      if (button) button.disabled = busy;
+    }
     const submit = element("authSubmitButton");
     if (submit) submit.disabled = busy || authState.status === "authenticating";
     const verifyOtpButton = element("authVerifyOtpButton");
@@ -621,6 +658,71 @@
     render();
   }
 
+  async function useOriginalAccount() {
+    if (busy) return;
+    const boundAccountLabel = sync.getState().boundAccountLabel || "";
+    busy = true;
+    setFeedback("正在退出当前账号…", "info");
+    render();
+    const result = await auth.signOut();
+    busy = false;
+    if (result.status === "signed-out") {
+      sync.deactivate("auth-required");
+      accountSwitchConfirming = false;
+      setMode("sign-in");
+      const email = element("authEmail");
+      if (email && boundAccountLabel.includes("@")) email.value = boundAccountLabel;
+      setFeedback("已退出当前账号，本地数据保持不变。请使用原账号登录。", "success");
+      render();
+      element("authPassword")?.focus();
+      return;
+    }
+    render();
+  }
+
+  function beginAccountSwitch() {
+    if (busy) return;
+    accountSwitchConfirming = true;
+    setFeedback("请确认如何处理原账号保存在此设备上的数据。", "info");
+    render();
+  }
+
+  function cancelAccountSwitch() {
+    if (busy) return;
+    accountSwitchConfirming = false;
+    setFeedback("已取消切换，任何本地数据都没有改变。", "info");
+    render();
+  }
+
+  async function switchToCurrentAccount(backupFirst) {
+    if (busy) return;
+    const accountSwitch = window.LingoFlowAccountSwitchService;
+    if (typeof accountSwitch?.switchToCurrentAccount !== "function") {
+      setFeedback("账号切换暂时不可用，请稍后重试。", "error");
+      return;
+    }
+    busy = true;
+    setFeedback(
+      backupFirst ? "正在导出备份并安全切换账号…" : "正在安全切换账号…",
+      "info"
+    );
+    render();
+    const result = await accountSwitch.switchToCurrentAccount({ backupFirst });
+    if (result.status === "switched") {
+      setFeedback("账号切换完成，正在恢复当前账号的云端收藏与学习状态…", "success");
+      window.location.reload();
+      return;
+    }
+    busy = false;
+    setFeedback(
+      result.reason?.startsWith("backup-")
+        ? "备份未能导出，账号尚未切换。请稍后重试。"
+        : "账号切换未完成，原 Workspace 关联已保留。请稍后重试。",
+      "error"
+    );
+    render();
+  }
+
   async function signOut() {
     if (busy) return;
     busy = true;
@@ -686,6 +788,21 @@
   );
   element("workspaceActivateButton")?.addEventListener("click", activateWorkspace);
   element("workspaceDeferButton")?.addEventListener("click", deferWorkspace);
+  element("workspaceUseOriginalAccountButton")?.addEventListener(
+    "click",
+    useOriginalAccount
+  );
+  element("workspaceChooseCurrentAccountButton")?.addEventListener(
+    "click",
+    beginAccountSwitch
+  );
+  element("workspaceCancelSwitchButton")?.addEventListener("click", cancelAccountSwitch);
+  element("workspaceBackupAndSwitchButton")?.addEventListener("click", () => {
+    void switchToCurrentAccount(true);
+  });
+  element("workspaceDirectSwitchButton")?.addEventListener("click", () => {
+    void switchToCurrentAccount(false);
+  });
   element("authSignOutButton")?.addEventListener("click", signOut);
   element("authSyncNowButton")?.addEventListener("click", syncNow);
   window.addEventListener("lingoflow:auth-state", render);

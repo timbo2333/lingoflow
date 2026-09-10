@@ -1137,10 +1137,65 @@
   }
 
   .workspaceBlockedPanel {
-    border: 1px solid #f0b7b7;
-    background: #fff0f0;
-    color: #8b2424;
+    border: 1px solid #e3d18a;
+    background: #fff9df;
+    color: #3f3a24;
     line-height: 1.55;
+  }
+
+  .workspaceConflictTitle {
+    color: #443b13;
+    font-weight: 750;
+  }
+
+  .workspaceBlockedPanel p {
+    margin: 7px 0 0;
+    font-size: 14px;
+  }
+
+  .workspaceAccountList {
+    display: grid;
+    gap: 7px;
+    margin: 12px 0;
+  }
+
+  .workspaceAccountList > div {
+    display: grid;
+    grid-template-columns: minmax(120px, auto) minmax(0, 1fr);
+    gap: 10px;
+  }
+
+  .workspaceAccountList dt {
+    color: #756b3d;
+    font-size: 13px;
+  }
+
+  .workspaceAccountList dd {
+    min-width: 0;
+    margin: 0;
+    font-weight: 650;
+    overflow-wrap: anywhere;
+  }
+
+  .workspaceConflictActions,
+  .workspaceSwitchActions {
+    margin-top: 12px;
+  }
+
+  .workspaceConflictHelp,
+  .workspaceSwitchWarning {
+    margin-top: 10px;
+    color: #756b3d;
+    font-size: 12px;
+  }
+
+  .workspaceSwitchActions {
+    display: grid;
+    gap: 8px;
+  }
+
+  #authSignedInActions[hidden] {
+    display: none;
   }
 
   .authFeedback {
@@ -1165,6 +1220,16 @@
 
     .settingsGrid {
       grid-template-columns: 1fr;
+    }
+
+    .workspaceAccountList > div {
+      grid-template-columns: 1fr;
+      gap: 1px;
+    }
+
+    .workspaceConflictActions button,
+    .workspaceSwitchActions button {
+      width: 100%;
     }
 
     .modalOverlay {
@@ -1937,9 +2002,19 @@
   }
 
   body.darkMode .workspaceBlockedPanel {
-    border-color: #714141;
-    background: #321f1f;
-    color: #ffb4b4;
+    border-color: #665b2b;
+    background: #302b17;
+    color: #eee6bd;
+  }
+
+  body.darkMode .workspaceConflictTitle {
+    color: #fff1a8;
+  }
+
+  body.darkMode .workspaceAccountList dt,
+  body.darkMode .workspaceConflictHelp,
+  body.darkMode .workspaceSwitchWarning {
+    color: #c5b978;
   }
 
   body.darkMode .syncStatusBadge {

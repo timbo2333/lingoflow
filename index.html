@@ -178,10 +178,40 @@
         </div>
 
         <div id="workspaceBlockedPanel" class="workspaceBlockedPanel" hidden>
-          此浏览器已关联另一个账号。为避免数据串号，请退出后使用原账号登录；如需使用其他账号，请改用新的浏览器用户配置。
+          <div id="workspaceConflictDecision">
+            <div class="workspaceConflictTitle">此设备已关联另一个 LingoFlow 账号。</div>
+            <p>为避免两个账号的数据混在一起，LingoFlow 不会自动合并本地数据。</p>
+            <dl class="workspaceAccountList">
+              <div>
+                <dt>当前登录账号</dt>
+                <dd id="workspaceCurrentAccountLabel">当前账号</dd>
+              </div>
+              <div>
+                <dt>原 Workspace 关联账号</dt>
+                <dd id="workspaceBoundAccountLabel">此前关联的账号</dd>
+              </div>
+            </dl>
+            <div class="authButtonRow workspaceConflictActions">
+              <button id="workspaceUseOriginalAccountButton" class="secondary" type="button">使用原账号</button>
+              <button id="workspaceChooseCurrentAccountButton" type="button">切换到当前账号</button>
+            </div>
+            <div class="workspaceConflictHelp">也可以使用新的浏览器用户配置，分别保留两个账号的本地 Workspace。</div>
+          </div>
+
+          <div id="workspaceSwitchConfirmation" hidden>
+            <div class="workspaceConflictTitle">确认切换账号</div>
+            <p>切换账号会清空此设备上原账号的本地用户数据，包括文章、阅读进度、收藏、学习状态、查询记录、阅读偏好和相关同步状态。</p>
+            <p>目前只有收藏和学习状态支持从当前账号云端恢复。文章、阅读进度、查询记录和阅读偏好不会自动从云端恢复。</p>
+            <div class="workspaceSwitchWarning">未备份的本地数据可能无法恢复。</div>
+            <div class="workspaceSwitchActions">
+              <button id="workspaceBackupAndSwitchButton" type="button">导出备份并切换</button>
+              <button id="workspaceDirectSwitchButton" class="dangerButton" type="button">直接清空并切换</button>
+              <button id="workspaceCancelSwitchButton" class="secondary" type="button">取消</button>
+            </div>
+          </div>
         </div>
 
-        <div class="authButtonRow">
+        <div id="authSignedInActions" class="authButtonRow">
           <button id="authSyncNowButton" class="secondary" type="button">立即同步收藏</button>
           <button id="authSignOutButton" class="secondary" type="button">退出登录</button>
         </div>
@@ -1055,6 +1085,7 @@ I felt nervous when I asked my friends for advice, but their suggestions helped 
 <script src="js/sync-favorite-pull-worker.js"></script>
 <script src="js/supabase-sync-service.js"></script>
 <script src="js/sync-favorite-app-coordinator.js"></script>
+<script src="js/account-switch-service.js"></script>
 <script src="js/sync-favorite-auth-ui.js"></script>
 <script src="js/query-history-projector.js"></script>
 <script src="js/query-history-migration-coordinator.js"></script>

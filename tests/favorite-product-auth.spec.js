@@ -17,6 +17,7 @@ async function installProductAuthHarness(page) {
     localStorage.setItem("EnglishReaderDictionaryGuideDeferred", "1");
     const SESSION_KEY = "__lingoflowTestAuthSession";
     const PUSH_COUNT_KEY = "__lingoflowTestPushCount";
+    const REMOTE_CHANGES_KEY = "__lingoflowTestRemoteChanges";
     const callbacks = new Set();
     window.__productAuthCalls = {
       signUp: [],
@@ -27,6 +28,11 @@ async function installProductAuthHarness(page) {
       updateUser: []
     };
     window.__productAuthStates = [];
+    window.__setProductAuthRemoteChanges = (ownerId, changes) => {
+      const stored = JSON.parse(sessionStorage.getItem(REMOTE_CHANGES_KEY) || "{}");
+      stored[ownerId] = structuredClone(changes);
+      sessionStorage.setItem(REMOTE_CHANGES_KEY, JSON.stringify(stored));
+    };
     const passwords = new Map();
     window.addEventListener("lingoflow:auth-state", event => {
       window.__productAuthStates.push({
@@ -238,11 +244,21 @@ async function installProductAuthHarness(page) {
         }), { status: 200, headers: { "Content-Type": "application/json" } });
       }
       if (requestUrl.endsWith("/lingoflow_favorite_sync_pull")) {
-        const count = Number(localStorage.getItem(PUSH_COUNT_KEY) || 0);
+        const authorization = options.headers?.Authorization ||
+          options.headers?.authorization || "";
+        const ownerId = String(authorization).split("test-access-token:")[1] || "";
+        const stored = JSON.parse(sessionStorage.getItem(REMOTE_CHANGES_KEY) || "{}");
+        const changes = Array.isArray(stored[ownerId]) ? stored[ownerId] : [];
+        const cursorNumber = value => Number(String(value || "cursor:0").slice(7)) || 0;
+        const after = body.p_after_cursor === null ? 0 : cursorNumber(body.p_after_cursor);
+        const nextCursor = changes.reduce(
+          (maximum, item) => Math.max(maximum, cursorNumber(item.cursor)),
+          Number(localStorage.getItem(PUSH_COUNT_KEY) || 0)
+        );
         return new Response(JSON.stringify({
           status: "ready",
-          changes: [],
-          nextCursor: `cursor:${count}`
+          changes: changes.filter(item => cursorNumber(item.cursor) > after),
+          nextCursor: `cursor:${nextCursor}`
         }), { status: 200, headers: { "Content-Type": "application/json" } });
       }
       return new Response(JSON.stringify({ message: "not found" }), { status: 404 });
@@ -932,7 +948,7 @@ test("确认关联后保持 stable ID 上传，刷新恢复 session，退出保�
   expect(rebound.binding.bindingId).toBe(first.binding.binding.bindingId);
 });
 
-test("不同账号登录不能接管已有 workspace 或上传其本地 Favorite", async ({ page }) => {
+test("账号冲突显示双方账号，使用原账号会退出当前账号并保留原 Workspace", async ({ page }) => {
   await page.goto("/");
   await signIn(page);
   await waitForSync(page, "ready");
@@ -956,6 +972,332 @@ test("不同账号登录不能接管已有 workspace 或上传其本地 Favorite
   expect(result.binding.binding.ownerId).toBe(OWNER_A);
   expect(result.pushes).toBe(1);
   await expect(page.locator("#workspaceBlockedPanel")).toBeVisible();
-  await expect(page.locator("#workspaceBlockedPanel")).toContainText("使用原账号登录");
+  await expect(page.locator("#workspaceBlockedPanel"))
+    .toContainText("此设备已关联另一个 LingoFlow 账号");
+  await expect(page.locator("#workspaceCurrentAccountLabel"))
+    .toHaveText("beta****ser@example.test");
+  await expect(page.locator("#workspaceBoundAccountLabel"))
+    .toHaveText("al****a@example.test");
+  await expect(page.locator("#workspaceUseOriginalAccountButton")).toBeVisible();
+  await expect(page.locator("#workspaceChooseCurrentAccountButton")).toBeVisible();
   await expect(page.locator("#workspaceBlockedPanel")).toContainText("新的浏览器用户配置");
+
+  await page.click("#workspaceUseOriginalAccountButton");
+  await waitForAuth(page, "signed-out");
+  await waitForSync(page, "inactive", "auth-required");
+  await expect(page.locator("#authEmail")).toHaveValue("alpha@example.test");
+  const preserved = await page.evaluate(async id => ({
+    favorite: window.LingoFlowFavoriteRepository.getById(id),
+    binding: await window.LingoFlowSyncStateRepository.getWorkspaceBinding()
+  }), favorite.id);
+  expect(preserved.favorite.id).toBe(favorite.id);
+  expect(preserved.binding.binding.ownerId).toBe(OWNER_A);
+});
+
+test("切换当前账号必须二次确认，取消不会修改任何本地数据", async ({ page }) => {
+  await page.goto("/");
+  await signIn(page);
+  await waitForSync(page, "ready");
+  const favorite = await createLocalFavorite(page, "cancel-switch");
+  await page.evaluate(async () => {
+    localStorage.setItem("EnglishReaderV052ReadingPrefs", JSON.stringify({ fontSize: 19 }));
+    const db = await window.LingoFlowSyncStateRepository.openDatabase();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction("control", "readwrite");
+      tx.objectStore("control").delete("workspace-account-label");
+      tx.oncomplete = resolve;
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error || new Error("metadata delete aborted"));
+    });
+  });
+
+  await openAccountModal(page);
+  await page.click("#authSignOutButton");
+  await waitForAuth(page, "signed-out");
+  await signIn(page, "beta-user@example.test");
+  await waitForSync(page, "blocked", "workspace-owner-mismatch");
+  await expect(page.locator("#workspaceBoundAccountLabel"))
+    .toHaveText("此前关联的账号（本地未保存邮箱信息）");
+  const before = await page.evaluate(async id => ({
+    favorite: window.LingoFlowFavoriteRepository.getById(id),
+    preferences: localStorage.getItem("EnglishReaderV052ReadingPrefs"),
+    binding: await window.LingoFlowSyncStateRepository.getWorkspaceBinding()
+  }), favorite.id);
+
+  await page.click("#workspaceChooseCurrentAccountButton");
+  await expect(page.locator("#workspaceSwitchConfirmation")).toBeVisible();
+  await expect(page.locator("#workspaceSwitchConfirmation"))
+    .toContainText("目前只有收藏和学习状态支持从当前账号云端恢复");
+  await expect(page.locator("#workspaceSwitchConfirmation"))
+    .toContainText("文章、阅读进度、查询记录和阅读偏好不会自动从云端恢复");
+  await expect(page.locator("#workspaceBackupAndSwitchButton")).toBeVisible();
+  await expect(page.locator("#workspaceDirectSwitchButton")).toBeVisible();
+  await page.click("#workspaceCancelSwitchButton");
+  await expect(page.locator("#workspaceConflictDecision")).toBeVisible();
+
+  const after = await page.evaluate(async id => ({
+    favorite: window.LingoFlowFavoriteRepository.getById(id),
+    preferences: localStorage.getItem("EnglishReaderV052ReadingPrefs"),
+    binding: await window.LingoFlowSyncStateRepository.getWorkspaceBinding()
+  }), favorite.id);
+  expect(after).toEqual(before);
+});
+
+test("直接切换会精确清理 A 用户资产和同步状态，保留词典与 deviceId，并恢复 B 云端数据", async ({ page }) => {
+  await page.goto("/");
+  await signIn(page);
+  await waitForSync(page, "ready");
+  await page.evaluate(() => {
+    localStorage.setItem("__lingoflowTestOffline", "1");
+  });
+  const favorite = await createLocalFavorite(page, "owner-a-pending");
+  await page.evaluate(async id => {
+    await window.LingoFlowFavoriteAppSync.setMastered(id, true);
+    await window.LingoFlowArticleLibrary.createArticle({
+      title: "Account A article",
+      content: "This local article must not cross the account boundary.",
+      sourceType: "paste"
+    });
+    localStorage.setItem("EnglishReaderV051Favorites", JSON.stringify({ legacy: true }));
+    localStorage.setItem("EnglishReaderV05Vocab", JSON.stringify({ legacyWord: 1 }));
+    localStorage.setItem("EnglishReaderV052QueryEvents", JSON.stringify([{ id: "query:a" }]));
+    localStorage.setItem("EnglishReaderV052HistoryBaselines", JSON.stringify({ old: 3 }));
+    localStorage.setItem(
+      "EnglishReaderV052HistoryMigrationState",
+      JSON.stringify({ version: 1, status: "completed" })
+    );
+    localStorage.setItem("EnglishReaderV052ReadingPrefs", JSON.stringify({ fontSize: 21 }));
+    localStorage.setItem("EnglishReaderV052DeviceId", "device:preserved");
+    await setECDICTMeta("account-switch-public-resource", "preserved");
+  }, favorite.id);
+  await expect.poll(() => page.evaluate(async () => {
+    const binding = await window.LingoFlowSyncStateRepository.getWorkspaceBinding();
+    const outbox = await window.LingoFlowSyncStateRepository.listOutbox({
+      ownerId: binding.binding.ownerId
+    });
+    return outbox.items.length;
+  })).toBeGreaterThanOrEqual(2);
+  const pushesBefore = await page.evaluate(() => (
+    Number(localStorage.getItem("__lingoflowTestPushCount") || 0)
+  ));
+
+  await openAccountModal(page);
+  await page.click("#authSignOutButton");
+  await waitForAuth(page, "signed-out");
+  await signIn(page, "beta-user@example.test");
+  await waitForSync(page, "blocked", "workspace-owner-mismatch");
+  await page.evaluate(ownerB => {
+    const favoriteId = "favorite:owner-b-cloud";
+    const timestamp = "2026-09-10T00:00:00.000Z";
+    const remoteFavorite = {
+      id: favoriteId,
+      type: "word",
+      text: "beta-cloud",
+      meaning: "Account B cloud favorite",
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      deletedAt: null
+    };
+    const remoteLearning = {
+      favoriteId,
+      mastered: true,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      deletedAt: null
+    };
+    window.__setProductAuthRemoteChanges(ownerB, [
+      {
+        cursor: "cursor:1",
+        entityType: "favorites",
+        entityId: favoriteId,
+        scope: "record",
+        schemaVersion: "1",
+        revision: "revision:1",
+        operation: "put",
+        payload: remoteFavorite
+      },
+      {
+        cursor: "cursor:2",
+        entityType: "favoriteLearningStates",
+        entityId: favoriteId,
+        scope: "record",
+        schemaVersion: "1",
+        revision: "revision:2",
+        operation: "put",
+        payload: remoteLearning
+      }
+    ]);
+    localStorage.removeItem("__lingoflowTestOffline");
+  }, OWNER_B);
+
+  await page.click("#workspaceChooseCurrentAccountButton");
+  const navigated = page.waitForEvent("framenavigated", frame => frame === page.mainFrame());
+  await page.click("#workspaceDirectSwitchButton");
+  await navigated;
+  await waitForAuth(page, "authenticated");
+  await waitForSync(page, "ready");
+  await expect.poll(() => page.evaluate(() => (
+    window.LingoFlowFavoriteAppSync.getState().syncStatus
+  ))).toBe("synced");
+
+  const result = await page.evaluate(async ({ oldFavoriteId, ownerA, cloudFavoriteId }) => {
+    const binding = await window.LingoFlowSyncStateRepository.getWorkspaceBinding();
+    const metadata = await window.LingoFlowSyncStateRepository.getWorkspaceAccountLabel();
+    const syncDatabase = await window.LingoFlowSyncStateRepository.openDatabase();
+    const syncStores = ["control", "entitySidecars", "outbox", "syncIssues", "inbox"];
+    const syncTransaction = syncDatabase.transaction(syncStores, "readonly");
+    const syncRecords = await Promise.all(syncStores.map(storeName => new Promise(
+      (resolve, reject) => {
+        const request = syncTransaction.objectStore(storeName).getAll();
+        request.onsuccess = () => resolve(request.result || []);
+        request.onerror = () => reject(request.error);
+      }
+    )));
+    return {
+      binding,
+      metadata,
+      oldFavorite: window.LingoFlowFavoriteRepository.getById(oldFavoriteId, {
+        includeDeleted: true
+      }),
+      oldLearning: window.LingoFlowFavoriteLearningRepository.get(oldFavoriteId, {
+        includeDeleted: true
+      }),
+      cloudFavorite: window.LingoFlowFavoriteRepository.getById(cloudFavoriteId),
+      cloudLearning: window.LingoFlowFavoriteLearningRepository.get(cloudFavoriteId),
+      articles: await window.LingoFlowArticleLibrary.listArticles({ includeDeleted: true }),
+      oldOutbox: await window.LingoFlowSyncStateRepository.listOutbox({ ownerId: ownerA }),
+      oldSyncRecordCount: syncRecords.flat().filter(item => item.ownerId === ownerA).length,
+      oldStorage: [
+        "EnglishReaderV051Favorites",
+        "EnglishReaderV05Vocab",
+        "EnglishReaderV052QueryEvents",
+        "EnglishReaderV052HistoryBaselines",
+        "EnglishReaderV052HistoryMigrationState",
+        "EnglishReaderV052ReadingPrefs"
+      ].map(key => localStorage.getItem(key)),
+      deviceId: localStorage.getItem("EnglishReaderV052DeviceId"),
+      dictionaryMeta: await getECDICTMeta("account-switch-public-resource"),
+      pushes: Number(localStorage.getItem("__lingoflowTestPushCount") || 0)
+    };
+  }, {
+    oldFavoriteId: favorite.id,
+    ownerA: OWNER_A,
+    cloudFavoriteId: "favorite:owner-b-cloud"
+  });
+  expect(result.binding).toMatchObject({ status: "ready", binding: { ownerId: OWNER_B } });
+  expect(result.metadata).toMatchObject({
+    status: "ready",
+    metadata: { ownerId: OWNER_B, label: "beta-user@example.test" }
+  });
+  expect(result.oldFavorite).toBeNull();
+  expect(result.oldLearning).toBeNull();
+  expect(result.articles).toEqual([]);
+  expect(result.oldOutbox.items).toEqual([]);
+  expect(result.oldSyncRecordCount).toBe(0);
+  expect(result.oldStorage).toEqual([
+    null,
+    null,
+    null,
+    null,
+    JSON.stringify({ version: 1, status: "completed" }),
+    null
+  ]);
+  expect(result.deviceId).toBe("device:preserved");
+  expect(result.dictionaryMeta).toEqual({
+    key: "account-switch-public-resource",
+    value: "preserved"
+  });
+  expect(result.pushes).toBe(pushesBefore);
+  expect(result.cloudFavorite).toMatchObject({ id: "favorite:owner-b-cloud" });
+  expect(result.cloudLearning).toMatchObject({
+    favoriteId: "favorite:owner-b-cloud",
+    mastered: true
+  });
+});
+
+test("导出备份并切换会先下载 Backup v2，再建立当前账号 Workspace", async ({ page }) => {
+  await page.goto("/");
+  await signIn(page);
+  await waitForSync(page, "ready");
+  const favorite = await createLocalFavorite(page, "backup-before-switch");
+  await expect.poll(() => page.evaluate(() => (
+    window.LingoFlowFavoriteAppSync.getState().syncStatus
+  ))).toBe("synced");
+  await page.evaluate(async () => {
+    await window.LingoFlowArticleLibrary.createArticle({
+      title: "Backup-first article",
+      content: "This article must be present in the exported backup.",
+      sourceType: "paste"
+    });
+  });
+  await openAccountModal(page);
+  await page.click("#authSignOutButton");
+  await waitForAuth(page, "signed-out");
+  await signIn(page, "beta-user@example.test");
+  await waitForSync(page, "blocked", "workspace-owner-mismatch");
+  await page.click("#workspaceChooseCurrentAccountButton");
+
+  const downloadPromise = page.waitForEvent("download");
+  const navigated = page.waitForEvent("framenavigated", frame => frame === page.mainFrame());
+  await page.click("#workspaceBackupAndSwitchButton");
+  const download = await downloadPromise;
+  await navigated;
+  expect(download.suggestedFilename()).toMatch(/^lingoflow-backup-\d{4}-\d{2}-\d{2}\.json$/);
+  await waitForAuth(page, "authenticated");
+  await waitForSync(page, "ready");
+  const result = await page.evaluate(async id => ({
+    binding: await window.LingoFlowSyncStateRepository.getWorkspaceBinding(),
+    oldFavorite: window.LingoFlowFavoriteRepository.getById(id, { includeDeleted: true }),
+    articles: await window.LingoFlowArticleLibrary.listArticles({ includeDeleted: true })
+  }), favorite.id);
+  expect(result.binding.binding.ownerId).toBe(OWNER_B);
+  expect(result.oldFavorite).toBeNull();
+  expect(result.articles).toEqual([]);
+});
+
+test("切换事务失败会回滚本地用户资产，并保持 Account A binding", async ({ page }) => {
+  await page.goto("/");
+  await signIn(page);
+  await waitForSync(page, "ready");
+  const favorite = await createLocalFavorite(page, "rollback-switch");
+  const article = await page.evaluate(async () => {
+    localStorage.setItem("EnglishReaderV052ReadingPrefs", JSON.stringify({ lineHeight: 2 }));
+    return await window.LingoFlowArticleLibrary.createArticle({
+      title: "Rollback article",
+      content: "The article and binding must survive a failed switch.",
+      sourceType: "paste"
+    });
+  });
+  await openAccountModal(page);
+  await page.click("#authSignOutButton");
+  await waitForAuth(page, "signed-out");
+  await signIn(page, "beta-user@example.test");
+  await waitForSync(page, "blocked", "workspace-owner-mismatch");
+  await page.evaluate(() => {
+    const originalClear = IDBObjectStore.prototype.clear;
+    window.__restoreAccountSwitchClear = () => {
+      IDBObjectStore.prototype.clear = originalClear;
+    };
+    IDBObjectStore.prototype.clear = function(...args) {
+      if (this.name === "control") throw new Error("simulated sync replacement failure");
+      return originalClear.apply(this, args);
+    };
+  });
+  await page.click("#workspaceChooseCurrentAccountButton");
+  await page.click("#workspaceDirectSwitchButton");
+  await expect(page.locator("#authFeedback"))
+    .toHaveText("账号切换未完成，原 Workspace 关联已保留。请稍后重试。");
+  await page.evaluate(() => window.__restoreAccountSwitchClear());
+
+  const result = await page.evaluate(async ({ favoriteId, articleId }) => ({
+    binding: await window.LingoFlowSyncStateRepository.getWorkspaceBinding(),
+    favorite: window.LingoFlowFavoriteRepository.getById(favoriteId),
+    article: await window.LingoFlowArticleLibrary.getArticle(articleId),
+    preferences: localStorage.getItem("EnglishReaderV052ReadingPrefs")
+  }), { favoriteId: favorite.id, articleId: article.id });
+  expect(result.binding.binding.ownerId).toBe(OWNER_A);
+  expect(result.favorite.id).toBe(favorite.id);
+  expect(result.article.id).toBe(article.id);
+  expect(result.preferences).toBe(JSON.stringify({ lineHeight: 2 }));
+  await waitForSync(page, "blocked", "workspace-owner-mismatch");
 });

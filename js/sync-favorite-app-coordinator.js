@@ -41,6 +41,13 @@
     return setState({ status: "inactive", reason, ...details });
   }
 
+  async function prepareAccountSwitch(details = {}) {
+    const pending = [bootstrapPromise, syncPromise].filter(Boolean);
+    deactivate("account-switching", details);
+    if (pending.length) await Promise.allSettled(pending);
+    return getState();
+  }
+
   function readyState(active, syncStatus, durable = {}, details = {}) {
     return setState({
       status: "ready",
@@ -204,7 +211,12 @@
     if (!isOpaqueString(session.user?.id)) {
       return { status: "blocked", reason: "auth-owner-unavailable" };
     }
-    return { status: "ready", ownerId: session.user.id, config: cloudConfig };
+    return {
+      status: "ready",
+      ownerId: session.user.id,
+      accountLabel: isOpaqueString(session.user.email) ? session.user.email : null,
+      config: cloudConfig
+    };
   }
 
   function createBindingId() {
@@ -212,15 +224,47 @@
     return `binding:${window.crypto.randomUUID()}`;
   }
 
-  async function resolveWorkspace(dependencies, ownerId, allowActivation) {
+  async function readBoundAccountLabel(dependencies, binding) {
+    if (typeof dependencies.syncState.getWorkspaceAccountLabel !== "function") return null;
+    const result = await dependencies.syncState.getWorkspaceAccountLabel();
+    if (result.status !== "ready" ||
+        result.metadata.ownerId !== binding.ownerId ||
+        result.metadata.bindingId !== binding.bindingId) {
+      return null;
+    }
+    return result.metadata.label;
+  }
+
+  async function rememberAccountLabel(dependencies, owner, accountLabel) {
+    if (!isOpaqueString(accountLabel) ||
+        typeof dependencies.syncState.setWorkspaceAccountLabel !== "function") {
+      return;
+    }
+    await dependencies.syncState.setWorkspaceAccountLabel({
+      ...owner,
+      label: accountLabel
+    });
+  }
+
+  async function resolveWorkspace(dependencies, session, allowActivation) {
+    const ownerId = session.ownerId;
     const current = await dependencies.syncState.getWorkspaceBinding();
     if (current.status === "ready") {
       if (current.binding.ownerId !== ownerId) {
-        return { status: "blocked", reason: "workspace-owner-mismatch" };
+        return {
+          status: "blocked",
+          reason: "workspace-owner-mismatch",
+          ownerId,
+          boundOwnerId: current.binding.ownerId,
+          currentAccountLabel: session.accountLabel,
+          boundAccountLabel: await readBoundAccountLabel(dependencies, current.binding)
+        };
       }
+      const owner = { ownerId, bindingId: current.binding.bindingId };
+      await rememberAccountLabel(dependencies, owner, session.accountLabel);
       return {
         status: "ready",
-        owner: { ownerId, bindingId: current.binding.bindingId }
+        owner
       };
     }
     if (current.status !== "missing") return current;
@@ -252,6 +296,7 @@
         reason: binding.reason || "workspace-binding-failed"
       };
     }
+    await rememberAccountLabel(dependencies, owner, session.accountLabel);
     return { status: "ready", owner };
   }
 
@@ -275,7 +320,7 @@
     setState({ status: "starting", ownerId: session.ownerId });
     const workspace = await resolveWorkspace(
       dependencies,
-      session.ownerId,
+      session,
       Boolean(options.allowActivation)
     );
     if (epoch !== runtimeEpoch) return getState();
@@ -284,6 +329,14 @@
       return setState({
         status: workspace.status === "paused" ? "paused" : "blocked",
         reason: workspace.reason || "workspace-unavailable",
+        ...(workspace.ownerId ? { ownerId: workspace.ownerId } : {}),
+        ...(workspace.boundOwnerId ? { boundOwnerId: workspace.boundOwnerId } : {}),
+        ...(workspace.currentAccountLabel
+          ? { currentAccountLabel: workspace.currentAccountLabel }
+          : {}),
+        ...(workspace.boundAccountLabel
+          ? { boundAccountLabel: workspace.boundAccountLabel }
+          : {}),
         ...(workspace.message ? { message: workspace.message } : {})
       });
     }
@@ -426,6 +479,9 @@
 
   async function runMutation(method, args) {
     const active = runtime;
+    if (state.reason === "account-switching") {
+      return { status: "blocked", reason: "account-switching", mode: "blocked" };
+    }
     if (state.status !== "ready" || !active) return runLocalMutation(method, args);
     const result = await active.capture[method](active.owner, ...args);
     if (runtime === active && mutationWasLocallyCommitted(result)) {
@@ -458,6 +514,9 @@
 
   async function setMastered(favoriteId, mastered) {
     const active = runtime;
+    if (state.reason === "account-switching") {
+      return { status: "blocked", reason: "account-switching", mode: "blocked" };
+    }
     if (state.status !== "ready" || !active) {
       return runLocalLearningMutation(favoriteId, mastered);
     }
@@ -652,6 +711,7 @@
     activateWorkspace,
     deferWorkspaceActivation,
     deactivate,
+    prepareAccountSwitch,
     syncNow,
     getState,
     create,

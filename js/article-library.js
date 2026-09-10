@@ -6,6 +6,13 @@
   const ARTICLE_STORE = "articles";
   const SOURCE_TYPES = new Set(["paste", "txt", "library"]);
   let databasePromise = null;
+  let accountSwitchWriteBlocked = false;
+
+  function assertWritesAllowed() {
+    if (accountSwitchWriteBlocked) {
+      throw new Error("账号切换期间暂不能修改文章。");
+    }
+  }
 
   function ensureIndexedDB() {
     if (!("indexedDB" in window)) {
@@ -301,6 +308,7 @@
   }
 
   async function createArticle(input) {
+    assertWritesAllowed();
     const db = await openDatabase();
     const record = buildArticleRecord(input);
 
@@ -328,6 +336,7 @@
   }
 
   async function updateRecord(id, update) {
+    assertWritesAllowed();
     const articleId = String(id || "").trim();
     if (!articleId) throw new Error("缺少 article id。");
 
@@ -480,6 +489,7 @@
   }
 
   async function restoreArticle(article) {
+    assertWritesAllowed();
     const validation = validateRestoreArticle(article);
     if (validation.result) return validation.result;
 
@@ -549,6 +559,63 @@
     });
   }
 
+  function normalizedArticleCollection(values) {
+    if (!Array.isArray(values)) throw new Error("文章快照无效。");
+    const articles = values.map(value => {
+      const validation = validateRestoreArticle(value);
+      if (validation.result) throw new Error("文章快照包含无效记录。");
+      return validation.article;
+    }).sort((left, right) => left.id.localeCompare(right.id));
+    if (new Set(articles.map(article => article.id)).size !== articles.length) {
+      throw new Error("文章快照包含重复记录。");
+    }
+    return articles;
+  }
+
+  async function replaceAllArticles(expectedValues, replacementValues) {
+    const expected = normalizedArticleCollection(expectedValues);
+    const replacements = normalizedArticleCollection(replacementValues);
+    const db = await openDatabase();
+
+    return await new Promise((resolve, reject) => {
+      const tx = db.transaction(ARTICLE_STORE, "readwrite");
+      const store = tx.objectStore(ARTICLE_STORE);
+      const request = store.getAll();
+      let result = null;
+      let replacementError = null;
+
+      request.onsuccess = () => {
+        try {
+          const current = normalizedArticleCollection(request.result || []);
+          if (!valuesEqual(current, expected)) {
+            result = { status: "blocked", reason: "article-snapshot-changed" };
+            return;
+          }
+          store.clear();
+          for (const article of replacements) store.add(article);
+          result = { status: "replaced", count: replacements.length };
+        } catch (error) {
+          replacementError = error;
+          tx.abort();
+        }
+      };
+      request.onerror = () => {
+        replacementError = request.error || new Error("文章快照读取失败。");
+      };
+      tx.oncomplete = () => resolve(result);
+      tx.onerror = () => reject(
+        replacementError || tx.error || new Error("文章快照替换失败。")
+      );
+      tx.onabort = () => reject(
+        replacementError || tx.error || new Error("文章快照替换事务已中止。")
+      );
+    });
+  }
+
+  function setAccountSwitchWriteBlocked(value) {
+    accountSwitchWriteBlocked = Boolean(value);
+  }
+
   window.LingoFlowArticleLibrary = Object.freeze({
     DB_NAME,
     DB_VERSION,
@@ -560,6 +627,8 @@
     listArticles,
     findArticleBySource,
     assessArticleRestore,
-    restoreArticle
+    restoreArticle,
+    replaceAllArticles,
+    setAccountSwitchWriteBlocked
   });
 })();

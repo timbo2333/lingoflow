@@ -9,6 +9,7 @@
   const ISSUES_STORE = "syncIssues";
   const INBOX_STORE = "inbox";
   const BINDING_KEY = "workspace-binding";
+  const ACCOUNT_LABEL_KEY = "workspace-account-label";
   const FAVORITE_WRITER_KEY = "favorite-writer-lock";
   const FAVORITE_LOCK_NAME = "lingoflow:favorite-global-writer";
   const PULL_PROGRESS_PREFIX = "pull-progress";
@@ -270,6 +271,31 @@
       throw new Error("Workspace binding 存储记录无效。");
     }
     return binding;
+  }
+
+  function validateAccountLabelInput(value) {
+    const metadata = getCanonical().snapshot(value, "workspace account label");
+    if (!isPlainObject(metadata) ||
+        !hasExactFields(metadata, new Set(["bindingId", "label", "ownerId"])) ||
+        !isOpaqueString(metadata.bindingId) ||
+        !isOpaqueString(metadata.ownerId) ||
+        !isOpaqueString(metadata.label)) {
+      throw new Error("Workspace account label 无效。");
+    }
+    return metadata;
+  }
+
+  function validateStoredAccountLabel(value) {
+    const metadata = getCanonical().snapshot(value, "workspace account label");
+    if (!isPlainObject(metadata) ||
+        !hasExactFields(metadata, new Set(["bindingId", "key", "label", "ownerId"])) ||
+        metadata.key !== ACCOUNT_LABEL_KEY ||
+        !isOpaqueString(metadata.bindingId) ||
+        !isOpaqueString(metadata.ownerId) ||
+        !isOpaqueString(metadata.label)) {
+      throw new Error("Workspace account label 存储记录无效。");
+    }
+    return metadata;
   }
 
   function validateRecordSnapshot(value, entityType, entityId, nullable = false) {
@@ -854,6 +880,86 @@
       return { status: "ready", binding: validateStoredBinding(value) };
     } catch (error) {
       return failed("workspace-binding-read-failed", error);
+    }
+  }
+
+  async function setWorkspaceAccountLabel(value) {
+    try {
+      const metadata = validateAccountLabelInput(value);
+      return await runTransaction([CONTROL_STORE], "readwrite", async tx => {
+        const store = tx.objectStore(CONTROL_STORE);
+        const bindingValue = await requestResult(store.get(BINDING_KEY));
+        if (bindingValue === undefined) return blocked("workspace-unbound");
+        const binding = validateStoredBinding(bindingValue);
+        const mismatch = getWorkspaceMismatch(
+          binding,
+          metadata.ownerId,
+          metadata.bindingId
+        );
+        if (mismatch) return mismatch;
+        const stored = { key: ACCOUNT_LABEL_KEY, ...metadata };
+        await requestResult(store.put(stored));
+        return { status: "ready", metadata: stored };
+      });
+    } catch (error) {
+      return failed("workspace-account-label-write-failed", error);
+    }
+  }
+
+  async function getWorkspaceAccountLabel() {
+    try {
+      const value = await runTransaction([CONTROL_STORE], "readonly", tx => (
+        requestResult(tx.objectStore(CONTROL_STORE).get(ACCOUNT_LABEL_KEY))
+      ));
+      if (value === undefined) return { status: "missing", metadata: null };
+      return { status: "ready", metadata: validateStoredAccountLabel(value) };
+    } catch (error) {
+      return failed("workspace-account-label-read-failed", error);
+    }
+  }
+
+  async function replaceWorkspaceBinding(value) {
+    try {
+      if (!isPlainObject(value) ||
+          !hasExactFields(value, new Set(["accountLabel", "from", "to"]))) {
+        throw new Error("Workspace replacement 无效。");
+      }
+      const from = validateBindingInput(value.from);
+      const to = validateBindingInput(value.to);
+      const accountLabel = validateAccountLabelInput({
+        ...to,
+        label: value.accountLabel
+      });
+      if (from.ownerId === to.ownerId || from.bindingId === to.bindingId) {
+        throw new Error("Workspace replacement identity 无效。");
+      }
+
+      const storeNames = [
+        CONTROL_STORE,
+        SIDECAR_STORE,
+        OUTBOX_STORE,
+        ISSUES_STORE,
+        INBOX_STORE
+      ];
+      return await runTransaction(storeNames, "readwrite", async tx => {
+        const control = tx.objectStore(CONTROL_STORE);
+        const currentValue = await requestResult(control.get(BINDING_KEY));
+        if (currentValue === undefined) return blocked("workspace-unbound");
+        const current = validateStoredBinding(currentValue);
+        const mismatch = getWorkspaceMismatch(current, from.ownerId, from.bindingId);
+        if (mismatch) return mismatch;
+
+        await Promise.all(storeNames.map(name => (
+          requestResult(tx.objectStore(name).clear())
+        )));
+        const binding = { key: BINDING_KEY, ...to };
+        const metadata = { key: ACCOUNT_LABEL_KEY, ...accountLabel };
+        await requestResult(control.add(binding));
+        await requestResult(control.add(metadata));
+        return { status: "replaced", binding, metadata };
+      });
+    } catch (error) {
+      return failed("workspace-replacement-failed", error);
     }
   }
 
@@ -2528,6 +2634,9 @@
     closeDatabase,
     bindWorkspace,
     getWorkspaceBinding,
+    setWorkspaceAccountLabel,
+    getWorkspaceAccountLabel,
+    replaceWorkspaceBinding,
     withFavoriteWriterLock,
     getFavoriteWriterLease,
     getPullProgress,
