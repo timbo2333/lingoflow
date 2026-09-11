@@ -16,6 +16,10 @@
       .replace(/^[^a-z]+|[^a-z]+$/g, "");
   }
 
+  function isCanonicalWord(value) {
+    return CANONICAL_WORD.test(String(value ?? ""));
+  }
+
   function nullableText(value) {
     if (value === null || value === undefined || value === "") return null;
     return String(value);
@@ -34,7 +38,7 @@
       const query = String(request?.word ?? "").trim();
       const canonicalWord = canonicalizeWord(query);
 
-      if (!CANONICAL_WORD.test(canonicalWord)) {
+      if (!isCanonicalWord(canonicalWord)) {
         return { status: "not_found", query };
       }
 
@@ -111,6 +115,7 @@
 
   global.LingoFlowSupabaseDictionaryProvider = Object.freeze({
     create,
-    canonicalizeWord
+    canonicalizeWord,
+    isCanonicalWord
   });
 })(window);
