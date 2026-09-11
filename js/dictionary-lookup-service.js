@@ -47,7 +47,7 @@
 
   async function lookup(request = {}) {
     const query = String(request?.word ?? "").trim();
-    let firstUnavailable = null;
+    let lastUnavailable = null;
 
     if (!providers.length) {
       return { status: "unavailable", query, reason: "no_provider" };
@@ -62,7 +62,7 @@
           context: request?.context ?? ""
         });
       } catch {
-        firstUnavailable ||= {
+        lastUnavailable = {
           status: "unavailable",
           query,
           reason: "provider_error"
@@ -73,16 +73,16 @@
       if (result?.status === "found") {
         const normalized = normalizeFound(result, query, provider.name);
         if (normalized.status === "found") return normalized;
-        firstUnavailable ||= normalized;
+        lastUnavailable = normalized;
         continue;
       }
 
       if (result?.status === "unavailable") {
-        firstUnavailable ||= normalizeUnavailable(result, query);
+        lastUnavailable = normalizeUnavailable(result, query);
       }
     }
 
-    return firstUnavailable || { status: "not_found", query };
+    return lastUnavailable || { status: "not_found", query };
   }
 
   function setProviders(nextProviders) {

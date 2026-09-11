@@ -749,6 +749,10 @@
     }
   }
 
+  async function getPublicClient() {
+    return await ensureClient();
+  }
+
   window.LingoFlowSupabaseAuth = Object.freeze({
     initialize,
     getState,
@@ -763,6 +767,7 @@
     updatePassword,
     signOut,
     getSessionContext,
-    getAccessToken
+    getAccessToken,
+    getPublicClient
   });
 })();

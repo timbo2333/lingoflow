@@ -41,6 +41,18 @@ async function seedLegacyDictionary(page, entries, lemmas = []) {
   }, { dictionaryEntries: entries, lemmaEntries: lemmas });
 }
 
+async function useLegacyProviderOnly(page) {
+  await page.evaluate(() => {
+    window.LingoFlowDictionaryLookupService.setProviders([
+      window.LingoFlowLegacyECDICTProvider.create({
+        isReady: isECDICTReadyForLookup,
+        lookupLegacy: lookupWord,
+        getUnavailableReason: () => "legacy_dictionary_not_ready"
+      })
+    ]);
+  });
+}
+
 test.beforeEach(async ({ page }) => {
   const errors = [];
   projectErrors.set(page, errors);
@@ -65,7 +77,7 @@ test.afterEach(async ({ page }) => {
   expect(projectErrors.get(page), "页面不应出现项目自身的 JavaScript 错误").toEqual([]);
 });
 
-test("Provider foundation 在 main.js 前加载，并默认只注册 Legacy ECDICT", async ({ page }) => {
+test("Cloud foundation 保留，但生产默认只注册 Legacy Provider", async ({ page }) => {
   const result = await page.evaluate(() => {
     const scripts = Array.from(document.scripts, script => (
       new URL(script.src, location.href).pathname
@@ -73,6 +85,7 @@ test("Provider foundation 在 main.js 前加载，并默认只注册 Legacy ECDI
 
     return {
       serviceIndex: scripts.indexOf("/js/dictionary-lookup-service.js"),
+      cloudIndex: scripts.indexOf("/js/supabase-dictionary-provider.js"),
       providerIndex: scripts.indexOf("/js/legacy-ecdict-provider.js"),
       mainIndex: scripts.indexOf("/js/main.js"),
       providers: window.LingoFlowDictionaryLookupService.getProviderNames()
@@ -80,12 +93,14 @@ test("Provider foundation 在 main.js 前加载，并默认只注册 Legacy ECDI
   });
 
   expect(result.serviceIndex).toBeGreaterThanOrEqual(0);
-  expect(result.providerIndex).toBeGreaterThan(result.serviceIndex);
+  expect(result.cloudIndex).toBeGreaterThan(result.serviceIndex);
+  expect(result.providerIndex).toBeGreaterThan(result.cloudIndex);
   expect(result.mainIndex).toBeGreaterThan(result.providerIndex);
   expect(result.providers).toEqual(["legacy_ecdict"]);
 });
 
 test("Legacy Provider 保留 exact-first 与 Lemma 词形还原结果", async ({ page }) => {
+  await useLegacyProviderOnly(page);
   await seedLegacyDictionary(page, [
     {
       word: "develop",
@@ -146,6 +161,7 @@ test("Legacy Provider 保留 exact-first 与 Lemma 词形还原结果", async ({
 });
 
 test("Lookup Contract 区分 not_found 与本地词典 unavailable", async ({ page }) => {
+  await useLegacyProviderOnly(page);
   const unavailable = await page.evaluate(() => (
     window.LingoFlowDictionaryLookupService.lookup({ word: "unlistedlexeme" })
   ));
@@ -173,6 +189,7 @@ test("Lookup Contract 区分 not_found 与本地词典 unavailable", async ({ pa
 });
 
 test("FOUND contract 允许 phonetic 与 pos 为 null", async ({ page }) => {
+  await useLegacyProviderOnly(page);
   await seedLegacyDictionary(page, [{
     word: "barelexeme",
     phonetic: "",

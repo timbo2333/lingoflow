@@ -4178,13 +4178,19 @@ async function isECDICTReadyForLookup() {
 }
 
 function getDictionaryUnavailableMessage(reason = "") {
+  if (reason === "cloud_timeout") {
+    return "在线词典响应较慢，本地词库也没有查到这个词。";
+  }
+  if (reason === "cloud_unavailable" || reason === "cloud_invalid_response") {
+    return "在线词典暂时不可用，本地词库也没有查到这个词。";
+  }
   return reason === "legacy_dictionary_loading"
     ? "离线词库正在准备中，完成后即可查词。"
     : "离线词库尚未加载。你可以继续阅读，需要时再准备词库。";
 }
 
 function getDictionaryPrepareButtonHtml(reason = "") {
-  return reason === "legacy_dictionary_loading"
+  return reason === "legacy_dictionary_loading" || reason.startsWith("cloud_")
     ? ""
     : '<button class="secondary" onclick="openDictionaryGuide()">准备词库</button>';
 }
