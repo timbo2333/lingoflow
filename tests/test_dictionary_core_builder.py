@@ -9,6 +9,8 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 SCRIPT = REPO / "scripts" / "build-dictionary-poc.py"
 EXPECTED_CORE_SHA256 = "e15991ce6e9213ebdf73f7c494587866d5129fc217c81dd40d43c57e73632415"
+EXPECTED_LEMMA_SHA256 = "e255b097404e3e0052060e2ddf6e15a1414f577071d63d51d2ca0ce9dacee0fc"
+EXPECTED_PACK_SHA256 = "4d32fee17e33289a7529abe6dfee02557c417d033fa36703ee1e06cb8620bb39"
 
 
 def load_builder():
@@ -102,6 +104,116 @@ class DictionaryCoreBuilderTests(unittest.TestCase):
         self.assertIn("truncate table public.dictionary_entries;", finalize)
         self.assertIn("$verify_stage$", finalize)
         self.assertIn("$verify_final$", finalize)
+
+    def test_core_lemma_pack_rebuilds_without_a_checked_in_core_csv(self):
+        output = Path(self.output.name) / "rebuilt-lemma-pack"
+        rebuilt_pack, rebuilt_manifest, _stats = self.builder.build_core_lemma_pack(
+            Path(self.report["outputs"]["csv"]),
+            self.builder.LEMMA_PATH,
+            output,
+        )
+        committed_pack = REPO / "data" / "dictionary" / "core-lemma-candidates.json"
+        committed_manifest = REPO / "data" / "dictionary" / "core-lemma-manifest.json"
+
+        self.assertEqual(rebuilt_pack.read_bytes(), committed_pack.read_bytes())
+        self.assertEqual(rebuilt_manifest.read_bytes(), committed_manifest.read_bytes())
+
+
+class CoreLemmaPackBuilderTests(unittest.TestCase):
+    def setUp(self):
+        self.builder = load_builder()
+        self.temp = tempfile.TemporaryDirectory(prefix="lingoflow-lemma-pack-test.")
+        self.root = Path(self.temp.name)
+        self.core_csv = self.root / "core.csv"
+        self.core_csv.write_text(
+            "word,phonetic,translation,pos\n"
+            "felt,,felt,\n"
+            "go,,go,\n"
+            "leaf,,leaf,\n"
+            "leave,,leave,\n"
+            "walk,,walk,\n",
+            encoding="utf-8",
+        )
+        self.lemma = self.root / "lemma.txt"
+        self.lemma.write_text(
+            "go/100 -> goes,went,goes\n"
+            "leave/90 -> leaves\n"
+            "leaf/10 -> leaves\n"
+            "felt/4 -> felt\n"
+            "felt/4 -> felt\n",
+            encoding="utf-8",
+        )
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def build(self, name, lemma_path=None):
+        output = self.root / name
+        pack, manifest, stats = self.builder.build_core_lemma_pack(
+            self.core_csv,
+            lemma_path or self.lemma,
+            output,
+        )
+        return pack, manifest, stats
+
+    def test_explicit_lemma_input_is_used_and_empty_input_stays_empty(self):
+        alternate = self.root / "alternate-lemma.txt"
+        alternate.write_text("walk/20 -> walked\n", encoding="utf-8")
+        alternate_pack, _manifest, alternate_stats = self.build("alternate", alternate)
+        alternate_data = json.loads(alternate_pack.read_text(encoding="utf-8"))
+        self.assertEqual(set(alternate_data), {"walk", "walked"})
+        self.assertEqual(alternate_stats["entry_count"], 2)
+
+        empty = self.root / "empty-lemma.txt"
+        empty.write_text("; no lemma records\n", encoding="utf-8")
+        empty_pack, _manifest, empty_stats = self.build("empty", empty)
+        self.assertEqual(json.loads(empty_pack.read_text(encoding="utf-8")), {})
+        self.assertEqual(empty_stats["entry_count"], 0)
+        self.assertEqual(empty_stats["candidate_pair_count"], 0)
+
+    def test_outputs_are_byte_deterministic(self):
+        first_pack, first_manifest, _stats = self.build("first")
+        second_pack, second_manifest, _stats = self.build("second")
+        self.assertEqual(first_pack.read_bytes(), second_pack.read_bytes())
+        self.assertEqual(first_manifest.read_bytes(), second_manifest.read_bytes())
+
+    def test_duplicate_pairs_are_deduped_and_ambiguity_is_preserved(self):
+        pack, _manifest, stats = self.build("dedupe")
+        data = json.loads(pack.read_text(encoding="utf-8"))
+        self.assertEqual(data["goes"], [["go", 100]])
+        self.assertEqual(data["felt"], [["felt", 4]])
+        self.assertEqual(data["leaves"], [["leave", 90], ["leaf", 10]])
+        self.assertEqual(stats["entry_count"], 7)
+        self.assertEqual(stats["candidate_pair_count"], 8)
+        self.assertEqual(stats["ambiguous_form_count"], 1)
+
+    def test_manifest_counts_and_pack_sha_match_artifact(self):
+        pack, manifest_path, stats = self.build("manifest")
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        pack_sha = hashlib.sha256(pack.read_bytes()).hexdigest()
+        lemma_sha = hashlib.sha256(self.lemma.read_bytes()).hexdigest()
+        self.assertEqual(manifest["packSha256"], pack_sha)
+        self.assertEqual(manifest["lemmaSourceSha256"], lemma_sha)
+        self.assertEqual(manifest["lemmaPackVersion"], "core-lemma-pack-v1")
+        self.assertEqual(manifest["entryCount"], stats["entry_count"])
+        self.assertEqual(manifest["candidatePairCount"], stats["candidate_pair_count"])
+        self.assertEqual(manifest["ambiguousFormCount"], stats["ambiguous_form_count"])
+        self.assertNotIn("generatedAt", manifest)
+
+    def test_committed_pack_is_bound_to_locked_sources_and_counts(self):
+        pack_path = REPO / "data" / "dictionary" / "core-lemma-candidates.json"
+        manifest_path = REPO / "data" / "dictionary" / "core-lemma-manifest.json"
+        lemma_path = REPO / "data" / "dictionary" / "lemma.en.txt"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(hashlib.sha256(pack_path.read_bytes()).hexdigest(), EXPECTED_PACK_SHA256)
+        self.assertEqual(hashlib.sha256(lemma_path.read_bytes()).hexdigest(), EXPECTED_LEMMA_SHA256)
+        self.assertEqual(manifest["packSha256"], EXPECTED_PACK_SHA256)
+        self.assertEqual(manifest["lemmaSourceSha256"], EXPECTED_LEMMA_SHA256)
+        self.assertEqual(manifest["coreSnapshotSha256"], EXPECTED_CORE_SHA256)
+        self.assertEqual(manifest["entryCount"], 86_993)
+        self.assertEqual(manifest["candidatePairCount"], 89_112)
+        self.assertEqual(manifest["ambiguousFormCount"], 2_101)
 
 
 if __name__ == "__main__":

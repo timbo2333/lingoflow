@@ -79,11 +79,13 @@ def positive_int(value: str) -> int:
         return 0
 
 
-def read_lemma_signals() -> tuple[dict[str, int], dict[str, set[str]]]:
+def read_lemma_signals(
+    lemma_path: Path = LEMMA_PATH,
+) -> tuple[dict[str, int], dict[str, set[str]]]:
     frequencies: dict[str, int] = {}
     form_lemmas: dict[str, set[str]] = defaultdict(set)
 
-    with LEMMA_PATH.open(encoding="utf-8") as source:
+    with lemma_path.open(encoding="utf-8") as source:
         for raw_line in source:
             line = raw_line.strip()
             if not line or line.startswith(";") or "->" not in line:
@@ -271,6 +273,173 @@ def select_core_dataset(candidates: list[dict], limit: int) -> list[dict]:
         {**entry, "selection_reason": "ranked signal-backed core"}
         for entry in candidates[:limit]
     ], key=lambda item: item["word"])
+
+
+# ----- Core Lemma Pack (independent rebuildable public resource) -----
+
+CORE_LEMMA_PACK_FORMAT_VERSION = "1"
+CORE_LEMMA_PACK_VERSION = "core-lemma-pack-v1"
+CORE_LEMMA_PACK_DICTIONARY_DATA_VERSION = "core-2026-08-16-e15991ce6e92"
+CORE_LEMMA_PACK_FILENAME = "core-lemma-candidates.json"
+CORE_LEMMA_MANIFEST_FILENAME = "core-lemma-manifest.json"
+
+
+def build_core_lemma_pack(
+    core_csv_path: Path,
+    lemma_en_path: Path,
+    output_dir: Path,
+) -> tuple[Path, Path, dict]:
+    """Build the deterministic Core Lemma Pack.
+
+    The pack maps each surface form to a list of candidate lemmas whose canonical
+    lemma is present in the 60k Core Dictionary. A form may keep multiple candidates
+    (ambiguity is preserved). Output is byte-deterministic given the same inputs.
+    """
+    if not core_csv_path.is_file():
+        raise RuntimeError(
+            f"Core dictionary CSV not found at {core_csv_path}. "
+            "Run `--mode core --output-dir <temporary-output-dir>` first."
+        )
+    if not lemma_en_path.is_file():
+        raise RuntimeError(f"lemma.en.txt not found at {lemma_en_path}")
+
+    # 1. Read 60k Core headwords from the CSV produced by `--mode core`.
+    core_set: set[str] = set()
+    core_row_count = 0
+    with core_csv_path.open(encoding="utf-8", newline="") as source:
+        reader = csv.DictReader(source)
+        for row in reader:
+            word = (row.get("word") or "").strip()
+            if not word or not VALID_HEADWORD.fullmatch(word):
+                continue
+            core_set.add(word)
+            core_row_count += 1
+    if not core_set:
+        raise RuntimeError("Core dictionary CSV did not yield any valid headwords.")
+
+    # 2. Parse lemma.en.txt using the same builder canonicalize rules
+    #    that 60k Core uses, so form/lemma equivalence holds across both.
+    lemma_frequencies, form_lemmas = read_lemma_signals(lemma_en_path)
+
+    # 3. Build a deterministic form -> sorted-candidates index.
+    #    Within a form: candidates sorted by lemma frequency desc, then lemma asc.
+    form_index: dict[str, list[tuple[str, int]]] = {}
+    for form, lemmas in sorted(form_lemmas.items()):
+        seen: set[str] = set()
+        candidates: list[tuple[str, int]] = []
+        for lemma in sorted(
+            lemmas,
+            key=lambda name: (-lemma_frequencies.get(name, 0), name),
+        ):
+            if lemma in seen:
+                continue
+            seen.add(lemma)
+            candidates.append((lemma, lemma_frequencies.get(lemma, 0)))
+        if candidates:
+            form_index[form] = candidates
+
+    # 4. Filter: keep only candidates whose canonical lemma is in 60k Core.
+    #    Drop forms whose entire candidate set falls outside Core.
+    filtered: dict[str, list[tuple[str, int]]] = {}
+    dropped_all_candidates_excluded = 0
+    for form in sorted(form_index):
+        kept = [
+            (lemma, frequency)
+            for (lemma, frequency) in form_index[form]
+            if lemma in core_set
+        ]
+        if not kept:
+            dropped_all_candidates_excluded += 1
+            continue
+        filtered[form] = kept
+
+    # 5. Emit compact map format: { form: [[lemma, freq], ...] }
+    pack_dict: dict[str, list[list[int | str]]] = {
+        form: [[lemma, frequency] for lemma, frequency in cands]
+        for form, cands in filtered.items()
+    }
+
+    # Use deterministic compact JSON: sorted keys, no whitespace, ensure_ascii
+    # off is safe because all form/lemma strings are ASCII (validated upstream).
+    output_dir.mkdir(parents=True, exist_ok=True)
+    pack_path = output_dir / CORE_LEMMA_PACK_FILENAME
+    pack_text = (
+        json.dumps(
+            pack_dict,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
+    )
+    pack_path.write_text(pack_text, encoding="utf-8")
+
+    # 6. Manifest binds pack to a specific Core snapshot + dictionary data version.
+    pack_bytes = pack_path.read_bytes()
+    pack_sha256 = hashlib.sha256(pack_bytes).hexdigest()
+    lemma_source_sha256 = hashlib.sha256(lemma_en_path.read_bytes()).hexdigest()
+    import gzip as _gzip
+    gz_bytes = _gzip.compress(pack_bytes, compresslevel=9)
+
+    entry_count = len(pack_dict)
+    candidate_pair_count = sum(len(c) for c in pack_dict.values())
+    ambiguous_form_count = sum(1 for c in pack_dict.values() if len(c) > 1)
+
+    manifest = {
+        "formatVersion": CORE_LEMMA_PACK_FORMAT_VERSION,
+        "lemmaPackVersion": CORE_LEMMA_PACK_VERSION,
+        "dictionaryDataVersion": CORE_LEMMA_PACK_DICTIONARY_DATA_VERSION,
+        "coreRule": CORE_RULE_VERSION,
+        "coreSnapshotSha256": hashlib.sha256(core_csv_path.read_bytes()).hexdigest(),
+        "lemmaSourceSha256": lemma_source_sha256,
+        "coreSnapshotCsvSizeBytes": core_csv_path.stat().st_size,
+        "coreHeadwordCount": len(core_set),
+        "packFilename": CORE_LEMMA_PACK_FILENAME,
+        "manifestFilename": CORE_LEMMA_MANIFEST_FILENAME,
+        "packSha256": pack_sha256,
+        "packSizeBytes": len(pack_bytes),
+        "packGzipSizeBytes": len(gz_bytes),
+        "entryCount": entry_count,
+        "candidatePairCount": candidate_pair_count,
+        "ambiguousFormCount": ambiguous_form_count,
+        "maxCandidatesPerForm": max(
+            (len(c) for c in pack_dict.values()), default=0
+        ),
+        "buildRule": (
+            "for each lemma.en.txt form (builder-canonicalized + VALID_HEADWORD), "
+            "keep candidates whose canonical lemma is present in the 60k Core "
+            "snapshot; deduplicate identical form/lemma pairs; never collapse "
+            "form -> single lemma; sort candidates by lemma frequency desc, then "
+            "lemma code-point order."
+        ),
+    }
+
+    manifest_path = output_dir / CORE_LEMMA_MANIFEST_FILENAME
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    # Sanity self-check (would fail the build loudly if mismatched).
+    expected_dv = CORE_LEMMA_PACK_DICTIONARY_DATA_VERSION
+    if manifest["dictionaryDataVersion"] != expected_dv:
+        raise RuntimeError(
+            f"Manifest dictionaryDataVersion mismatch: "
+            f"{manifest['dictionaryDataVersion']} != {expected_dv}"
+        )
+
+    return pack_path, manifest_path, {
+        "core_row_count": core_row_count,
+        "core_headword_count": len(core_set),
+        "entry_count": entry_count,
+        "candidate_pair_count": candidate_pair_count,
+        "ambiguous_form_count": ambiguous_form_count,
+        "dropped_all_candidates_excluded": dropped_all_candidates_excluded,
+        "pack_size_bytes": len(pack_bytes),
+        "pack_gzip_size_bytes": len(gz_bytes),
+        "pack_sha256": pack_sha256,
+        "manifest": manifest,
+    }
 
 
 def sql_literal(value: str | None) -> str:
@@ -588,11 +757,53 @@ def write_outputs(
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", choices=("poc", "core"), default="poc")
+    parser.add_argument(
+        "--mode",
+        choices=("poc", "core", "core-lemma-pack"),
+        default="poc",
+    )
     parser.add_argument("--limit", type=int)
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--seed-file", type=Path)
+    parser.add_argument(
+        "--core-csv",
+        type=Path,
+        help=(
+            "Path to an existing core-dictionary.csv produced by --mode core. "
+            "Required when --mode core-lemma-pack."
+        ),
+    )
+    parser.add_argument(
+        "--lemma-file",
+        type=Path,
+        help="Lemma source file for --mode core-lemma-pack (defaults to repo lemma.en.txt).",
+    )
     args = parser.parse_args()
+
+    if args.mode == "core-lemma-pack":
+        if args.output_dir is None:
+            parser.error("--mode core-lemma-pack requires --output-dir")
+        if args.core_csv is None:
+            parser.error("--mode core-lemma-pack requires --core-csv")
+        output_dir = args.output_dir
+        core_csv = args.core_csv
+        lemma_path = args.lemma_file or LEMMA_PATH
+        pack_path, manifest_path, stats = build_core_lemma_pack(
+            core_csv_path=core_csv,
+            lemma_en_path=lemma_path,
+            output_dir=output_dir,
+        )
+        summary = {
+            "mode": "core-lemma-pack",
+            "coreCsv": str(core_csv),
+            "lemmaSource": str(lemma_path),
+            "packPath": str(pack_path),
+            "manifestPath": str(manifest_path),
+            "stats": stats,
+        }
+        print(json.dumps(summary, ensure_ascii=False, indent=2))
+        return
+
     default_limit = CORE_DEFAULT_LIMIT if args.mode == "core" else POC_DEFAULT_LIMIT
     limit = args.limit if args.limit is not None else default_limit
     if args.mode == "poc" and not 300 <= limit <= 500:

@@ -1,0 +1,20 @@
+{
+  "formatVersion": "1",
+  "lemmaPackVersion": "core-lemma-pack-v1",
+  "dictionaryDataVersion": "core-2026-08-16-e15991ce6e92",
+  "coreRule": "dictionary-core-high-confidence-v1",
+  "coreSnapshotSha256": "e15991ce6e9213ebdf73f7c494587866d5129fc217c81dd40d43c57e73632415",
+  "lemmaSourceSha256": "e255b097404e3e0052060e2ddf6e15a1414f577071d63d51d2ca0ce9dacee0fc",
+  "coreSnapshotCsvSizeBytes": 3890900,
+  "coreHeadwordCount": 60000,
+  "packFilename": "core-lemma-candidates.json",
+  "manifestFilename": "core-lemma-manifest.json",
+  "packSha256": "4d32fee17e33289a7529abe6dfee02557c417d033fa36703ee1e06cb8620bb39",
+  "packSizeBytes": 2600836,
+  "packGzipSizeBytes": 463387,
+  "entryCount": 86993,
+  "candidatePairCount": 89112,
+  "ambiguousFormCount": 2101,
+  "maxCandidatesPerForm": 3,
+  "buildRule": "for each lemma.en.txt form (builder-canonicalized + VALID_HEADWORD), keep candidates whose canonical lemma is present in the 60k Core snapshot; deduplicate identical form/lemma pairs; never collapse form -> single lemma; sort candidates by lemma frequency desc, then lemma code-point order."
+}

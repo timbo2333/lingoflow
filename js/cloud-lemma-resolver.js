@@ -11,6 +11,10 @@
       : 0;
   }
 
+  function compareStrings(left, right) {
+    return left < right ? -1 : left > right ? 1 : 0;
+  }
+
   function normalizeCandidates(rawCandidates, surface, canonicalizeWord) {
     const candidates = Array.isArray(rawCandidates) ? rawCandidates : [];
     const byLemma = new Map();
@@ -30,8 +34,29 @@
     }
 
     return Array.from(byLemma.values()).sort((left, right) => (
-      right.frequency - left.frequency || left.lemma.localeCompare(right.lemma)
+      right.frequency - left.frequency || compareStrings(left.lemma, right.lemma)
     ));
+  }
+
+  function normalizeCandidateSourceResult(result) {
+    if (Array.isArray(result)) {
+      return { status: "ready", candidates: result };
+    }
+    if (result?.status === "ready" && Array.isArray(result.candidates)) {
+      return { status: "ready", candidates: result.candidates };
+    }
+    if (result?.status === "unavailable") {
+      return {
+        status: "unavailable",
+        reason: typeof result.reason === "string" && result.reason
+          ? result.reason
+          : "lemma_candidates_unavailable"
+      };
+    }
+    return {
+      status: "unavailable",
+      reason: "lemma_candidates_invalid_response"
+    };
   }
 
   function create(options = {}) {
@@ -72,9 +97,11 @@
           return { ...exact, query };
         }
 
-        let rawCandidates;
+        let candidateSource;
         try {
-          rawCandidates = await options.getLemmaCandidates(surface);
+          candidateSource = normalizeCandidateSourceResult(
+            await options.getLemmaCandidates(surface)
+          );
         } catch {
           return {
             status: "unavailable",
@@ -83,8 +110,16 @@
           };
         }
 
+        if (candidateSource.status === "unavailable") {
+          return {
+            status: "unavailable",
+            query,
+            reason: candidateSource.reason
+          };
+        }
+
         const candidates = normalizeCandidates(
-          rawCandidates,
+          candidateSource.candidates,
           surface,
           canonicalizeWord
         ).slice(0, maxCandidates);
@@ -120,6 +155,7 @@
   global.LingoFlowCloudLemmaResolver = Object.freeze({
     create,
     normalizeCandidates,
+    normalizeCandidateSourceResult,
     DEFAULT_MAX_CANDIDATES,
     MAX_CANDIDATE_LIMIT
   });

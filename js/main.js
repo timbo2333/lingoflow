@@ -4252,6 +4252,8 @@ let suggestionItems = [];
 let suggestionIndex = -1;
 let suggestionTimer = null;
 let directSearchLookupRequestId = 0;
+const DICTIONARY_CLOUD_FIRST_SMOKE_KEY =
+  "lingoflow_dictionary_cloud_first_smoke";
 
 async function isECDICTReadyForLookup() {
   if (dictionaryIntegritySnapshot?.ecdict.complete) return true;
@@ -4284,24 +4286,108 @@ function getDictionaryPrepareButtonHtml(reason = "") {
     : '<button class="secondary" onclick="openDictionaryGuide()">准备词库</button>';
 }
 
+function isDictionaryCloudFirstSmokeEnabled() {
+  try {
+    return localStorage.getItem(DICTIONARY_CLOUD_FIRST_SMOKE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function getDictionarySmokeSource(result = {}) {
+  if (result.source === "dictionary_cache") return "cache";
+  if (result.source === "supabase_core") return "cloud";
+  if (result.source === "legacy_ecdict") return "legacy";
+  return result.status || "unknown";
+}
+
+function logDictionaryCloudFirstSmoke(details = {}) {
+  const result = details.result || {};
+  console.info("[Dictionary] Cloud-first smoke lookup", {
+    query: details.query || "",
+    source: getDictionarySmokeSource(result),
+    relation: result.status === "found"
+      ? (result.relation ? "lemma" : "exact")
+      : "none",
+    elapsedMs: Math.round(Number(details.elapsedMs || 0) * 10) / 10,
+    fallback: Number(details.attemptedProviders || 0) > 1
+  });
+}
+
 function configureDictionaryLookupService() {
   const service = window.LingoFlowDictionaryLookupService;
-  const legacyProvider = window.LingoFlowLegacyECDICTProvider;
+  const legacyFactory = window.LingoFlowLegacyECDICTProvider;
 
   if (!service || typeof service.setProviders !== "function" ||
-      !legacyProvider || typeof legacyProvider.create !== "function") {
+      !legacyFactory || typeof legacyFactory.create !== "function") {
     throw new Error("Dictionary lookup provider foundation is unavailable.");
   }
 
-  service.setProviders([
-    legacyProvider.create({
-      isReady: isECDICTReadyForLookup,
-      lookupLegacy: lookupWord,
-      getUnavailableReason: () => dictionaryTaskState === "auto-loading"
-        ? "legacy_dictionary_loading"
-        : "legacy_dictionary_not_ready"
-    })
-  ]);
+  const legacyProvider = legacyFactory.create({
+    isReady: isECDICTReadyForLookup,
+    lookupLegacy: lookupWord,
+    getUnavailableReason: () => dictionaryTaskState === "auto-loading"
+      ? "legacy_dictionary_loading"
+      : "legacy_dictionary_not_ready"
+  });
+
+  if (!isDictionaryCloudFirstSmokeEnabled()) {
+    service.setProviders([legacyProvider]);
+    return;
+  }
+
+  const auth = window.LingoFlowSupabaseAuth;
+  const cloudFactory = window.LingoFlowSupabaseDictionaryProvider;
+  const cacheFactory = window.LingoFlowCachedCloudDictionaryProvider;
+  const lemmaFactory = window.LingoFlowCloudLemmaResolver;
+  const coreLemmaPack = window.LingoFlowCoreLemmaPack;
+  if (typeof auth?.getPublicClient !== "function" ||
+      typeof cloudFactory?.create !== "function" ||
+      typeof cacheFactory?.create !== "function" ||
+      typeof lemmaFactory?.create !== "function" ||
+      !coreLemmaPack || typeof coreLemmaPack.ensureLoaded !== "function") {
+    throw new Error("Dictionary Cloud-first smoke dependencies are unavailable.");
+  }
+
+  const cloudProvider = cloudFactory.create({
+    getClient: () => auth.getPublicClient(),
+    timeoutMs: 2500
+  });
+  const cachedCloudProvider = cacheFactory.create({ cloudProvider });
+
+  // Smoke ON path: Cloud-first lemma resolution MUST NOT touch
+  // EnglishReaderECDICT. Core Lemma Pack is the sole lemma source.
+  // Failure semantics:
+  //   - pack loads OK and surface has candidates -> try each
+  //   - pack loads OK but surface has no candidates -> ready + empty list
+  //   - pack unavailable / invalid / version mismatch -> unavailable
+  async function getCoreLemmaPackCandidates(form) {
+    if (!form || typeof form !== "string") {
+      return { status: "ready", candidates: [] };
+    }
+    const status = await coreLemmaPack.ensureLoaded();
+    if (status.status !== "ready") {
+      return {
+        status: "unavailable",
+        reason: status.reason || "lemma_pack_unavailable"
+      };
+    }
+    const candidates = coreLemmaPack.getCandidates(form);
+    return {
+      status: "ready",
+      candidates: Array.isArray(candidates) ? candidates : []
+    };
+  }
+
+  const cloudLemmaProvider = lemmaFactory.create({
+    cloudProvider: cachedCloudProvider,
+    getLemmaCandidates: getCoreLemmaPackCandidates
+  });
+
+  service.setProviders([cloudLemmaProvider, legacyProvider], {
+    onLookupComplete: logDictionaryCloudFirstSmoke
+  });
+  console.info("[Dictionary] Cloud-first smoke enabled");
 }
 
 function toLegacyLookupResult(outcome) {

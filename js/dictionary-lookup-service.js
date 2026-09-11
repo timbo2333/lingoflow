@@ -2,6 +2,25 @@
   "use strict";
 
   let providers = [];
+  let onLookupComplete = null;
+
+  function nowMilliseconds() {
+    return typeof global.performance?.now === "function"
+      ? global.performance.now()
+      : Date.now();
+  }
+
+  function completeLookup(result, details) {
+    if (onLookupComplete) {
+      try {
+        onLookupComplete({
+          ...details,
+          result: result && typeof result === "object" ? { ...result } : result
+        });
+      } catch {}
+    }
+    return result;
+  }
 
   function textOrNull(value) {
     if (value === null || value === undefined) return null;
@@ -47,14 +66,20 @@
 
   async function lookup(request = {}) {
     const query = String(request?.word ?? "").trim();
+    const startedAt = nowMilliseconds();
+    let attemptedProviders = 0;
     let lastUnavailable = null;
 
     if (!providers.length) {
-      return { status: "unavailable", query, reason: "no_provider" };
+      return completeLookup(
+        { status: "unavailable", query, reason: "no_provider" },
+        { query, attemptedProviders, elapsedMs: nowMilliseconds() - startedAt }
+      );
     }
 
     for (const provider of providers) {
       let result;
+      attemptedProviders += 1;
 
       try {
         result = await provider.lookup({
@@ -72,7 +97,13 @@
 
       if (result?.status === "found") {
         const normalized = normalizeFound(result, query, provider.name);
-        if (normalized.status === "found") return normalized;
+        if (normalized.status === "found") {
+          return completeLookup(normalized, {
+            query,
+            attemptedProviders,
+            elapsedMs: nowMilliseconds() - startedAt
+          });
+        }
         lastUnavailable = normalized;
         continue;
       }
@@ -82,17 +113,25 @@
       }
     }
 
-    return lastUnavailable || { status: "not_found", query };
+    return completeLookup(
+      lastUnavailable || { status: "not_found", query },
+      { query, attemptedProviders, elapsedMs: nowMilliseconds() - startedAt }
+    );
   }
 
-  function setProviders(nextProviders) {
+  function setProviders(nextProviders, options = {}) {
     if (!Array.isArray(nextProviders) || nextProviders.some(
       provider => !provider || typeof provider.lookup !== "function"
     )) {
       throw new TypeError("Dictionary providers must expose lookup(request).");
     }
+    if (options.onLookupComplete !== undefined &&
+        typeof options.onLookupComplete !== "function") {
+      throw new TypeError("Dictionary lookup completion hook must be a function.");
+    }
 
     providers = nextProviders.slice();
+    onLookupComplete = options.onLookupComplete || null;
   }
 
   function getProviderNames() {

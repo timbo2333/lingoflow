@@ -238,6 +238,86 @@ test("所有 Lemma candidates miss 时返回 not_found", async ({ page }) => {
   expect(result.outcome).toEqual({ status: "not_found", query: "leaves" });
 });
 
+test("显式 ready + candidates contract 可完成 Lemma lookup", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    const calls = [];
+    const resolver = window.LingoFlowCloudLemmaResolver.create({
+      cloudProvider: {
+        name: "cloud_test",
+        async lookup({ word }) {
+          calls.push(word);
+          if (word === "sanction") {
+            return {
+              status: "found",
+              headword: word,
+              translation: "制裁",
+              source: "supabase_core"
+            };
+          }
+          return { status: "not_found", query: word };
+        }
+      },
+      getLemmaCandidates: async () => ({
+        status: "ready",
+        candidates: [{ lemma: "sanction", frequency: 2104 }]
+      })
+    });
+    return { outcome: await resolver.lookup({ word: "sanctions" }), calls };
+  });
+
+  expect(result.calls).toEqual(["sanctions", "sanction"]);
+  expect(result.outcome).toMatchObject({
+    status: "found",
+    relation: "sanctions → sanction"
+  });
+});
+
+test("Lemma candidate source unavailable 不伪装成 not_found", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    const calls = [];
+    const resolver = window.LingoFlowCloudLemmaResolver.create({
+      cloudProvider: {
+        name: "cloud_test",
+        async lookup({ word }) {
+          calls.push(word);
+          return { status: "not_found", query: word };
+        }
+      },
+      getLemmaCandidates: async () => ({
+        status: "unavailable",
+        reason: "lemma_pack_manifest_unavailable"
+      })
+    });
+    return { outcome: await resolver.lookup({ word: "sanctions" }), calls };
+  });
+
+  expect(result.calls).toEqual(["sanctions"]);
+  expect(result.outcome).toEqual({
+    status: "unavailable",
+    query: "sanctions",
+    reason: "lemma_pack_manifest_unavailable"
+  });
+});
+
+test("无效 Lemma candidate source response 按 unavailable 处理", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    const resolver = window.LingoFlowCloudLemmaResolver.create({
+      cloudProvider: {
+        name: "cloud_test",
+        async lookup({ word }) { return { status: "not_found", query: word }; }
+      },
+      getLemmaCandidates: async () => ({ candidates: [] })
+    });
+    return await resolver.lookup({ word: "sanctions" });
+  });
+
+  expect(result).toEqual({
+    status: "unavailable",
+    query: "sanctions",
+    reason: "lemma_candidates_invalid_response"
+  });
+});
+
 test("Cloud exact unavailable 时立即停止，不读取或请求 Lemma", async ({ page }) => {
   const result = await page.evaluate(async () => {
     const cloudCalls = [];
