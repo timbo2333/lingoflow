@@ -4162,6 +4162,7 @@ if (window.matchMedia) {
 let suggestionItems = [];
 let suggestionIndex = -1;
 let suggestionTimer = null;
+let directSearchLookupRequestId = 0;
 
 async function isECDICTReadyForLookup() {
   if (dictionaryIntegritySnapshot?.ecdict.complete) return true;
@@ -4176,17 +4177,54 @@ async function isECDICTReadyForLookup() {
   }
 }
 
-function getDictionaryUnavailableMessage() {
-  return dictionaryTaskState === "auto-loading"
+function getDictionaryUnavailableMessage(reason = "") {
+  return reason === "legacy_dictionary_loading"
     ? "离线词库正在准备中，完成后即可查词。"
     : "离线词库尚未加载。你可以继续阅读，需要时再准备词库。";
 }
 
-function getDictionaryPrepareButtonHtml() {
-  return dictionaryTaskState === "auto-loading"
+function getDictionaryPrepareButtonHtml(reason = "") {
+  return reason === "legacy_dictionary_loading"
     ? ""
     : '<button class="secondary" onclick="openDictionaryGuide()">准备词库</button>';
 }
+
+function configureDictionaryLookupService() {
+  const service = window.LingoFlowDictionaryLookupService;
+  const legacyProvider = window.LingoFlowLegacyECDICTProvider;
+
+  if (!service || typeof service.setProviders !== "function" ||
+      !legacyProvider || typeof legacyProvider.create !== "function") {
+    throw new Error("Dictionary lookup provider foundation is unavailable.");
+  }
+
+  service.setProviders([
+    legacyProvider.create({
+      isReady: isECDICTReadyForLookup,
+      lookupLegacy: lookupWord,
+      getUnavailableReason: () => dictionaryTaskState === "auto-loading"
+        ? "legacy_dictionary_loading"
+        : "legacy_dictionary_not_ready"
+    })
+  ]);
+}
+
+function toLegacyLookupResult(outcome) {
+  return {
+    phonetic: outcome.phonetic || "",
+    pos: outcome.pos || "",
+    meaning: outcome.translation || "暂无中文释义",
+    surfaceMeaning: outcome.surfaceTranslation || "",
+    exchange: outcome.exchange || "",
+    ielts: outcome.ielts || "",
+    source: outcome.attribution || outcome.source || "",
+    baseWord: outcome.headword || normalizeWord(outcome.query || ""),
+    queriedWord: normalizeWord(outcome.query || ""),
+    relationText: outcome.relation || ""
+  };
+}
+
+configureDictionaryLookupService();
 
 async function directSearch(explicitWord = "") {
   const input = document.getElementById("directSearchInput");
@@ -4199,25 +4237,27 @@ async function directSearch(explicitWord = "") {
 
   input.value = word;
   hideSearchSuggestions();
+  const lookupRequestId = ++directSearchLookupRequestId;
 
   const resultBox = document.getElementById("directSearchResult");
   resultBox.innerHTML = '<div class="searchEmpty">正在查询本地词库…</div>';
 
   speakWord(word);
-  if (!await isECDICTReadyForLookup()) {
+  const outcome = await window.LingoFlowDictionaryLookupService.lookup({ word });
+  if (lookupRequestId !== directSearchLookupRequestId) return;
+
+  if (outcome.status === "unavailable") {
     resultBox.innerHTML = `
       <div class="searchResultCard">
         <div class="searchResultWord">${escapeHtml(word)}</div>
-        <div class="searchResultMeaning">${getDictionaryUnavailableMessage()}</div>
-        <div style="margin-top:10px">${getDictionaryPrepareButtonHtml()}</div>
+        <div class="searchResultMeaning">${getDictionaryUnavailableMessage(outcome.reason)}</div>
+        <div style="margin-top:10px">${getDictionaryPrepareButtonHtml(outcome.reason)}</div>
       </div>
     `;
     return;
   }
 
-  const result = await lookupWord(word);
-
-  if (!result) {
+  if (outcome.status === "not_found") {
     addToVocab(word, null, "search");
 
     currentLookupState = {
@@ -4243,6 +4283,8 @@ async function directSearch(explicitWord = "") {
     `;
     return;
   }
+
+  const result = toLegacyLookupResult(outcome);
 
   addToVocab(word, result, "search");
 
@@ -5224,7 +5266,10 @@ document.getElementById("lemmaFileInput").addEventListener(
    单词卡片
    ========================= */
 
+let wordCardLookupRequestId = 0;
+
 async function showWordCard(word, contextSentence = "", sourceType = "article") {
+  const lookupRequestId = ++wordCardLookupRequestId;
   const card = document.getElementById("wordCard");
   const emptySide = document.getElementById("emptySide");
 
@@ -5249,18 +5294,25 @@ async function showWordCard(word, contextSentence = "", sourceType = "article") 
   emptySide.style.display = "none";
   card.classList.add("show");
 
-  if (!await isECDICTReadyForLookup()) {
+  const outcome = await window.LingoFlowDictionaryLookupService.lookup({
+    word,
+    context: contextSentence || ""
+  });
+
+  if (lookupRequestId !== wordCardLookupRequestId ||
+      document.getElementById("currentWord").textContent !== word) return;
+
+  if (outcome.status === "unavailable") {
     document.getElementById("partOfSpeech").textContent = "词库未准备";
-    document.getElementById("meaning").textContent = getDictionaryUnavailableMessage();
-    document.getElementById("dictionaryStatus").innerHTML = getDictionaryPrepareButtonHtml();
+    document.getElementById("meaning").textContent =
+      getDictionaryUnavailableMessage(outcome.reason);
+    document.getElementById("dictionaryStatus").innerHTML =
+      getDictionaryPrepareButtonHtml(outcome.reason);
     return;
   }
 
-  const result = await lookupWord(word);
-
-  if (document.getElementById("currentWord").textContent !== word) return;
-
-  if (result) {
+  if (outcome.status === "found") {
+    const result = toLegacyLookupResult(outcome);
     addToVocab(word, result, sourceType);
 
     currentLookupState = {
@@ -5335,6 +5387,7 @@ async function showWordCard(word, contextSentence = "", sourceType = "article") 
 }
 
 function closeWordCard() {
+  wordCardLookupRequestId += 1;
   document.getElementById("wordCard").classList.remove("show");
   currentLookupState = { word: "", result: null, sentence: "", source: "" };
   updateFavoriteButton();
