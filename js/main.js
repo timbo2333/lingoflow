@@ -824,12 +824,32 @@ async function clearLemmaEntries() {
 
 async function writeLemmaBatch(batch) {
   const db = await openECDICTDatabase();
+  const pendingByForm = new Map();
+
+  for (const item of batch) {
+    const form = normalizeWord(item?.form || "");
+    const lemma = normalizeWord(item?.lemma || "");
+    if (!form || !lemma) continue;
+
+    const existing = pendingByForm.get(form);
+    pendingByForm.set(form, mergeLemmaCandidateRecord(existing, {
+      form,
+      lemma,
+      frequency: item.frequency,
+      candidates: item.candidates
+    }));
+  }
 
   return new Promise((resolve, reject) => {
     const tx = db.transaction("lemmas", "readwrite");
     const store = tx.objectStore("lemmas");
 
-    for (const item of batch) store.put(item);
+    for (const item of pendingByForm.values()) {
+      const request = store.get(item.form);
+      request.onsuccess = () => {
+        store.put(mergeLemmaCandidateRecord(request.result, item));
+      };
+    }
 
     tx.oncomplete = resolve;
     tx.onerror = () => reject(tx.error);
@@ -841,6 +861,73 @@ async function getLemmaEntry(form) {
   const db = await openECDICTDatabase();
   const tx = db.transaction("lemmas", "readonly");
   return await idbRequest(tx.objectStore("lemmas").get(normalizeWord(form)));
+}
+
+function normalizeLemmaFrequency(value) {
+  const frequency = Number(value);
+  return Number.isFinite(frequency) && frequency > 0
+    ? Math.trunc(frequency)
+    : 0;
+}
+
+function mergeLemmaCandidateRecord(current, incoming) {
+  const form = normalizeWord(incoming?.form || current?.form || "");
+  const byLemma = new Map();
+
+  const addCandidate = candidate => {
+    const lemma = normalizeWord(
+      typeof candidate === "string" ? candidate : candidate?.lemma || ""
+    );
+    if (!lemma) return;
+
+    const frequency = normalizeLemmaFrequency(
+      typeof candidate === "string" ? 0 : candidate?.frequency
+    );
+    const existing = byLemma.get(lemma);
+    if (!existing || frequency > existing.frequency) {
+      byLemma.set(lemma, { lemma, frequency });
+    }
+  };
+
+  for (const record of [current, incoming]) {
+    if (Array.isArray(record?.candidates)) {
+      record.candidates.forEach(addCandidate);
+    }
+    if (record?.lemma) {
+      addCandidate({ lemma: record.lemma, frequency: record.frequency });
+    }
+  }
+
+  const candidates = Array.from(byLemma.values()).sort((left, right) => (
+    right.frequency - left.frequency || left.lemma.localeCompare(right.lemma)
+  ));
+  const preferredLemma = normalizeWord(incoming?.lemma || current?.lemma || "") ||
+    candidates[0]?.lemma || "";
+
+  return { form, lemma: preferredLemma, candidates };
+}
+
+async function getLemmaCandidates(form) {
+  const entry = await getLemmaEntry(form);
+  if (!entry) return [];
+
+  const candidates = Array.isArray(entry.candidates) && entry.candidates.length
+    ? entry.candidates
+    : [{ lemma: entry.lemma, frequency: entry.frequency }];
+
+  return candidates
+    .map(candidate => ({
+      lemma: normalizeWord(
+        typeof candidate === "string" ? candidate : candidate?.lemma || ""
+      ),
+      frequency: normalizeLemmaFrequency(
+        typeof candidate === "string" ? 0 : candidate?.frequency
+      )
+    }))
+    .filter(candidate => candidate.lemma)
+    .sort((left, right) => (
+      right.frequency - left.frequency || left.lemma.localeCompare(right.lemma)
+    ));
 }
 
 function normalizeWord(word) {
@@ -1453,18 +1540,20 @@ async function importLemmaReadableStream(readable, options = {}) {
 
     const slashIndex = left.lastIndexOf("/");
     const lemmaRaw = (slashIndex >= 0 ? left.slice(0, slashIndex) : left).trim();
+    const frequencyRaw = slashIndex >= 0 ? left.slice(slashIndex + 1).trim() : "";
+    const frequency = /^\d+$/.test(frequencyRaw) ? Number(frequencyRaw) : 0;
     const lemma = normalizeWord(lemmaRaw);
 
     if (!lemma) return;
 
     // 原形自己也保存一份，便于统一查询
-    batch.push({ form: lemma, lemma });
+    batch.push({ form: lemma, lemma, frequency });
 
     const forms = right.split(",");
 
     for (const formRaw of forms) {
       const form = normalizeWord(formRaw.trim());
-      if (form) batch.push({ form, lemma });
+      if (form) batch.push({ form, lemma, frequency });
     }
 
     if (batch.length >= LEMMA_WRITE_BATCH_SIZE) await flushBatch();
