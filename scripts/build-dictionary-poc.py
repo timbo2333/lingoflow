@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build a deterministic Dictionary 2.0 PoC dataset from repository data."""
+"""Build deterministic Dictionary 2.0 PoC or high-confidence Core snapshots."""
 
 from __future__ import annotations
 
@@ -11,14 +11,19 @@ import re
 import tempfile
 import unicodedata
 from collections import Counter, defaultdict
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Callable
 
 
 REPO = Path(__file__).resolve().parents[1]
 DICTIONARY_DIR = REPO / "data" / "dictionary"
 MANIFEST_PATH = DICTIONARY_DIR / "manifest.json"
 LEMMA_PATH = DICTIONARY_DIR / "lemma.en.txt"
-RULE_VERSION = "dictionary-cloud-poc-v1"
+POC_RULE_VERSION = "dictionary-cloud-poc-v1"
+CORE_RULE_VERSION = "dictionary-core-high-confidence-v1"
+POC_DEFAULT_LIMIT = 400
+CORE_DEFAULT_LIMIT = 60_000
 EXAM_TAGS = {"zk", "gk", "cet4", "cet6", "ky", "toefl", "ielts", "gre"}
 APOSTROPHES = str.maketrans({
     "\u2018": "'", "\u2019": "'", "\u201b": "'", "\u02bc": "'",
@@ -30,8 +35,25 @@ DASHES = str.maketrans({
     "\ufe63": "-", "\uff0d": "-",
 })
 VALID_HEADWORD = re.compile(r"^[a-z]+(?:['-][a-z]+)*$")
+ASCII_LETTER = re.compile(r"[A-Za-z]")
 LOW_VALUE_TRANSLATION = re.compile(r"\[(?:人名|地名|商标)\]")
+POLLUTED_KEY = re.compile(r"(?:https?://|www\.|@|[/\\_=<>])", re.IGNORECASE)
 LONG_TRANSLATION_BYTES = 200
+CSV_FIELDS = ["word", "phonetic", "translation", "pos"]
+REJECTION_REASONS = (
+    "empty_word",
+    "numeric_key",
+    "no_ascii_english_letter",
+    "multi_word_or_sentence",
+    "headword_too_long",
+    "polluted_key",
+    "peripheral_punctuation",
+    "invalid_internal_format",
+    "translation_empty",
+    "low_value_name_place_or_brand",
+    "no_ranking_signal",
+    "canonical_collision",
+)
 
 
 def canonicalize(value: str) -> tuple[str, str]:
@@ -86,13 +108,8 @@ def read_lemma_signals() -> tuple[dict[str, int], dict[str, set[str]]]:
     return frequencies, form_lemmas
 
 
-def ranking_key(entry: dict) -> tuple:
-    signals = entry["signals"]
-    exam_weight = sum({
-        "zk": 4, "gk": 5, "cet4": 7, "cet6": 7, "ky": 7,
-        "toefl": 8, "ielts": 8, "gre": 6,
-    }.get(tag, 2) for tag in signals["tags"])
-    source_count = sum([
+def signal_source_count(signals: dict) -> int:
+    return sum([
         signals["frq"] > 0,
         signals["bnc"] > 0,
         signals["oxford"],
@@ -100,11 +117,19 @@ def ranking_key(entry: dict) -> tuple:
         bool(signals["tags"]),
         signals["lemma_frequency"] > 0,
     ])
+
+
+def ranking_key(entry: dict) -> tuple:
+    signals = entry["signals"]
+    exam_weight = sum({
+        "zk": 4, "gk": 5, "cet4": 7, "cet6": 7, "ky": 7,
+        "toefl": 8, "ielts": 8, "gre": 6,
+    }.get(tag, 2) for tag in signals["tags"])
     frequency_rank = min([
         value for value in (signals["frq"], signals["bnc"]) if value > 0
     ] or [10**9])
     return (
-        -source_count,
+        -signal_source_count(signals),
         -int(signals["oxford"]),
         -int(signals["collins"]),
         -exam_weight,
@@ -114,43 +139,64 @@ def ranking_key(entry: dict) -> tuple:
     )
 
 
-def read_candidates() -> tuple[list[dict], dict[str, set[str]], Counter]:
+def rejection_reason(raw_word: str, canonical: str, normalized: str, translation: str) -> str | None:
+    stripped_word = str(raw_word or "").strip()
+    if not stripped_word:
+        return "empty_word"
+    if stripped_word.isdigit():
+        return "numeric_key"
+    if not ASCII_LETTER.search(stripped_word):
+        return "no_ascii_english_letter"
+    if any(character.isspace() for character in normalized):
+        return "multi_word_or_sentence"
+    if len(canonical) > 50:
+        return "headword_too_long"
+    if POLLUTED_KEY.search(normalized):
+        return "polluted_key"
+    if canonical != normalized:
+        return "peripheral_punctuation"
+    if not VALID_HEADWORD.fullmatch(canonical):
+        return "invalid_internal_format"
+    if not translation.strip():
+        return "translation_empty"
+    if LOW_VALUE_TRANSLATION.search(translation):
+        return "low_value_name_place_or_brand"
+    return None
+
+
+def read_candidates() -> tuple[list[dict], dict[str, set[str]], dict]:
     lemma_frequencies, form_lemmas = read_lemma_signals()
     canonical_counts: Counter = Counter()
+    rejected_counts: Counter = Counter({reason: 0 for reason in REJECTION_REASONS})
     signal_rows = []
+    source_record_count = 0
 
     for chunk in sorted(DICTIONARY_DIR.glob("ecdict-*.csv")):
         with chunk.open(encoding="utf-8-sig", newline="") as source:
             for row in csv.DictReader(source):
-                canonical, normalized = canonicalize(row.get("word") or "")
+                source_record_count += 1
+                raw_word = row.get("word") or ""
+                canonical, normalized = canonicalize(raw_word)
                 if canonical:
                     canonical_counts[canonical] += 1
 
                 translation = row.get("translation") or ""
-                if (not canonical or canonical != normalized or
-                        not VALID_HEADWORD.fullmatch(canonical) or
-                        len(canonical) > 50 or not translation.strip() or
-                        LOW_VALUE_TRANSLATION.search(translation)):
+                reason = rejection_reason(raw_word, canonical, normalized, translation)
+                if reason:
+                    rejected_counts[reason] += 1
                     continue
 
-                tags = set((row.get("tag") or "").strip().lower().split())
-                collins = bool((row.get("collins") or "").strip())
+                tags = set((row.get("tag") or "").strip().lower().split()) & EXAM_TAGS
                 signals = {
                     "frq": positive_int(row.get("frq") or "0"),
                     "bnc": positive_int(row.get("bnc") or "0"),
                     "oxford": bool((row.get("oxford") or "").strip()),
-                    "collins": collins,
+                    "collins": bool((row.get("collins") or "").strip()),
                     "tags": tags,
                     "lemma_frequency": lemma_frequencies.get(canonical, 0),
                 }
-                if not any([
-                    signals["frq"] > 0,
-                    signals["bnc"] > 0,
-                    signals["oxford"],
-                    signals["collins"],
-                    bool(signals["tags"]),
-                    signals["lemma_frequency"] > 0,
-                ]):
+                if signal_source_count(signals) == 0:
+                    rejected_counts["no_ranking_signal"] += 1
                     continue
 
                 signal_rows.append({
@@ -161,37 +207,50 @@ def read_candidates() -> tuple[list[dict], dict[str, set[str]], Counter]:
                     "signals": signals,
                 })
 
-    candidates = [
-        entry for entry in signal_rows if canonical_counts[entry["word"]] == 1
-    ]
+    collision_keys = {
+        word for word, count in canonical_counts.items() if count > 1
+    }
+    candidates = []
+    for entry in signal_rows:
+        if entry["word"] in collision_keys:
+            rejected_counts["canonical_collision"] += 1
+        else:
+            candidates.append(entry)
     candidates.sort(key=ranking_key)
-    return candidates, form_lemmas, canonical_counts
+
+    stats = {
+        "source_record_count": source_record_count,
+        "rejected_counts": rejected_counts,
+        "canonical_collision_count": len(collision_keys),
+        "canonical_collision_entry_count": sum(
+            count for count in canonical_counts.values() if count > 1
+        ),
+        "collision_keys": collision_keys,
+        "signal_backed_candidate_count": len(candidates),
+    }
+    return candidates, form_lemmas, stats
 
 
-def select_dataset(candidates: list[dict], form_lemmas: dict[str, set[str]], limit: int) -> list[dict]:
+def select_poc_dataset(
+    candidates: list[dict],
+    form_lemmas: dict[str, set[str]],
+    limit: int,
+) -> list[dict]:
     selected = []
     selected_words = set()
 
-    def take(label: str, count: int, predicate) -> None:
+    def take(label: str, count: int, predicate: Callable[[dict], bool]) -> None:
         taken = 0
         for entry in candidates:
             if taken >= count:
                 break
             if entry["word"] in selected_words or not predicate(entry):
                 continue
-            entry["selection_reason"] = label
-            selected.append(entry)
+            selected.append({**entry, "selection_reason": label})
             selected_words.add(entry["word"])
             taken += 1
 
-    take("multi-signal common", 100, lambda item: sum([
-        item["signals"]["frq"] > 0,
-        item["signals"]["bnc"] > 0,
-        item["signals"]["oxford"],
-        item["signals"]["collins"],
-        bool(item["signals"]["tags"]),
-        item["signals"]["lemma_frequency"] > 0,
-    ]) >= 3)
+    take("multi-signal common", 100, lambda item: signal_source_count(item["signals"]) >= 3)
     take("IELTS", 40, lambda item: "ielts" in item["signals"]["tags"])
     take("TOEFL", 35, lambda item: "toefl" in item["signals"]["tags"])
     take("GRE", 35, lambda item: "gre" in item["signals"]["tags"])
@@ -204,10 +263,14 @@ def select_dataset(candidates: list[dict], form_lemmas: dict[str, set[str]], lim
         item["translation"].encode("utf-8")
     ) >= LONG_TRANSLATION_BYTES)
     take("ranked fill", limit, lambda _item: True)
+    return sorted(selected[:limit], key=lambda item: item["word"])
 
-    selected = selected[:limit]
-    selected.sort(key=lambda item: item["word"])
-    return selected
+
+def select_core_dataset(candidates: list[dict], limit: int) -> list[dict]:
+    return sorted([
+        {**entry, "selection_reason": "ranked signal-backed core"}
+        for entry in candidates[:limit]
+    ], key=lambda item: item["word"])
 
 
 def sql_literal(value: str | None) -> str:
@@ -216,96 +279,348 @@ def sql_literal(value: str | None) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
+def content_md5(entries: list[dict]) -> str:
+    digest = hashlib.md5(usedforsecurity=False)
+    for entry in sorted(entries, key=lambda item: item["word"]):
+        digest.update("\x1f".join([
+            entry["word"],
+            entry["phonetic"] or "",
+            entry["translation"],
+            entry["pos"] or "",
+        ]).encode("utf-8"))
+        digest.update(b"\x1e")
+    return digest.hexdigest()
+
+
+def insert_statements(table: str, entries: list[dict], batch_size: int = 500) -> list[str]:
+    statements = []
+    for offset in range(0, len(entries), batch_size):
+        values = []
+        for entry in entries[offset:offset + batch_size]:
+            values.append("(" + ", ".join([
+                sql_literal(entry["word"]),
+                sql_literal(entry["phonetic"]),
+                sql_literal(entry["translation"]),
+                sql_literal(entry["pos"]),
+            ]) + ")")
+        statements.append(
+            f"insert into {table} (word, phonetic, translation, pos) values\n  "
+            + ",\n  ".join(values)
+            + ";"
+        )
+    return statements
+
+
+def verification_block(table: str, entries: list[dict], expected_md5: str, label: str) -> str:
+    delimiter = f"$verify_{label}$"
+    expected_count = len(entries)
+    expected_phonetic_null = sum(not item["phonetic"] for item in entries)
+    expected_pos_null = sum(not item["pos"] for item in entries)
+    return f"""do {delimiter}
+declare
+  actual_count bigint;
+  actual_md5 text;
+  actual_phonetic_null bigint;
+  actual_pos_null bigint;
+begin
+  select
+    count(*),
+    md5(string_agg(
+      word || chr(31) || coalesce(phonetic, '') || chr(31) ||
+      translation || chr(31) || coalesce(pos, '') || chr(30),
+      '' order by word collate "C"
+    )),
+    count(*) filter (where phonetic is null),
+    count(*) filter (where pos is null)
+  into actual_count, actual_md5, actual_phonetic_null, actual_pos_null
+  from {table};
+
+  if actual_count <> {expected_count} or actual_md5 <> '{expected_md5}' then
+    raise exception '{label} dictionary snapshot verification failed';
+  end if;
+  if actual_phonetic_null <> {expected_phonetic_null} or actual_pos_null <> {expected_pos_null} then
+    raise exception '{label} dictionary nullable-field verification failed';
+  end if;
+  if exists (
+    select 1 from {table}
+    where word is null or btrim(word) = '' or
+          translation is null or btrim(translation) = ''
+  ) then
+    raise exception '{label} dictionary required-field verification failed';
+  end if;
+  if exists (select word from {table} group by word having count(*) > 1) then
+    raise exception '{label} dictionary duplicate-word verification failed';
+  end if;
+end
+{delimiter};"""
+
+
+def build_import_sql(mode: str, entries: list[dict], expected_md5: str) -> str:
+    if mode == "poc":
+        values = insert_statements("public.dictionary_entries", entries)
+        upserts = [statement[:-1] + "\non conflict (word) do update set\n"
+                   "  phonetic = excluded.phonetic,\n"
+                   "  translation = excluded.translation,\n"
+                   "  pos = excluded.pos;" for statement in values]
+        return "begin;\n" + "\n".join(upserts) + "\ncommit;\n"
+
+    stage = "dictionary_core_stage"
+    statements = [
+        "begin;",
+        f"create temporary table {stage} (like public.dictionary_entries including all) on commit drop;",
+        *insert_statements(stage, entries),
+        verification_block(stage, entries, expected_md5, "stage"),
+        "truncate table public.dictionary_entries;",
+        "insert into public.dictionary_entries (word, phonetic, translation, pos)\n"
+        f"select word, phonetic, translation, pos from {stage} order by word;",
+        verification_block("public.dictionary_entries", entries, expected_md5, "final"),
+        "commit;",
+    ]
+    return "\n".join(statements) + "\n"
+
+
+def write_management_api_bundle(
+    output_dir: Path,
+    entries: list[dict],
+    expected_md5: str,
+    batch_size: int = 4_000,
+) -> list[Path]:
+    deploy_dir = output_dir / "core-dictionary-deploy"
+    deploy_dir.mkdir(parents=True, exist_ok=True)
+    stage = f"public.dictionary_entries_stage_{expected_md5[:8]}"
+    create_path = deploy_dir / "000-create-stage.sql"
+    create_path.write_text(
+        "begin;\n"
+        f"drop table if exists {stage};\n"
+        f"create table {stage} (like public.dictionary_entries including all);\n"
+        f"revoke all on table {stage} from public, anon, authenticated;\n"
+        "commit;\n",
+        encoding="utf-8",
+    )
+
+    paths = [create_path]
+    for index, statement in enumerate(insert_statements(stage, entries, batch_size), start=1):
+        batch_path = deploy_dir / f"{index:03d}-insert.sql"
+        batch_path.write_text(f"begin;\n{statement}\ncommit;\n", encoding="utf-8")
+        paths.append(batch_path)
+
+    finalize_path = deploy_dir / "999-finalize.sql"
+    finalize_path.write_text("\n".join([
+        "begin;",
+        verification_block(stage, entries, expected_md5, "stage"),
+        "truncate table public.dictionary_entries;",
+        "insert into public.dictionary_entries (word, phonetic, translation, pos)\n"
+        f"select word, phonetic, translation, pos from {stage} order by word;",
+        verification_block("public.dictionary_entries", entries, expected_md5, "final"),
+        f"drop table {stage};",
+        "commit;",
+        "",
+    ]), encoding="utf-8")
+    paths.append(finalize_path)
+    return paths
+
+
+def signal_distribution(entries: list[dict]) -> dict:
+    tags = Counter()
+    source_counts = Counter()
+    for entry in entries:
+        tags.update(entry["signals"]["tags"])
+        source_counts[str(signal_source_count(entry["signals"]))] += 1
+    return {
+        "frq_positive": sum(item["signals"]["frq"] > 0 for item in entries),
+        "bnc_positive": sum(item["signals"]["bnc"] > 0 for item in entries),
+        "oxford": sum(item["signals"]["oxford"] for item in entries),
+        "collins": sum(item["signals"]["collins"] for item in entries),
+        "lemma_frequency_positive": sum(
+            item["signals"]["lemma_frequency"] > 0 for item in entries
+        ),
+        "exam_tags": dict(sorted(tags.items())),
+        "signal_source_count": dict(sorted(source_counts.items())),
+    }
+
+
+def verification_sample(entries: list[dict], form_lemmas: dict[str, set[str]]) -> list[dict]:
+    ranked = sorted(entries, key=ranking_key)
+    selected = []
+    words = set()
+
+    def take(category: str, count: int, predicate: Callable[[dict], bool]) -> None:
+        for entry in ranked:
+            if sum(item["category"] == category for item in selected) >= count:
+                break
+            if entry["word"] in words or not predicate(entry):
+                continue
+            selected.append({
+                "category": category,
+                **{field: entry[field] for field in CSV_FIELDS},
+            })
+            words.add(entry["word"])
+
+    take("common", 10, lambda item: signal_source_count(item["signals"]) >= 3)
+    take("ielts", 5, lambda item: "ielts" in item["signals"]["tags"])
+    take("toefl", 5, lambda item: "toefl" in item["signals"]["tags"])
+    take("gre", 5, lambda item: "gre" in item["signals"]["tags"])
+    take("cet_or_kaoyan", 5, lambda item: bool(
+        {"cet4", "cet6", "ky"} & item["signals"]["tags"]
+    ))
+    take("phonetic_null", 5, lambda item: not item["phonetic"].strip())
+    take("hyphen", 3, lambda item: "-" in item["word"])
+    take("apostrophe", 2, lambda item: "'" in item["word"])
+    take("long_translation", 5, lambda item: len(
+        item["translation"].encode("utf-8")
+    ) >= LONG_TRANSLATION_BYTES)
+    take("lemma_or_inflection", 5, lambda item: any(
+        lemma != item["word"] for lemma in form_lemmas.get(item["word"], set())
+    ))
+    if len(selected) != 50:
+        raise RuntimeError(f"Only {len(selected)} verification sample entries were available")
+    return selected
+
+
 def write_outputs(
     output_dir: Path,
+    mode: str,
     selected: list[dict],
     form_lemmas: dict[str, set[str]],
     manifest: dict,
+    source_stats: dict,
     seed_file: Path | None,
 ) -> dict:
     output_dir.mkdir(parents=True, exist_ok=True)
-    csv_path = output_dir / "dictionary-poc.csv"
-    report_path = output_dir / "dictionary-poc-report.json"
-    sql_path = output_dir / "dictionary-poc-import.sql"
+    prefix = "core-dictionary" if mode == "core" else "dictionary-poc"
+    csv_path = output_dir / f"{prefix}.csv"
+    report_path = output_dir / f"{prefix}-report.json"
+    sql_path = output_dir / f"{prefix}-import.sql"
 
     with csv_path.open("w", encoding="utf-8", newline="") as target:
-        writer = csv.DictWriter(target, fieldnames=["word", "phonetic", "translation", "pos"])
+        writer = csv.DictWriter(target, fieldnames=CSV_FIELDS, lineterminator="\n")
         writer.writeheader()
         for entry in selected:
-            writer.writerow({key: entry[key] for key in writer.fieldnames})
+            writer.writerow({key: entry[key] for key in CSV_FIELDS})
 
-    values = []
-    for entry in selected:
-        values.append("(" + ", ".join([
-            sql_literal(entry["word"]),
-            sql_literal(entry["phonetic"]),
-            sql_literal(entry["translation"]),
-            sql_literal(entry["pos"]),
-        ]) + ")")
-    sql = (
-        "begin;\n"
-        "insert into public.dictionary_entries (word, phonetic, translation, pos) values\n  "
-        + ",\n  ".join(values)
-        + "\non conflict (word) do update set\n"
-        "  phonetic = excluded.phonetic,\n"
-        "  translation = excluded.translation,\n"
-        "  pos = excluded.pos;\n"
-        "commit;\n"
-    )
+    snapshot_md5 = content_md5(selected)
+    sql = build_import_sql(mode, selected, snapshot_md5)
     sql_path.write_text(sql, encoding="utf-8")
+    management_paths = (
+        write_management_api_bundle(output_dir, selected, snapshot_md5)
+        if mode == "core"
+        else []
+    )
     if seed_file:
         seed_file.parent.mkdir(parents=True, exist_ok=True)
         seed_file.write_text(sql, encoding="utf-8")
 
+    rejected_counts = Counter(source_stats["rejected_counts"])
+    cutoff_reason = "below_core_ranking_cutoff" if mode == "core" else "not_selected_for_poc"
+    rejected_counts[cutoff_reason] += source_stats["signal_backed_candidate_count"] - len(selected)
     reason_counts = Counter(entry["selection_reason"] for entry in selected)
-    exam_counts = Counter()
-    for entry in selected:
-        exam_counts.update(entry["signals"]["tags"] & EXAM_TAGS)
-    digest = hashlib.sha256(csv_path.read_bytes()).hexdigest()
+    phonetic_count = sum(bool(item["phonetic"].strip()) for item in selected)
+    translation_count = sum(bool(item["translation"].strip()) for item in selected)
+    raw_text_bytes = sum(sum(
+        len(str(item[field] or "").encode("utf-8")) for field in CSV_FIELDS
+    ) for item in selected)
+    rule_version = CORE_RULE_VERSION if mode == "core" else POC_RULE_VERSION
+    actual_source_count = source_stats["source_record_count"]
+    if actual_source_count != manifest["ecdict"]["totalRecords"]:
+        raise RuntimeError(
+            f"Manifest has {manifest['ecdict']['totalRecords']} records, read {actual_source_count}"
+        )
+
     report = {
+        "mode": mode,
         "source_dictionary_version": manifest["dictionaryVersion"],
-        "candidate_rule_version": RULE_VERSION,
+        "source_record_count": actual_source_count,
+        "source_chunk_count": manifest["ecdict"]["chunkCount"],
+        "rule_version": rule_version,
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
         "included_count": len(selected),
-        "csv_sha256": digest,
+        "signal_backed_candidate_count": source_stats["signal_backed_candidate_count"],
+        "rejected_counts": dict(sorted(rejected_counts.items())),
         "selection_reasons": dict(sorted(reason_counts.items())),
-        "exam_tag_counts": dict(sorted(exam_counts.items())),
-        "phonetic_null_count": sum(not item["phonetic"].strip() for item in selected),
+        "signal_distribution": signal_distribution(selected),
+        "canonical_collision_count": source_stats["canonical_collision_count"],
+        "canonical_collision_entry_count": source_stats["canonical_collision_entry_count"],
+        "phonetic_nonempty_count": phonetic_count,
+        "phonetic_null_count": len(selected) - phonetic_count,
+        "phonetic_coverage": phonetic_count / len(selected),
+        "translation_nonempty_count": translation_count,
+        "translation_coverage": translation_count / len(selected),
         "pos_null_count": sum(not item["pos"].strip() for item in selected),
-        "apostrophe_or_hyphen_count": sum(bool(re.search(r"['-]", item["word"])) for item in selected),
+        "apostrophe_or_hyphen_count": sum(
+            bool(re.search(r"['-]", item["word"])) for item in selected
+        ),
         "long_translation_count": sum(
             len(item["translation"].encode("utf-8")) >= LONG_TRANSLATION_BYTES
             for item in selected
         ),
-        "lemma_or_inflection_count": sum(any(
+        "lemma_headword_count": sum(
+            item["signals"]["lemma_frequency"] > 0 for item in selected
+        ),
+        "surface_forms_with_distinct_lemma_count": sum(any(
             lemma != item["word"] for lemma in form_lemmas.get(item["word"], set())
         ) for item in selected),
+        "estimated_raw_text_bytes": raw_text_bytes,
+        "csv_size_bytes": csv_path.stat().st_size,
+        "csv_sha256": hashlib.sha256(csv_path.read_bytes()).hexdigest(),
+        "database_content_md5": snapshot_md5,
+        "import_strategy": (
+            "private staging batches followed by an atomic verified replace"
+            if mode == "core"
+            else "transactional upsert"
+        ),
+        "verification_sample": verification_sample(selected, form_lemmas) if mode == "core" else [],
         "outputs": {
             "csv": str(csv_path),
             "report": str(report_path),
             "sql": str(sql_path),
             "seed": str(seed_file) if seed_file else None,
+            "management_api_sql_files": [str(path) for path in management_paths],
         },
     }
-    report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    if sum(rejected_counts.values()) + len(selected) != actual_source_count:
+        raise RuntimeError("Rejected counts do not reconcile with the source record count")
+    report_path.write_text(
+        json.dumps(report, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
     return report
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--limit", type=int, default=400)
+    parser.add_argument("--mode", choices=("poc", "core"), default="poc")
+    parser.add_argument("--limit", type=int)
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--seed-file", type=Path)
     args = parser.parse_args()
-    if not 300 <= args.limit <= 500:
-        parser.error("--limit must be between 300 and 500")
+    default_limit = CORE_DEFAULT_LIMIT if args.mode == "core" else POC_DEFAULT_LIMIT
+    limit = args.limit if args.limit is not None else default_limit
+    if args.mode == "poc" and not 300 <= limit <= 500:
+        parser.error("PoC --limit must be between 300 and 500")
+    if args.mode == "core" and not 50_000 <= limit <= 70_000:
+        parser.error("Core --limit must be between 50,000 and 70,000")
 
-    output_dir = args.output_dir or Path(tempfile.mkdtemp(prefix="lingoflow-dictionary-poc."))
+    output_dir = args.output_dir or Path(tempfile.mkdtemp(
+        prefix=f"lingoflow-dictionary-{args.mode}."
+    ))
     manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
-    candidates, form_lemmas, _canonical_counts = read_candidates()
-    selected = select_dataset(candidates, form_lemmas, args.limit)
-    if len(selected) != args.limit:
-        raise RuntimeError(f"Only {len(selected)} eligible PoC entries were available")
-    report = write_outputs(output_dir, selected, form_lemmas, manifest, args.seed_file)
+    candidates, form_lemmas, source_stats = read_candidates()
+    selected = (
+        select_core_dataset(candidates, limit)
+        if args.mode == "core"
+        else select_poc_dataset(candidates, form_lemmas, limit)
+    )
+    if len(selected) != limit:
+        raise RuntimeError(f"Only {len(selected)} eligible entries were available")
+    report = write_outputs(
+        output_dir,
+        args.mode,
+        selected,
+        form_lemmas,
+        manifest,
+        source_stats,
+        args.seed_file,
+    )
     print(json.dumps(report, ensure_ascii=False, indent=2))
 
 
