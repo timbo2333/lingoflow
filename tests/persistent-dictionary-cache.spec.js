@@ -474,7 +474,7 @@ test("latency smoke harness 保持 network-only，绕过 Persistent Cache", asyn
   expect(source).not.toContain("LingoFlowCachedCloudDictionaryProvider");
 });
 
-test("Reader/directSearch 不依赖 Cache，Production 默认仍 Legacy-only", async ({ page }) => {
+test("Reader/directSearch 不依赖 Cache 实现，Production 默认 Cloud-first", async ({ page }) => {
   const result = await page.evaluate(() => ({
     reader: showWordCard.toString(),
     search: directSearch.toString(),
@@ -485,5 +485,5 @@ test("Reader/directSearch 不依赖 Cache，Production 默认仍 Legacy-only", a
     expect(source).toContain("LingoFlowDictionaryLookupService.lookup");
     expect(source).not.toMatch(/DictionaryCache|CachedCloud|indexedDB/);
   }
-  expect(result.providers).toEqual(["legacy_ecdict"]);
+  expect(result.providers).toEqual(["cloud_lemma_resolver", "legacy_ecdict"]);
 });

@@ -1,6 +1,5 @@
 const { test, expect } = require("@playwright/test");
 
-const SMOKE_KEY = "lingoflow_dictionary_cloud_first_smoke";
 const PAGE_ERRORS = new WeakMap();
 const DATABASES = [
   "EnglishReaderECDICT",
@@ -33,12 +32,11 @@ async function deleteDatabasesOnce(page) {
   }, DATABASES);
 }
 
-async function setSmokeFlag(page, enabled) {
-  await page.evaluate(({ key, value }) => {
+async function clearRetiredSmokeFlag(page) {
+  await page.evaluate(() => {
     localStorage.setItem("EnglishReaderDictionaryGuideDeferred", "1");
-    if (value) localStorage.setItem(key, "1");
-    else localStorage.removeItem(key);
-  }, { key: SMOKE_KEY, value: enabled });
+    localStorage.removeItem("lingoflow_dictionary_cloud_first_smoke");
+  });
 }
 
 async function waitForApp(page) {
@@ -51,7 +49,7 @@ async function waitForApp(page) {
 
 async function openFreshApp(page, options = {}) {
   await deleteDatabasesOnce(page);
-  await setSmokeFlag(page, options.smokeEnabled !== false);
+  await clearRetiredSmokeFlag(page);
   await page.goto("/");
   await waitForApp(page);
 }
@@ -453,19 +451,49 @@ test("corrupt cached text fails SHA validation and only its Pack cache is remove
   expect(result.cached).toBe(false);
 });
 
-test("smoke flag OFF remains lazy Legacy-only with no Cloud or Pack side effects", async ({ page }) => {
+test("Core Lemma Pack 不进入 Account Switch cleanup 或 Backup v2", async ({ page }) => {
+  await openFreshApp(page);
+
+  const result = await page.evaluate(async () => {
+    const [accountSwitchSource, backupSource] = await Promise.all([
+      fetch("/js/account-switch-service.js").then(response => response.text()),
+      fetch("/js/backup-v2-export.js").then(response => response.text())
+    ]);
+    const databaseName = window.LingoFlowCoreLemmaPack.DB_NAME;
+    return {
+      databaseName,
+      accountReferencesPack: accountSwitchSource.includes(databaseName),
+      backupReferencesPack: backupSource.includes(databaseName) ||
+        backupSource.includes("LingoFlowCoreLemmaPack")
+    };
+  });
+
+  expect(result.databaseName).toBe("LingoFlowCoreLemmaDB");
+  expect(result.accountReferencesPack).toBe(false);
+  expect(result.backupReferencesPack).toBe(false);
+});
+
+test("production default is Cloud-first but remains lazy before the first lookup", async ({ page }) => {
   const resources = installResourceCounter(page);
+  const legacyRequests = [];
+  page.on("request", request => {
+    const pathname = new URL(request.url()).pathname;
+    if (pathname.includes("/data/dictionary/ecdict-part-") ||
+        pathname.endsWith("/data/dictionary/manifest.json") ||
+        pathname.endsWith("/data/dictionary/lemma.en.txt")) {
+      legacyRequests.push(pathname);
+    }
+  });
   let rpcCalls = 0;
   await page.route("**/rest/v1/rpc/lookup_dictionary", route => {
     rpcCalls += 1;
     return route.fulfill({ status: 200, contentType: "application/json", body: "[]" });
   });
-  await openFreshApp(page, { smokeEnabled: false });
+  await openFreshApp(page);
 
   expect(await page.evaluate(() => (
     window.LingoFlowDictionaryLookupService.getProviderNames()
-  ))).toEqual(["legacy_ecdict"]);
-  await lookup(page, "academic");
+  ))).toEqual(["cloud_lemma_resolver", "legacy_ecdict"]);
   const databases = await page.evaluate(async () => (
     typeof indexedDB.databases === "function"
       ? (await indexedDB.databases()).map(item => item.name)
@@ -474,6 +502,11 @@ test("smoke flag OFF remains lazy Legacy-only with no Cloud or Pack side effects
 
   expect(rpcCalls).toBe(0);
   expect(resources).toEqual({ manifest: 0, pack: 0 });
+  expect(legacyRequests).toEqual([]);
   expect(databases).not.toContain("LingoFlowCoreLemmaDB");
   expect(databases).not.toContain("LingoFlowDictionaryCacheDB");
+  expect(databases).not.toContain("EnglishReaderECDICT");
+  await expect(page.locator("#dictionaryGuideModal")).not.toHaveClass(/show/);
+  await expect(page.locator("#dictionarySetupStatus")).toHaveAttribute("data-state", "optional");
+  await expect(page.locator("#dictionarySetupTitle")).toHaveText("在线词典已可使用");
 });

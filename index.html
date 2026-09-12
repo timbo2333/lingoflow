@@ -230,12 +230,12 @@
       <div class="dictionaryRow">
         <button id="manualECDICTButton" class="secondary" type="button"
                 onclick="requestManualDictionaryFile('ecdict')">
-          📚 导入 / 更新 ECDICT
+          📚 导入完整 ECDICT（可选）
         </button>
 
         <button id="manualLemmaButton" class="secondary" type="button"
                 onclick="requestManualDictionaryFile('lemma')">
-          🔤 导入词形库 lemma
+          🔤 导入 Legacy Lemma（可选）
         </button>
 
         <button class="secondary" type="button" onclick="openSettings()">
@@ -258,10 +258,10 @@
         <input type="file" id="lemmaFileInput" accept=".txt,text/plain" hidden>
       </div>
 
-      <div id="dictionarySetupStatus" class="dictionarySetupStatus" data-state="checking"
+      <div id="dictionarySetupStatus" class="dictionarySetupStatus" data-state="optional"
            role="status" aria-live="polite">
-        <div id="dictionarySetupTitle" class="dictionarySetupTitle">正在检查离线词典…</div>
-        <div id="dictionarySetupDetail" class="dictionarySetupDetail">页面可以正常使用，检查会在后台完成。</div>
+        <div id="dictionarySetupTitle" class="dictionarySetupTitle">在线词典已可使用</div>
+        <div id="dictionarySetupDetail" class="dictionarySetupDetail">完整离线词典是可选项，已安装时会在后台读取其状态。</div>
         <div class="dictionarySetupActions">
           <button id="dictionaryRetryButton" class="secondary compactButton dictionarySetupAction"
                   type="button" onclick="retryAutomaticDictionarySetup()">
@@ -277,14 +277,14 @@
           </button>
           <button id="dictionaryPrepareButton" class="secondary compactButton dictionarySetupAction"
                   type="button" onclick="openDictionaryGuide()">
-            准备词库
+            下载完整离线词典
           </button>
         </div>
       </div>
 
       <div class="dictStatusGrid">
-        <div id="dictImportStatus">ECDICT：等待检查…</div>
-        <div id="lemmaImportStatus">Lemma：等待检查…</div>
+        <div id="dictImportStatus">完整 ECDICT：未检查（可选）</div>
+        <div id="lemmaImportStatus">Legacy Lemma：未检查（可选）</div>
       </div>
 
       <div id="dictProgressWrap" class="dictProgressWrap" role="progressbar"
@@ -294,8 +294,8 @@
       </div>
 
       <div class="dictHint">
-        首次使用可选择自动加载约 68 MB、手动导入或稍后再说。
-        完成后词库会保存在本机，日常查询无需联网。
+        普通查词默认使用在线 Core Dictionary，无需先下载。
+        完整离线词典约 68 MB，下载后断网也可查询更多词汇。
       </div>
     </div>
 
@@ -349,18 +349,18 @@ I felt nervous when I asked my friends for advice, but their suggestions helped 
     <div class="modalCard dictionaryGuideCard">
       <div class="modalHeader">
         <div>
-          <div id="dictionaryGuideTitle" class="modalTitle">准备离线词库</div>
+          <div id="dictionaryGuideTitle" class="modalTitle">完整离线词典（可选）</div>
           <div class="modalSub">
-            LingoFlow 使用保存在本机的离线词库快速查词。自动加载首次约需下载 68 MB，完成后日常查词无需联网。
+            在线词典无需下载即可使用。如需断网查询更多词汇，可额外下载约 68 MB 的完整离线词典。
           </div>
         </div>
       </div>
 
       <div class="dictionaryGuideOptions">
-        <button class="dictionaryGuideOption recommended" type="button"
+        <button class="dictionaryGuideOption" type="button"
                 onclick="startAutomaticDictionarySetup()">
-          <span class="dictionaryGuideBadge">推荐</span>
-          <strong>自动加载词库</strong>
+          <span class="dictionaryGuideBadge">可选</span>
+          <strong>下载完整离线词典</strong>
           <span>首次下载约 68 MB</span>
           <span>完成后可离线查词</span>
         </button>
@@ -373,8 +373,8 @@ I felt nervous when I asked my friends for advice, but their suggestions helped 
 
         <button class="dictionaryGuideOption" type="button"
                 onclick="deferDictionarySetup()">
-          <strong>稍后再说</strong>
-          <span>先进入阅读器，以后可随时准备词典</span>
+          <strong>暂不下载</strong>
+          <span>继续使用在线词典，以后可随时下载</span>
         </button>
       </div>
 
@@ -668,13 +668,13 @@ I felt nervous when I asked my friends for advice, but their suggestions helped 
         </div>
 
         <div class="settingItem">
-          <div class="settingLabel">ECDICT 状态</div>
+          <div class="settingLabel">完整 ECDICT（可选）</div>
           <div id="settingsDictStatus" class="settingValue">检查中…</div>
           <div id="settingsDictSize" class="settingSubValue">大小：待统计</div>
         </div>
 
         <div class="settingItem">
-          <div class="settingLabel">Lemma 词形库</div>
+          <div class="settingLabel">Legacy Lemma（可选）</div>
           <div id="settingsLemmaStatus" class="settingValue">检查中…</div>
           <div id="settingsLemmaSize" class="settingSubValue">大小：待统计</div>
         </div>
@@ -812,11 +812,11 @@ I felt nervous when I asked my friends for advice, but their suggestions helped 
         </div>
       </div>
 
-      <div class="settingsSectionTitle">离线词库管理</div>
+      <div class="settingsSectionTitle">完整离线词典（可选）</div>
       <div class="settingsButtons">
         <button class="secondary"
                 onclick="closeModal('settingsModal'); openDictionaryGuide();">
-          准备离线词库
+          下载完整离线词典
         </button>
 
         <button class="secondary"
@@ -835,7 +835,7 @@ I felt nervous when I asked my friends for advice, but their suggestions helped 
       </div>
 
       <div class="settingsNote">
-        离线词库丢失后可重新自动加载或手动导入。ECDICT、Lemma 和 CSV 等技术选项仅用于高级管理，不影响收藏、词组和查询记录。
+        约 68 MB，下载后断网也可查询更多词汇。ECDICT、Lemma 和 CSV 等技术选项仅用于高级管理，不影响收藏、词组和查询记录。
       </div>
     </div>
   </div>
@@ -896,7 +896,7 @@ I felt nervous when I asked my friends for advice, but their suggestions helped 
       </div>
 
       <div class="helpSteps">
-        <div class="helpStep"><b>1. 准备离线词库</b><span>首次使用可选择自动加载或手动导入；完成后词库保存在本机，后续日常查词无需重复下载。</span></div>
+        <div class="helpStep"><b>1. 开始查词</b><span>在线 Core Dictionary 打开即用，无需先下载；如需断网查询更多词汇，可在设置中下载完整离线词典。</span></div>
         <div class="helpStep"><b>2. 开始阅读</b><span>粘贴英文或导入 TXT，点击“开始阅读”；文章会自动保存到“我的文章”。</span></div>
         <div class="helpStep"><b>3. 我的文章与继续阅读</b><span>阅读进度会自动保存，再次打开可恢复位置；“继续阅读”可快速回到最近阅读中的文章。</span></div>
         <div class="helpStep"><b>4. 管理文章</b><span>可查看阅读状态、按状态筛选、搜索标题或来源文件名，并从“最近删除”恢复文章。</span></div>

@@ -464,7 +464,7 @@ test("Reader 与 directSearch 不直接依赖 Lemma / Cloud 实现", async ({ pa
   }
 });
 
-test("Cloud Lemma capability 已加载，但生产默认仍为 Legacy-only", async ({ page }) => {
+test("Cloud Lemma capability 已作为生产默认，并保留 Legacy fallback", async ({ page }) => {
   const result = await page.evaluate(() => {
     const scripts = Array.from(document.scripts, script => (
       new URL(script.src, location.href).pathname
@@ -479,5 +479,5 @@ test("Cloud Lemma capability 已加载，但生产默认仍为 Legacy-only", asy
 
   expect(result.resolverIndex).toBeGreaterThan(result.cloudProviderIndex);
   expect(result.legacyIndex).toBeGreaterThan(result.resolverIndex);
-  expect(result.providers).toEqual(["legacy_ecdict"]);
+  expect(result.providers).toEqual(["cloud_lemma_resolver", "legacy_ecdict"]);
 });

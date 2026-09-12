@@ -340,6 +340,11 @@
     background: #f0faf3;
   }
 
+  .dictionarySetupStatus[data-state="optional"] {
+    border-color: #c9d9ee;
+    background: #f4f8fd;
+  }
+
   .dictionarySetupStatus[data-state="error"] {
     border-color: #efc2c2;
     background: #fff5f5;
@@ -2084,6 +2089,11 @@
   body.darkMode .dictionarySetupStatus[data-state="ready"] {
     background: #183021;
     border-color: #315d3d;
+  }
+
+  body.darkMode .dictionarySetupStatus[data-state="optional"] {
+    background: #202a38;
+    border-color: #3d5878;
   }
 
   body.darkMode .dictionarySetupStatus[data-state="error"] {

@@ -68,7 +68,7 @@
     const query = String(request?.word ?? "").trim();
     const startedAt = nowMilliseconds();
     let attemptedProviders = 0;
-    let lastUnavailable = null;
+    let firstUnavailable = null;
 
     if (!providers.length) {
       return completeLookup(
@@ -87,7 +87,7 @@
           context: request?.context ?? ""
         });
       } catch {
-        lastUnavailable = {
+        firstUnavailable ||= {
           status: "unavailable",
           query,
           reason: "provider_error"
@@ -104,17 +104,17 @@
             elapsedMs: nowMilliseconds() - startedAt
           });
         }
-        lastUnavailable = normalized;
+        firstUnavailable ||= normalized;
         continue;
       }
 
       if (result?.status === "unavailable") {
-        lastUnavailable = normalizeUnavailable(result, query);
+        firstUnavailable ||= normalizeUnavailable(result, query);
       }
     }
 
     return completeLookup(
-      lastUnavailable || { status: "not_found", query },
+      firstUnavailable || { status: "not_found", query },
       { query, attemptedProviders, elapsedMs: nowMilliseconds() - startedAt }
     );
   }

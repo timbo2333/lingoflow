@@ -220,7 +220,7 @@ test("Cloud 与 Legacy 都 unavailable 时返回最终 unavailable", async ({ pa
   expect(result).toEqual({
     status: "unavailable",
     query: "missing",
-    reason: "legacy_not_installed"
+    reason: "cloud_unavailable"
   });
 });
 

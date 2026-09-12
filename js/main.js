@@ -608,6 +608,41 @@ function openECDICTDatabase() {
   return ecdictDbPromise;
 }
 
+async function hasExistingECDICTDatabase() {
+  if (!("indexedDB" in window) || typeof indexedDB.databases !== "function") {
+    return null;
+  }
+
+  try {
+    const databases = await indexedDB.databases();
+    return databases.some(database => database?.name === ECDICT_DB_NAME);
+  } catch {
+    return null;
+  }
+}
+
+function createMissingLegacyDictionaryIntegrity(databasePresent = false) {
+  return {
+    databasePresent,
+    ecdict: {
+      complete: false,
+      ready: false,
+      recordedCount: 0,
+      actualCount: 0,
+      dictionaryVersion: "",
+      source: "legacy"
+    },
+    lemma: {
+      complete: false,
+      ready: false,
+      recordedCount: 0,
+      actualCount: 0,
+      dictionaryVersion: "",
+      source: "legacy"
+    }
+  };
+}
+
 function idbRequest(request) {
   return new Promise((resolve, reject) => {
     request.onsuccess = () => resolve(request.result);
@@ -1243,11 +1278,13 @@ function getMissingDictionaryParts(integrity) {
 }
 
 function showDictionaryNeedsPreparation(integrity, options = {}) {
-  const missing = getMissingDictionaryParts(integrity);
-  const missingText = missing.length ? `${missing.join(" 和 ")} 尚未准备好。` : "离线词库尚未准备好。";
   const wasReady = localStorage.getItem(DICTIONARY_WAS_READY_KEY) === "1";
-  const deferred = localStorage.getItem(DICTIONARY_GUIDE_DEFERRED_KEY) === "1";
-  const forceGuide = Boolean(options.forceGuide || wasReady);
+  const forceGuide = Boolean(options.forceGuide);
+  const detail = integrity?.databasePresent === false
+    ? "完整离线词典未安装（可选）。约 68 MB，下载后断网也可查询更多词汇。"
+    : integrity?.databasePresent === null
+      ? "完整离线词典是可选项；可在设置中检查或下载，下载后支持更多离线查询。"
+      : "完整离线词典尚未完整就绪（可选）；可在设置中恢复或重新导入。";
 
   if (wasReady) {
     localStorage.removeItem(DICTIONARY_GUIDE_DEFERRED_KEY);
@@ -1255,17 +1292,17 @@ function showDictionaryNeedsPreparation(integrity, options = {}) {
   }
 
   setDictionarySetupState(
-    "needs-choice",
-    "词库尚未加载",
-    `${missingText} 你仍可阅读文章，需要查词时再准备词库。`,
+    "optional",
+    "在线词典已可使用",
+    detail,
     {
-      showManual: true,
-      showPrepare: !forceGuide && deferred,
+      showManual: false,
+      showPrepare: !forceGuide,
       hideProgress: true
     }
   );
 
-  if (forceGuide || !deferred) {
+  if (forceGuide) {
     setDictionaryGuideVisible(true, Boolean(options.manual));
   } else {
     setDictionaryGuideVisible(false);
@@ -1284,10 +1321,10 @@ function deferDictionarySetup() {
   localStorage.setItem(DICTIONARY_GUIDE_DEFERRED_KEY, "1");
   setDictionaryGuideVisible(false);
   setDictionarySetupState(
-    "needs-choice",
-    "词库尚未加载",
-    "可以继续阅读文章；需要查词时，点击“准备词库”即可继续。",
-    { showManual: true, showPrepare: true, hideProgress: true }
+    "optional",
+    "在线词典已可使用",
+    "完整离线词典是可选项；需要完整离线查询时可随时下载。",
+    { showManual: false, showPrepare: true, hideProgress: true }
   );
 }
 
@@ -1684,6 +1721,7 @@ async function inspectDictionaryIntegrity() {
     lemmaMetadataComplete;
 
   return {
+    databasePresent: true,
     ecdict: {
       complete: ecdictComplete,
       ready: meta.ready === true,
@@ -1709,11 +1747,19 @@ function renderDictionaryIntegrity(integrity) {
 
   status.textContent = integrity.ecdict.complete
     ? `✅ ECDICT 已就绪：${integrity.ecdict.actualCount.toLocaleString()} 条`
-    : `ECDICT 需要恢复（本地实际 ${integrity.ecdict.actualCount.toLocaleString()} 条）`;
+    : integrity.databasePresent === false
+      ? "完整 ECDICT：未安装（可选）"
+      : integrity.databasePresent === null
+        ? "完整 ECDICT：可在设置中检查（可选）"
+        : `ECDICT 需要恢复（本地实际 ${integrity.ecdict.actualCount.toLocaleString()} 条）`;
 
   lemmaStatus.textContent = integrity.lemma.complete
     ? `✅ Lemma 已就绪：${integrity.lemma.actualCount.toLocaleString()} 条映射`
-    : `Lemma 需要恢复（本地实际 ${integrity.lemma.actualCount.toLocaleString()} 条映射）`;
+    : integrity.databasePresent === false
+      ? "Legacy Lemma：未安装（可选）"
+      : integrity.databasePresent === null
+        ? "Legacy Lemma：可在设置中检查（可选）"
+        : `Lemma 需要恢复（本地实际 ${integrity.lemma.actualCount.toLocaleString()} 条映射）`;
 }
 
 async function refreshDictionaryStatus(options = {}) {
@@ -2315,13 +2361,19 @@ function initializeDictionaryOnStartup() {
   if (dictionaryStartupCheckPromise) return dictionaryStartupCheckPromise;
 
   setDictionarySetupState(
-    "checking",
-    "正在检查离线词典…",
-    "页面可以正常使用，检查会在后台完成。",
-    { showCancel: false, showManual: false, hideProgress: true }
+    "optional",
+    "在线词典已可使用",
+    "完整离线词典是可选项；已安装时会在后台读取其状态。",
+    { showCancel: false, showManual: false, showPrepare: true, hideProgress: true }
   );
 
-  dictionaryStartupCheckPromise = inspectDictionaryIntegrity()
+  dictionaryStartupCheckPromise = hasExistingECDICTDatabase()
+    .then(databasePresent => {
+      if (databasePresent !== true) {
+        return createMissingLegacyDictionaryIntegrity(databasePresent === null ? null : false);
+      }
+      return inspectDictionaryIntegrity();
+    })
     .then(async integrity => {
       dictionaryIntegritySnapshot = integrity;
       renderDictionaryIntegrity(integrity);
@@ -4252,8 +4304,6 @@ let suggestionItems = [];
 let suggestionIndex = -1;
 let suggestionTimer = null;
 let directSearchLookupRequestId = 0;
-const DICTIONARY_CLOUD_FIRST_SMOKE_KEY =
-  "lingoflow_dictionary_cloud_first_smoke";
 
 async function isECDICTReadyForLookup() {
   if (dictionaryIntegritySnapshot?.ecdict.complete) return true;
@@ -4269,49 +4319,18 @@ async function isECDICTReadyForLookup() {
 }
 
 function getDictionaryUnavailableMessage(reason = "") {
-  if (reason === "cloud_timeout") {
-    return "在线词典响应较慢，本地词库也没有查到这个词。";
-  }
-  if (reason === "cloud_unavailable" || reason === "cloud_invalid_response") {
-    return "在线词典暂时不可用，本地词库也没有查到这个词。";
+  if (reason.startsWith("cloud_") || reason.startsWith("lemma_")) {
+    return "在线词典暂时不可用，请稍后重试。如需离线查询，可在设置中下载完整离线词典。";
   }
   return reason === "legacy_dictionary_loading"
-    ? "离线词库正在准备中，完成后即可查词。"
-    : "离线词库尚未加载。你可以继续阅读，需要时再准备词库。";
+    ? "完整离线词典正在下载，在线查询暂未找到该词。"
+    : "暂未找到该词。完整离线词典未安装；如需更多离线查询，可在设置中下载。";
 }
 
 function getDictionaryPrepareButtonHtml(reason = "") {
-  return reason === "legacy_dictionary_loading" || reason.startsWith("cloud_")
+  return reason === "legacy_dictionary_loading"
     ? ""
-    : '<button class="secondary" onclick="openDictionaryGuide()">准备词库</button>';
-}
-
-function isDictionaryCloudFirstSmokeEnabled() {
-  try {
-    return localStorage.getItem(DICTIONARY_CLOUD_FIRST_SMOKE_KEY) === "1";
-  } catch {
-    return false;
-  }
-}
-
-function getDictionarySmokeSource(result = {}) {
-  if (result.source === "dictionary_cache") return "cache";
-  if (result.source === "supabase_core") return "cloud";
-  if (result.source === "legacy_ecdict") return "legacy";
-  return result.status || "unknown";
-}
-
-function logDictionaryCloudFirstSmoke(details = {}) {
-  const result = details.result || {};
-  console.info("[Dictionary] Cloud-first smoke lookup", {
-    query: details.query || "",
-    source: getDictionarySmokeSource(result),
-    relation: result.status === "found"
-      ? (result.relation ? "lemma" : "exact")
-      : "none",
-    elapsedMs: Math.round(Number(details.elapsedMs || 0) * 10) / 10,
-    fallback: Number(details.attemptedProviders || 0) > 1
-  });
+    : '<button class="secondary" onclick="openSettings()">查看完整离线词典</button>';
 }
 
 function configureDictionaryLookupService() {
@@ -4331,11 +4350,6 @@ function configureDictionaryLookupService() {
       : "legacy_dictionary_not_ready"
   });
 
-  if (!isDictionaryCloudFirstSmokeEnabled()) {
-    service.setProviders([legacyProvider]);
-    return;
-  }
-
   const auth = window.LingoFlowSupabaseAuth;
   const cloudFactory = window.LingoFlowSupabaseDictionaryProvider;
   const cacheFactory = window.LingoFlowCachedCloudDictionaryProvider;
@@ -4346,7 +4360,7 @@ function configureDictionaryLookupService() {
       typeof cacheFactory?.create !== "function" ||
       typeof lemmaFactory?.create !== "function" ||
       !coreLemmaPack || typeof coreLemmaPack.ensureLoaded !== "function") {
-    throw new Error("Dictionary Cloud-first smoke dependencies are unavailable.");
+    throw new Error("Dictionary Cloud-first dependencies are unavailable.");
   }
 
   const cloudProvider = cloudFactory.create({
@@ -4355,7 +4369,7 @@ function configureDictionaryLookupService() {
   });
   const cachedCloudProvider = cacheFactory.create({ cloudProvider });
 
-  // Smoke ON path: Cloud-first lemma resolution MUST NOT touch
+  // Production Cloud-first lemma resolution MUST NOT touch
   // EnglishReaderECDICT. Core Lemma Pack is the sole lemma source.
   // Failure semantics:
   //   - pack loads OK and surface has candidates -> try each
@@ -4384,10 +4398,7 @@ function configureDictionaryLookupService() {
     getLemmaCandidates: getCoreLemmaPackCandidates
   });
 
-  service.setProviders([cloudLemmaProvider, legacyProvider], {
-    onLookupComplete: logDictionaryCloudFirstSmoke
-  });
-  console.info("[Dictionary] Cloud-first smoke enabled");
+  service.setProviders([cloudLemmaProvider, legacyProvider]);
 }
 
 function toLegacyLookupResult(outcome) {
@@ -4421,7 +4432,7 @@ async function directSearch(explicitWord = "") {
   const lookupRequestId = ++directSearchLookupRequestId;
 
   const resultBox = document.getElementById("directSearchResult");
-  resultBox.innerHTML = '<div class="searchEmpty">正在查询本地词库…</div>';
+  resultBox.innerHTML = '<div class="searchEmpty">正在查询词典…</div>';
 
   speakWord(word);
   const outcome = await window.LingoFlowDictionaryLookupService.lookup({ word });
@@ -4452,7 +4463,7 @@ async function directSearch(explicitWord = "") {
       <div class="searchResultCard">
         <div class="searchResultWord">${escapeHtml(word)}</div>
         <div class="searchResultMeaning">
-          本地词库没有查到这个词，但你仍然可以收藏并建立自己的个人词卡。
+          暂未找到该词，但你仍然可以收藏并建立自己的个人词卡。
         </div>
         <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
           <button class="secondary" onclick="speakWord('${escapeJs(word)}')">🔊 再听一次</button>
@@ -5457,7 +5468,7 @@ async function showWordCard(word, contextSentence = "", sourceType = "article") 
   document.getElementById("currentWord").textContent = word;
   document.getElementById("phonetic").textContent = "";
   document.getElementById("partOfSpeech").textContent = "查询中";
-  document.getElementById("meaning").textContent = "正在查询本地词库…";
+  document.getElementById("meaning").textContent = "正在查询词典…";
   document.getElementById("ieltsBox").style.display = "none";
   document.getElementById("morphologyBox").classList.remove("show");
   document.getElementById("morphologyRelation").textContent = "";
@@ -5484,7 +5495,7 @@ async function showWordCard(word, contextSentence = "", sourceType = "article") 
       document.getElementById("currentWord").textContent !== word) return;
 
   if (outcome.status === "unavailable") {
-    document.getElementById("partOfSpeech").textContent = "词库未准备";
+    document.getElementById("partOfSpeech").textContent = "暂时不可用";
     document.getElementById("meaning").textContent =
       getDictionaryUnavailableMessage(outcome.reason);
     document.getElementById("dictionaryStatus").innerHTML =
@@ -5559,11 +5570,11 @@ async function showWordCard(word, contextSentence = "", sourceType = "article") 
     document.getElementById("phonetic").textContent = "";
     document.getElementById("partOfSpeech").textContent = "未收录";
     document.getElementById("meaning").textContent =
-      "词库暂未收录。你仍然可以点“☆ 收藏”，之后在“我的收藏”里自己填写释义、词性、上下文和备注。";
+      "暂未找到该词。你仍然可以点“☆ 收藏”，之后在“我的收藏”里自己填写释义、词性、上下文和备注。";
     document.getElementById("ieltsBox").style.display = "none";
     document.getElementById("morphologyBox").classList.remove("show");
     document.getElementById("dictionaryStatus").textContent =
-      "未命中本地词库 · 已记入查询记录 · 仍可建立个人词卡";
+      "暂未找到 · 已记入查询记录 · 仍可建立个人词卡";
   }
 }
 

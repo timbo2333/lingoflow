@@ -1,12 +1,15 @@
 const { test, expect } = require("@playwright/test");
 
 const LIVE_ENABLED = process.env.LINGOFLOW_LIVE_DICTIONARY_SMOKE === "1";
-const SMOKE_KEY = "lingoflow_dictionary_cloud_first_smoke";
 
 async function openLiveApp(page) {
   await page.goto("/__lingoflow_test_cleanup__.html");
-  await page.evaluate(async key => {
-    for (const name of ["LingoFlowDictionaryCacheDB", "LingoFlowCoreLemmaDB"]) {
+  await page.evaluate(async () => {
+    for (const name of [
+      "EnglishReaderECDICT",
+      "LingoFlowDictionaryCacheDB",
+      "LingoFlowCoreLemmaDB"
+    ]) {
       await new Promise((resolve, reject) => {
         const request = indexedDB.deleteDatabase(name);
         request.onsuccess = resolve;
@@ -15,8 +18,8 @@ async function openLiveApp(page) {
       });
     }
     localStorage.setItem("EnglishReaderDictionaryGuideDeferred", "1");
-    localStorage.setItem(key, "1");
-  }, SMOKE_KEY);
+    localStorage.removeItem("lingoflow_dictionary_cloud_first_smoke");
+  });
   await page.goto("/");
   await expect(page.locator("#inputText")).toBeVisible();
 }
@@ -49,6 +52,36 @@ test.describe("LIVE Supabase Dictionary smoke", () => {
     });
     expect(result.went).toMatchObject({
       status: "found",
+      headword: "go",
+      relation: "went → go"
+    });
+  });
+
+  test("live production cutover vocabulary works without a smoke flag", async ({ page }) => {
+    await openLiveApp(page);
+    const result = await page.evaluate(async () => {
+      const words = ["read", "academic", "predictable", "sanctions", "professionals", "went"];
+      const outcomes = {};
+      for (const word of words) {
+        outcomes[word] = await window.LingoFlowDictionaryLookupService.lookup({ word });
+      }
+      return {
+        flag: localStorage.getItem("lingoflow_dictionary_cloud_first_smoke"),
+        providers: window.LingoFlowDictionaryLookupService.getProviderNames(),
+        outcomes
+      };
+    });
+
+    expect(result.flag).toBeNull();
+    expect(result.providers).toEqual(["cloud_lemma_resolver", "legacy_ecdict"]);
+    for (const word of ["read", "academic", "predictable", "sanctions", "professionals", "went"]) {
+      expect(result.outcomes[word].status, `${word} should resolve`).toBe("found");
+    }
+    expect(result.outcomes.sanctions).toMatchObject({
+      headword: "sanction",
+      relation: "sanctions → sanction"
+    });
+    expect(result.outcomes.went).toMatchObject({
       headword: "go",
       relation: "went → go"
     });

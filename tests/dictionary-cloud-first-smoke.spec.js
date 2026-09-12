@@ -1,14 +1,12 @@
 const { test, expect } = require("@playwright/test");
 
-const SMOKE_KEY = "lingoflow_dictionary_cloud_first_smoke";
 const projectErrors = new WeakMap();
 
-async function openApp(page, smokeEnabled = true) {
-  await page.addInitScript(({ key, enabled }) => {
+async function openApp(page) {
+  await page.addInitScript(() => {
     localStorage.setItem("EnglishReaderDictionaryGuideDeferred", "1");
-    if (enabled) localStorage.setItem(key, "1");
-    else localStorage.removeItem(key);
-  }, { key: SMOKE_KEY, enabled: smokeEnabled });
+    localStorage.removeItem("lingoflow_dictionary_cloud_first_smoke");
+  });
   await page.goto("/");
   await expect(page.locator("#inputText")).toBeVisible();
   await expect(page.locator("#dictionarySetupStatus")).not.toHaveAttribute(
@@ -34,56 +32,20 @@ test.afterEach(async ({ page }) => {
   expect(projectErrors.get(page), "页面不应出现项目自身的 JavaScript 错误").toEqual([]);
 });
 
-test("smoke flag OFF 保持 Legacy-only，且不创建或调用 Cloud Provider", async ({ page }) => {
-  await openApp(page, false);
+test("默认无需 smoke flag 即配置 Cloud Lemma → Legacy", async ({ page }) => {
+  await openApp(page);
 
-  const result = await page.evaluate(async () => {
-    let cloudCreations = 0;
-    let cloudCalls = 0;
-    const originalCloudFactory = window.LingoFlowSupabaseDictionaryProvider;
-    window.LingoFlowSupabaseDictionaryProvider = {
-      ...originalCloudFactory,
-      create() {
-        cloudCreations += 1;
-        return {
-          name: "unexpected_cloud",
-          async lookup() {
-            cloudCalls += 1;
-            return { status: "not_found" };
-          }
-        };
-      }
-    };
-    window.LingoFlowLegacyECDICTProvider = {
-      create: () => ({
-        name: "legacy_ecdict",
-        lookup: async ({ word }) => ({
-          status: "found",
-          query: word,
-          headword: word,
-          translation: "Legacy result",
-          source: "legacy_ecdict"
-        })
-      })
-    };
+  const result = await page.evaluate(() => ({
+    flag: localStorage.getItem("lingoflow_dictionary_cloud_first_smoke"),
+    providers: window.LingoFlowDictionaryLookupService.getProviderNames()
+  }));
 
-    configureDictionaryLookupService();
-    return {
-      providers: window.LingoFlowDictionaryLookupService.getProviderNames(),
-      outcome: await window.LingoFlowDictionaryLookupService.lookup({ word: "academic" }),
-      cloudCreations,
-      cloudCalls
-    };
-  });
-
-  expect(result.providers).toEqual(["legacy_ecdict"]);
-  expect(result.outcome.source).toBe("legacy_ecdict");
-  expect(result.cloudCreations).toBe(0);
-  expect(result.cloudCalls).toBe(0);
+  expect(result.flag).toBeNull();
+  expect(result.providers).toEqual(["cloud_lemma_resolver", "legacy_ecdict"]);
 });
 
-test("smoke flag ON 配置 Cloud Lemma → Legacy，并输出启用与最终路径 debug", async ({ page }) => {
-  await openApp(page, true);
+test("生产 Cloud-first exact 命中不调用 Legacy，且默认不输出 debug 日志", async ({ page }) => {
+  await openApp(page);
 
   const result = await page.evaluate(async () => {
     const logs = [];
@@ -159,15 +121,7 @@ test("smoke flag ON 配置 Cloud Lemma → Legacy，并输出启用与最终路�
     headword: "academic",
     source: "supabase_core"
   });
-  expect(result.logs[0]).toEqual(["[Dictionary] Cloud-first smoke enabled"]);
-  expect(result.logs[1][0]).toBe("[Dictionary] Cloud-first smoke lookup");
-  expect(result.logs[1][1]).toMatchObject({
-    query: "academic",
-    source: "cloud",
-    relation: "exact",
-    fallback: false
-  });
-  expect(result.logs[1][1]).not.toHaveProperty("context");
+  expect(result.logs).toEqual([]);
 });
 
 test("Cloud surface miss 后通过 Lemma 命中，Legacy 不调用", async ({ page }) => {
@@ -378,6 +332,61 @@ test("Cloud unavailable 后由 Legacy 返回 found", async ({ page }) => {
   });
 });
 
+test("已安装 Legacy 的用户断网时仍由真实 Legacy Provider 命中", async ({ page }) => {
+  await openApp(page);
+
+  const result = await page.evaluate(async () => {
+    const db = await openECDICTDatabase();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(["entries", "meta"], "readwrite");
+      tx.objectStore("entries").put({
+        word: "offlineanchor",
+        phonetic: "",
+        translation: "离线兜底词条",
+        pos: "",
+        tag: "",
+        exchange: ""
+      });
+      const meta = tx.objectStore("meta");
+      meta.put({ key: "ready", value: true });
+      meta.put({ key: "count", value: 1 });
+      meta.put({ key: "source", value: "test" });
+      tx.oncomplete = resolve;
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error);
+    });
+    dictionaryIntegritySnapshot = await inspectDictionaryIntegrity();
+
+    const cloud = window.LingoFlowCloudLemmaResolver.create({
+      cloudProvider: {
+        name: "offline_cloud",
+        lookup: async ({ word }) => ({
+          status: "unavailable",
+          query: word,
+          reason: "cloud_unavailable"
+        })
+      },
+      getLemmaCandidates: async () => {
+        throw new Error("Lemma source must not run after Cloud unavailable");
+      }
+    });
+    const legacy = window.LingoFlowLegacyECDICTProvider.create({
+      isReady: isECDICTReadyForLookup,
+      lookupLegacy: lookupWord,
+      getUnavailableReason: () => "legacy_dictionary_not_ready"
+    });
+    window.LingoFlowDictionaryLookupService.setProviders([cloud, legacy]);
+    return window.LingoFlowDictionaryLookupService.lookup({ word: "offlineanchor" });
+  });
+
+  expect(result).toMatchObject({
+    status: "found",
+    headword: "offlineanchor",
+    translation: "离线兜底词条",
+    source: "legacy_ecdict"
+  });
+});
+
 test("Cloud 与 Legacy 都 unavailable 时返回最终 unavailable", async ({ page }) => {
   await openApp(page, true);
 
@@ -410,8 +419,61 @@ test("Cloud 与 Legacy 都 unavailable 时返回最终 unavailable", async ({ pa
   expect(result).toEqual({
     status: "unavailable",
     query: "unavailable",
-    reason: "legacy_dictionary_not_ready"
+    reason: "cloud_unavailable"
   });
+});
+
+test("Cloud unavailable 且无 Legacy 时 UI 说明网络故障与可选离线包", async ({ page }) => {
+  await openApp(page);
+
+  const result = await page.evaluate(async () => {
+    window.LingoFlowDictionaryLookupService.setProviders([
+      {
+        name: "cloud_test",
+        lookup: async ({ word }) => ({
+          status: "unavailable",
+          query: word,
+          reason: "cloud_unavailable"
+        })
+      },
+      {
+        name: "legacy_ecdict",
+        lookup: async ({ word }) => ({
+          status: "unavailable",
+          query: word,
+          reason: "legacy_dictionary_not_ready"
+        })
+      }
+    ]);
+    await directSearch("outageword");
+    return document.getElementById("directSearchResult").textContent;
+  });
+
+  expect(result).toContain("在线词典暂时不可用，请稍后重试");
+  expect(result).toContain("在设置中下载完整离线词典");
+  expect(result).not.toContain("暂未找到该词");
+});
+
+test("Cloud 与 Legacy 都权威 not_found 时 UI 显示暂未找到", async ({ page }) => {
+  await openApp(page);
+
+  const result = await page.evaluate(async () => {
+    window.LingoFlowDictionaryLookupService.setProviders([
+      {
+        name: "cloud_test",
+        lookup: async ({ word }) => ({ status: "not_found", query: word })
+      },
+      {
+        name: "legacy_ecdict",
+        lookup: async ({ word }) => ({ status: "not_found", query: word })
+      }
+    ]);
+    await directSearch("missingword");
+    return document.getElementById("directSearchResult").textContent;
+  });
+
+  expect(result).toContain("暂未找到该词");
+  expect(result).not.toContain("在线词典暂时不可用");
 });
 
 test("Cloud found 时 Legacy not-ready 不阻止结果", async ({ page }) => {

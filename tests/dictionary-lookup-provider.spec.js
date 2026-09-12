@@ -77,7 +77,7 @@ test.afterEach(async ({ page }) => {
   expect(projectErrors.get(page), "页面不应出现项目自身的 JavaScript 错误").toEqual([]);
 });
 
-test("Cloud foundation 保留，但生产默认只注册 Legacy Provider", async ({ page }) => {
+test("生产默认注册 Cloud Lemma → Legacy Provider chain", async ({ page }) => {
   const result = await page.evaluate(() => {
     const scripts = Array.from(document.scripts, script => (
       new URL(script.src, location.href).pathname
@@ -96,7 +96,7 @@ test("Cloud foundation 保留，但生产默认只注册 Legacy Provider", async
   expect(result.cloudIndex).toBeGreaterThan(result.serviceIndex);
   expect(result.providerIndex).toBeGreaterThan(result.cloudIndex);
   expect(result.mainIndex).toBeGreaterThan(result.providerIndex);
-  expect(result.providers).toEqual(["legacy_ecdict"]);
+  expect(result.providers).toEqual(["cloud_lemma_resolver", "legacy_ecdict"]);
 });
 
 test("Legacy Provider 保留 exact-first 与 Lemma 词形还原结果", async ({ page }) => {
