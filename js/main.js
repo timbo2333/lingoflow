@@ -3484,6 +3484,9 @@ const SENTENCE_ABBREVIATIONS = new Set([
   "mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st", "vs", "e.g", "i.e"
 ]);
 const READING_PROGRESS_DEBOUNCE_MS = 700;
+const READER_HEADER_HIDE_DISTANCE = 40;
+const READER_HEADER_SHOW_DISTANCE = 24;
+const READER_HEADER_TOP_ZONE = 96;
 const ARTICLE_NEAR_COMPLETE_PROGRESS = 0.80;
 const ARTICLE_COMPLETED_PROGRESS = 0.95;
 const MY_ARTICLES_SEARCH_DEBOUNCE_MS = 150;
@@ -3514,6 +3517,11 @@ let readingProgressWriteQueue = Promise.resolve(null);
 let readingPositionRenderToken = 0;
 let suppressReadingProgressSave = false;
 let readingProgressSession = null;
+let readerHeaderLastScrollY = 0;
+let readerHeaderScrollIntent = 0;
+let readerHeaderIgnoreScrollUntil = 0;
+let readerTitleVisibilityObserver = null;
+let readerArticleTitleState = "";
 let phraseSelectionSnapshot = null;
 let phraseSelectionTimer = null;
 let phraseSelectionFeedbackTimer = null;
@@ -3850,8 +3858,8 @@ function applyAppearance(mode) {
 
 function applyReadingPreferences() {
   const prefs = {
-    fontSize: "21",
-    lineHeight: "2",
+    fontSize: "20",
+    lineHeight: "1.85",
     appearance: "system",
     speechRate: "1",
     speechVoice: null,
@@ -3883,8 +3891,8 @@ function applyReadingPreferences() {
 function saveReadingPreferences() {
   const old = getReadingPreferences();
   window.LingoFlowLocalData.PreferenceData.patch({
-    fontSize: document.getElementById("readerFontSize")?.value || old.fontSize || "21",
-    lineHeight: document.getElementById("readerLineHeight")?.value || old.lineHeight || "2",
+    fontSize: document.getElementById("readerFontSize")?.value || old.fontSize || "20",
+    lineHeight: document.getElementById("readerLineHeight")?.value || old.lineHeight || "1.85",
     appearance: document.getElementById("appearanceMode")?.value || old.appearance || "system"
   });
   applyReadingPreferences();
@@ -3902,8 +3910,135 @@ function syncQuickReadingSetting(type, value) {
 }
 
 function openReadingSettings() {
+  keepReaderHeaderVisible();
+  closeReaderPopovers();
   applyReadingPreferences();
   document.getElementById("readingSettingsModal").classList.add("show");
+}
+
+function isReaderHeaderInteractionLocked() {
+  return Boolean(
+    document.querySelector("#readingToolbar details[open]") ||
+    document.getElementById("readingSettingsModal")?.classList.contains("show")
+  );
+}
+
+function setReaderHeaderHidden(hidden) {
+  const toolbar = document.getElementById("readingToolbar");
+  if (!toolbar?.classList.contains("show")) return;
+  toolbar.classList.toggle(
+    "readerHeaderHidden",
+    Boolean(hidden) && !isReaderHeaderInteractionLocked()
+  );
+}
+
+function resetReaderHeaderScrollIntent() {
+  readerHeaderLastScrollY = Math.max(0, window.scrollY || 0);
+  readerHeaderScrollIntent = 0;
+}
+
+function keepReaderHeaderVisible(ignoreScrollMs = 0) {
+  setReaderHeaderHidden(false);
+  resetReaderHeaderScrollIntent();
+  if (ignoreScrollMs > 0) {
+    readerHeaderIgnoreScrollUntil = performance.now() + ignoreScrollMs;
+  }
+}
+
+function handleReaderHeaderScroll() {
+  const toolbar = document.getElementById("readingToolbar");
+  const currentScrollY = Math.max(0, window.scrollY || 0);
+  const delta = currentScrollY - readerHeaderLastScrollY;
+  readerHeaderLastScrollY = currentScrollY;
+
+  if (!toolbar?.classList.contains("show")) {
+    readerHeaderScrollIntent = 0;
+    return;
+  }
+
+  if (currentScrollY <= READER_HEADER_TOP_ZONE ||
+      performance.now() < readerHeaderIgnoreScrollUntil ||
+      isReaderHeaderInteractionLocked()) {
+    setReaderHeaderHidden(false);
+    readerHeaderScrollIntent = 0;
+    return;
+  }
+
+  if (document.body.classList.contains("readerWordCardOpen") || Math.abs(delta) < 0.5) {
+    readerHeaderScrollIntent = 0;
+    return;
+  }
+
+  const headerHidden = toolbar.classList.contains("readerHeaderHidden");
+  if (headerHidden) {
+    readerHeaderScrollIntent = Math.min(0, readerHeaderScrollIntent + delta);
+    if (readerHeaderScrollIntent <= -READER_HEADER_SHOW_DISTANCE) {
+      setReaderHeaderHidden(false);
+      readerHeaderScrollIntent = 0;
+    }
+    return;
+  }
+
+  readerHeaderScrollIntent = Math.max(0, readerHeaderScrollIntent + delta);
+  if (readerHeaderScrollIntent >= READER_HEADER_HIDE_DISTANCE) {
+    setReaderHeaderHidden(true);
+    readerHeaderScrollIntent = 0;
+  }
+}
+
+function observeReaderDocumentTitle() {
+  readerTitleVisibilityObserver?.disconnect();
+  readerTitleVisibilityObserver = null;
+
+  const toolbar = document.getElementById("readingToolbar");
+  const marker = document.getElementById("readerDocumentTitleMarker");
+  toolbar?.classList.remove("readerTitleVisible");
+  if (!toolbar || !marker || typeof IntersectionObserver !== "function") return;
+
+  readerTitleVisibilityObserver = new IntersectionObserver(entries => {
+    const entry = entries[0];
+    if (!entry || !toolbar.classList.contains("show")) return;
+    toolbar.classList.toggle("readerTitleVisible", !entry.isIntersecting);
+  }, {
+    root: null,
+    rootMargin: "-64px 0px 0px 0px",
+    threshold: 0.01
+  });
+  readerTitleVisibilityObserver.observe(marker);
+}
+
+function closeReaderPopovers(except = null) {
+  document.querySelectorAll("#readingToolbar details[open]").forEach(menu => {
+    if (menu !== except) menu.removeAttribute("open");
+  });
+}
+
+function initializeReaderShell() {
+  const toolbar = document.getElementById("readingToolbar");
+  if (!toolbar) return;
+
+  toolbar.querySelectorAll("details.readerPopover").forEach(menu => {
+    menu.addEventListener("toggle", () => {
+      if (!menu.open) return;
+      keepReaderHeaderVisible();
+      closeReaderPopovers(menu);
+      if (menu.id === "readerFindMenu") {
+        requestAnimationFrame(() => document.getElementById("articleFindInput")?.focus());
+      }
+    });
+  });
+
+  toolbar.addEventListener("click", event => {
+    if (event.target.closest(".readerMoreActions button")) {
+      closeReaderPopovers();
+    }
+  });
+
+  document.addEventListener("pointerdown", event => {
+    if (toolbar.classList.contains("show") && !toolbar.contains(event.target)) {
+      closeReaderPopovers();
+    }
+  });
 }
 
 function openHelp() {
@@ -4226,6 +4361,7 @@ function scheduleReadingProgressSave() {
 }
 
 function handleReadingScroll() {
+  handleReaderHeaderScroll();
   requestReadingProgressUIUpdate();
   const candidate = calculateArticleReadingSnapshot();
   captureFarthestReadingSnapshot(candidate);
@@ -4273,9 +4409,14 @@ document.addEventListener("keydown", event => {
     const readerShown = document.getElementById("readerLayout")?.classList.contains("show");
     if (readerShown) {
       event.preventDefault();
+      const findMenu = document.getElementById("readerFindMenu");
+      if (findMenu) findMenu.open = true;
+      keepReaderHeaderVisible();
       const input = document.getElementById("articleFindInput");
-      input?.focus();
-      input?.select();
+      requestAnimationFrame(() => {
+        input?.focus();
+        input?.select();
+      });
     }
   }
 });
@@ -5485,6 +5626,8 @@ async function showWordCard(word, contextSentence = "", sourceType = "article") 
 
   emptySide.style.display = "none";
   card.classList.add("show");
+  document.body.classList.add("readerWordCardOpen");
+  resetReaderHeaderScrollIntent();
 
   const outcome = await window.LingoFlowDictionaryLookupService.lookup({
     word,
@@ -5581,10 +5724,12 @@ async function showWordCard(word, contextSentence = "", sourceType = "article") 
 function closeWordCard() {
   wordCardLookupRequestId += 1;
   document.getElementById("wordCard").classList.remove("show");
+  document.body.classList.remove("readerWordCardOpen");
+  resetReaderHeaderScrollIntent();
   currentLookupState = { word: "", result: null, sentence: "", source: "" };
   updateFavoriteButton();
 
-  if (window.innerWidth > 820) {
+  if (window.innerWidth > 1190) {
     document.getElementById("emptySide").style.display = "block";
   }
 
@@ -6193,6 +6338,9 @@ async function saveMyArticleTitle(articleId, item) {
     const updatedArticle = await library.updateArticle(articleId, { title });
     if (activeArticleId === updatedArticle.id && !updatedArticle.deletedAt) {
       currentArticle = updatedArticle;
+      if (document.body.classList.contains("readerActive")) {
+        setReaderArticleTitleState(updatedArticle.title);
+      }
     }
     await renderMyArticles();
   } catch (error) {
@@ -6504,6 +6652,7 @@ async function openSavedArticle(articleId) {
 
     closeModal("myArticlesModal");
     await renderArticleText(openedArticle.content, {
+      articleTitle: openedArticle.title,
       restoreReading: openedArticle.reading
     });
     return true;
@@ -6533,6 +6682,50 @@ function deriveArticleTitle(text, source) {
   return firstLine ? firstLine.slice(0, 80) : "未命名文章";
 }
 
+function getEditedArticleTitle(article, text) {
+  const nextDerivedTitle = deriveArticleTitle(text, getArticleSource(article));
+  const storedTitle = String(article?.title || "").trim();
+  if (!storedTitle) return nextDerivedTitle;
+
+  const previousDerivedTitle = deriveArticleTitle(
+    article?.content || "",
+    getArticleSource(article)
+  );
+  return storedTitle === previousDerivedTitle ? nextDerivedTitle : storedTitle;
+}
+
+function setReaderArticleTitleState(title) {
+  readerArticleTitleState = String(title || "").trim() || "未命名文章";
+  const titleElement = document.getElementById("readerArticleTitle");
+  const titleMarker = document.getElementById("readerDocumentTitleMarker");
+  if (titleElement) titleElement.textContent = readerArticleTitleState;
+  if (titleMarker) titleMarker.dataset.title = readerArticleTitleState;
+}
+
+function setReaderShellActive(active) {
+  const toolbar = document.getElementById("readingToolbar");
+  const layout = document.getElementById("readerLayout");
+
+  document.body.classList.toggle("readerActive", active);
+  toolbar?.classList.toggle("show", active);
+  layout?.classList.toggle("show", active);
+
+  if (!active) {
+    closeReaderPopovers();
+    toolbar?.classList.remove("readerHeaderHidden", "readerTitleVisible");
+    readerTitleVisibilityObserver?.disconnect();
+    readerTitleVisibilityObserver = null;
+    readerHeaderIgnoreScrollUntil = 0;
+    readerArticleTitleState = "";
+    resetReaderHeaderScrollIntent();
+    return;
+  }
+
+  if (!readerArticleTitleState) setReaderArticleTitleState("未命名文章");
+  keepReaderHeaderVisible(350);
+  observeReaderDocumentTitle();
+}
+
 function getDraftArticlePayload(text) {
   const source = normalizeDraftSource(draftSource);
   const payload = {
@@ -6560,7 +6753,7 @@ async function persistArticleDraft(text) {
 
   if (editingCurrent) {
     const changes = {
-      title: currentArticle.title || deriveArticleTitle(text, getArticleSource(currentArticle)),
+      title: getEditedArticleTitle(currentArticle, text),
       content: text,
       lastReadAt: now
     };
@@ -6586,6 +6779,16 @@ async function renderArticleText(text, options = {}) {
   hidePhraseSelectionToolbar(true);
   currentArticleText = text;
   article.innerHTML = "";
+  const titleMarker = document.createElement("span");
+  titleMarker.id = "readerDocumentTitleMarker";
+  titleMarker.className = "readerDocumentTitleMarker";
+  titleMarker.setAttribute("aria-hidden", "true");
+  article.appendChild(titleMarker);
+  setReaderArticleTitleState(
+    options.articleTitle ||
+    currentArticle?.title ||
+    deriveArticleTitle(text, getArticleSource(currentArticle))
+  );
   articleMatches = [];
   articleMatchIndex = -1;
 
@@ -6641,8 +6844,7 @@ async function renderArticleText(text, options = {}) {
   }
 
   document.getElementById("inputPanel").style.display = "none";
-  document.getElementById("readingToolbar").classList.add("show");
-  document.getElementById("readerLayout").classList.add("show");
+  setReaderShellActive(true);
 
   if (options.restoreReading?.updatedAt) {
     await restoreArticleReadingPosition(options.restoreReading, renderToken);
@@ -6685,6 +6887,7 @@ function generateArticle() {
       draftSource = getArticleSource(savedArticle);
       initializeReadingProgressSession(savedArticle);
       await renderArticleText(savedArticle.content, {
+        articleTitle: savedArticle.title,
         restoreReading: restoreExistingReading ? savedArticle.reading : null
       });
       void requestPersistentStorageBestEffort();
@@ -6724,8 +6927,7 @@ async function editArticle() {
   }
 
   document.getElementById("inputPanel").style.display = "block";
-  document.getElementById("readingToolbar").classList.remove("show");
-  document.getElementById("readerLayout").classList.remove("show");
+  setReaderShellActive(false);
 
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
@@ -6751,8 +6953,7 @@ async function startNewArticleDraft(source = { sourceType: "paste" }) {
 
   document.getElementById("inputText").value = "";
   document.getElementById("inputPanel").style.display = "block";
-  document.getElementById("readingToolbar").classList.remove("show");
-  document.getElementById("readerLayout").classList.remove("show");
+  setReaderShellActive(false);
   updateReadingProgress();
 
   window.scrollTo({ top: 0, behavior: "smooth" });
@@ -6796,12 +6997,14 @@ applyReadingPreferences();
 initializeSpeechPreferences();
 setupTextDropZone();
 setupPhraseSelection();
+initializeReaderShell();
 checkBackupReminder();
 updateReadingProgress();
 initializeMyArticlesHistory();
 
 document.addEventListener("keydown", function(event) {
   if (event.key === "Escape") {
+    closeReaderPopovers();
     closeModal("vocabModal");
     closeModal("favoritesModal");
     closeModal("settingsModal");

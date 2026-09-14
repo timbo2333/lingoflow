@@ -391,53 +391,83 @@ I felt nervous when I asked my friends for advice, but their suggestions helped 
     </div>
   </div>
 
-  <div id="readingToolbar" class="readingToolbar">
-    <div class="toolbarGroup">
-      <button class="secondary" onclick="editArticle()">← 重新编辑文章</button>
-      <button class="secondary" onclick="startNewArticleDraft()">＋ 新草稿</button>
-      <button id="myArticlesToolbarButton" class="secondary" type="button"
-              onclick="openMyArticles()">📚 我的文章</button>
-      <button class="secondary" onclick="openVocabBook()">🕘 查询记录 <span id="vocabCountBadgeToolbar"></span></button>
-      <button class="secondary" onclick="openFavorites()">⭐ 我的收藏 <span id="favoriteCountBadgeToolbar"></span></button>
-      <button class="secondary" onclick="openSettings()">⚙️ 设置</button>
-      <button class="secondary" onclick="openChangelog()">📝 更新日志</button>
-    </div>
+  <div id="readingToolbar" class="readingToolbar" aria-label="阅读工具栏">
+    <div class="readerHeaderRow">
+      <button class="readerControl readerBackButton" type="button"
+              onclick="editArticle()" aria-label="返回重新编辑文章">
+        <span aria-hidden="true">←</span>
+        <span class="readerBackText">返回</span>
+      </button>
 
-    <div class="articleFindWrap">
-      <input id="articleFindInput" class="articleFindInput" type="text"
-             placeholder="在原文中找词…" autocomplete="off">
-      <span id="articleFindCount" class="articleFindCount"></span>
-      <button class="secondary compactButton" onclick="jumpArticleMatch(-1)">↑</button>
-      <button class="secondary compactButton" onclick="jumpArticleMatch(1)">↓</button>
-    </div>
+      <div class="readerTitleGroup">
+        <h2 id="readerArticleTitle" class="readerArticleTitle">未命名文章</h2>
+      </div>
 
-    <div class="toolbarGroup">
-      <label>
-        语速：
-        <select id="speed" onchange="handleSpeechRateChange(this.value)">
-          <option value="0.7">慢</option>
-          <option value="0.85">稍慢</option>
-          <option value="1" selected>正常</option>
-          <option value="1.15">稍快</option>
-        </select>
-      </label>
+      <div class="readerPrimaryActions">
+        <details id="readerFindMenu" class="readerPopover readerFindPopover">
+          <summary class="readerControl" aria-label="在文章中查找">
+            <span aria-hidden="true">🔍</span>
+            <span class="readerActionText">查找</span>
+          </summary>
+          <div class="readerPopoverPanel readerFindPanel">
+            <label class="readerPanelLabel" for="articleFindInput">在文章中查找</label>
+            <div class="articleFindWrap">
+              <input id="articleFindInput" class="articleFindInput" type="text"
+                     placeholder="输入要查找的词…" autocomplete="off">
+              <span id="articleFindCount" class="articleFindCount" aria-live="polite"></span>
+              <button class="readerIconButton" type="button"
+                      onclick="jumpArticleMatch(-1)" aria-label="上一个匹配" title="上一个匹配">↑</button>
+              <button class="readerIconButton" type="button"
+                      onclick="jumpArticleMatch(1)" aria-label="下一个匹配" title="下一个匹配">↓</button>
+            </div>
+          </div>
+        </details>
 
-      <label>
-        英语声音：
-        <select id="voiceSelect" onchange="handleSpeechVoiceChange(this.value)">
-          <option value="">自动选择</option>
-        </select>
-      </label>
+        <button class="readerControl" type="button"
+                onclick="openReadingSettings()" aria-label="打开阅读显示设置">
+          <span aria-hidden="true">Aa</span>
+        </button>
 
-      <button class="secondary compactButton" onclick="openReadingSettings()">Aa 阅读显示</button>
-      <button class="secondary compactButton" onclick="openHelp()">❓ 帮助</button>
+        <details id="readerMoreMenu" class="readerPopover readerMorePopover">
+          <summary class="readerControl" aria-label="更多阅读操作">
+            <span aria-hidden="true">•••</span>
+          </summary>
+          <div class="readerPopoverPanel readerMorePanel">
+            <div class="readerMoreActions">
+              <button type="button" onclick="startNewArticleDraft()">＋ 新草稿</button>
+              <button id="myArticlesToolbarButton" type="button"
+                      onclick="openMyArticles()">▤ 我的文章</button>
+              <button type="button" onclick="openVocabBook()">🕘 查询记录 <span id="vocabCountBadgeToolbar"></span></button>
+              <button type="button" onclick="openFavorites()">⭐ 我的收藏 <span id="favoriteCountBadgeToolbar"></span></button>
+              <button type="button" onclick="openSettings()">⚙️ 设置</button>
+              <button type="button" onclick="openChangelog()">📝 更新日志</button>
+              <button type="button" onclick="openHelp()">❓ 帮助</button>
+            </div>
+
+            <div class="readerSpeechSettings">
+              <label for="speed">语速</label>
+              <select id="speed" onchange="handleSpeechRateChange(this.value)">
+                <option value="0.7">慢</option>
+                <option value="0.85">稍慢</option>
+                <option value="1" selected>正常</option>
+                <option value="1.15">稍快</option>
+              </select>
+
+              <label for="voiceSelect">英语声音</label>
+              <select id="voiceSelect" onchange="handleSpeechVoiceChange(this.value)">
+                <option value="">自动选择</option>
+              </select>
+            </div>
+          </div>
+        </details>
+      </div>
     </div>
   </div>
 
   <main id="readerLayout">
-    <article id="article"></article>
+    <article id="article" aria-labelledby="readerArticleTitle"></article>
 
-    <aside>
+    <aside aria-label="单词释义">
       <div id="emptySide">
         点击原文中的任意英文单词，释义会显示在这里。
       </div>
@@ -452,7 +482,8 @@ I felt nervous when I asked my friends for advice, but their suggestions helped 
             <div id="partOfSpeech"></div>
           </div>
 
-          <button id="closeCard" onclick="closeWordCard()" title="关闭">×</button>
+          <button id="closeCard" type="button" onclick="closeWordCard()"
+                  title="关闭释义" aria-label="关闭单词释义">×</button>
         </div>
 
         <div id="meaning"></div>
@@ -740,8 +771,8 @@ I felt nervous when I asked my friends for advice, but their suggestions helped 
           <div class="settingLabel">字体大小</div>
           <select id="readerFontSize" class="settingsSelect" onchange="saveReadingPreferences()">
             <option value="18">18px</option>
-            <option value="20">20px</option>
-            <option value="21" selected>21px（默认）</option>
+            <option value="20" selected>20px（默认）</option>
+            <option value="21">21px</option>
             <option value="23">23px</option>
             <option value="25">25px</option>
           </select>
@@ -751,9 +782,9 @@ I felt nervous when I asked my friends for advice, but their suggestions helped 
           <div class="settingLabel">行距</div>
           <select id="readerLineHeight" class="settingsSelect" onchange="saveReadingPreferences()">
             <option value="1.65">紧凑</option>
-            <option value="1.85">适中</option>
-            <option value="2" selected>默认</option>
-            <option value="2.2">宽松</option>
+            <option value="1.85" selected>适中（默认）</option>
+            <option value="2">宽松</option>
+            <option value="2.2">更宽松</option>
             <option value="2.4">很宽松</option>
           </select>
         </div>
@@ -858,7 +889,7 @@ I felt nervous when I asked my friends for advice, but their suggestions helped 
         <div class="settingItem">
           <div class="settingLabel">字体大小</div>
           <select id="readerFontSizeQuick" class="settingsSelect" onchange="syncQuickReadingSetting('font', this.value)">
-            <option value="18">18px</option><option value="20">20px</option>
+            <option value="18">18px</option><option value="20">20px（默认）</option>
             <option value="21">21px</option><option value="23">23px</option><option value="25">25px</option>
           </select>
         </div>
@@ -866,8 +897,8 @@ I felt nervous when I asked my friends for advice, but their suggestions helped 
         <div class="settingItem">
           <div class="settingLabel">行距</div>
           <select id="readerLineHeightQuick" class="settingsSelect" onchange="syncQuickReadingSetting('line', this.value)">
-            <option value="1.65">紧凑</option><option value="1.85">适中</option>
-            <option value="2">默认</option><option value="2.2">宽松</option><option value="2.4">很宽松</option>
+            <option value="1.65">紧凑</option><option value="1.85">适中（默认）</option>
+            <option value="2">宽松</option><option value="2.2">更宽松</option><option value="2.4">很宽松</option>
           </select>
         </div>
 

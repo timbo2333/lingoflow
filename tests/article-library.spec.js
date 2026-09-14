@@ -53,6 +53,21 @@ async function startReading(page) {
   )).toBe(true);
 }
 
+async function openReaderMore(page) {
+  await page.evaluate(() => window.scrollTo({ top: 0, behavior: "auto" }));
+  const menu = page.locator("#readerMoreMenu");
+  if (!await menu.getAttribute("open")) {
+    await menu.locator("summary").click();
+  }
+  await expect(menu).toHaveAttribute("open", "");
+  return menu;
+}
+
+async function startNewDraftFromReader(page) {
+  const menu = await openReaderMore(page);
+  await menu.getByRole("button", { name: /新草稿/ }).click();
+}
+
 test("V0.7 发布信息在主要用户入口保持一致", async ({ page }) => {
   await expect(page).toHaveTitle(/LingoFlow V0\.7/);
   await expect(page.locator(".versionBadge")).toHaveText("V0.7 · 正式版");
@@ -73,7 +88,13 @@ test("V0.7 发布信息在主要用户入口保持一致", async ({ page }) => {
 });
 
 async function openMyArticles(page) {
-  await page.locator("#myArticlesInputButton:visible, #myArticlesToolbarButton:visible").click();
+  const inputButton = page.locator("#myArticlesInputButton");
+  if (await inputButton.isVisible()) {
+    await inputButton.click();
+  } else {
+    const menu = await openReaderMore(page);
+    await menu.locator("#myArticlesToolbarButton").click();
+  }
   await expect(page.locator("#myArticlesModal")).toHaveClass(/show/);
   await expect(page.locator("#myArticlesList")).not.toHaveAttribute("data-state", "loading");
 }
@@ -470,7 +491,7 @@ test("相同正文的不同新草稿使用不同 article id", async ({ page }) =
 
   await fillDraft(page, text);
   await startReading(page);
-  await page.getByRole("button", { name: /新草稿/ }).click();
+  await startNewDraftFromReader(page);
   await fillDraft(page, text);
   await startReading(page);
 
@@ -524,7 +545,7 @@ test("TXT 导入保留来源文件名并用文件名生成标题", async ({ page
 test("TXT 后创建新草稿会清除旧来源", async ({ page }) => {
   await uploadTxt(page, "test.txt", "Original TXT article content.");
   await startReading(page);
-  await page.getByRole("button", { name: /新草稿/ }).click();
+  await startNewDraftFromReader(page);
 
   await expect(page.locator(".dropZoneTitle")).toHaveText("拖拽 TXT 文件到这里");
   await expect(page.locator(".dropZoneHint")).toHaveText("或点击此区域选择文件");
@@ -686,7 +707,7 @@ test("从我的文章重新打开正文不会创建重复记录", async ({ page 
   );
   const [beforeOpen] = await getArticles(page);
 
-  await page.getByRole("button", { name: /新草稿/ }).click();
+  await startNewDraftFromReader(page);
   await openMyArticles(page);
   await getMyArticleItem(page, "Reopen title")
     .getByRole("button", { name: "继续阅读文章：Reopen title" })
@@ -900,7 +921,7 @@ test("debounce 未结束时重新编辑和新草稿都会强制 flush", async ({
   await scrollArticleToProgress(page, 0.54);
   await page.evaluate(() => window.scrollTo({ top: 0, behavior: "auto" }));
   await page.waitForTimeout(100);
-  await page.getByRole("button", { name: /新草稿/ }).click();
+  await startNewDraftFromReader(page);
   await expect(page.locator("#inputText")).toBeVisible();
   await expect(page.locator("#inputText")).toHaveValue("");
 
