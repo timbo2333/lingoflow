@@ -271,7 +271,7 @@ test("Direct Search 与正文查词不会污染 Reader 标题，新正文会更�
   await expect(page.locator("#currentWord")).toHaveText("teams");
   await expect(page.locator("#readerArticleTitle")).toHaveText(firstTitle);
 
-  await page.getByRole("button", { name: /返回重新编辑文章/ }).click();
+  await page.getByRole("button", { name: "返回上一页" }).click();
   await expect(page.locator("#inputText")).toBeVisible();
   await expect(page.locator("#readerLayout")).not.toHaveClass(/show/);
   const secondTitle = "A Different Article About Human-Centered Technology";

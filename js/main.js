@@ -3490,8 +3490,18 @@ const READER_HEADER_TOP_ZONE = 96;
 const ARTICLE_NEAR_COMPLETE_PROGRESS = 0.80;
 const ARTICLE_COMPLETED_PROGRESS = 0.95;
 const MY_ARTICLES_SEARCH_DEBOUNCE_MS = 150;
-const MY_ARTICLES_HISTORY_KEY = "lingoflowMyArticles";
+const APP_NAVIGATION_HISTORY_KEY = "lingoflowNavigation";
+const APP_NAVIGATION_HISTORY_VERSION = 1;
+const LEGACY_MY_ARTICLES_HISTORY_KEY = "lingoflowMyArticles";
 const MY_ARTICLES_HISTORY_VERSION = 1;
+const TRANSIENT_NAVIGATION_MODAL_IDS = Object.freeze([
+  "vocabModal",
+  "favoritesModal",
+  "settingsModal",
+  "readingSettingsModal",
+  "helpModal",
+  "changelogModal"
+]);
 const MY_ARTICLES_FILTER_KEYS = new Set([
   "all", "not-started", "reading", "near-complete", "completed"
 ]);
@@ -3509,7 +3519,9 @@ let myArticlesSearchTimer = null;
 let myArticlesSearchComposing = false;
 let myArticlesHistorySessionId = null;
 let myArticlesHistoryNavigationPending = false;
-let myArticlesHistoryInitialized = false;
+let appNavigationInitialized = false;
+let appNavigationRestoreQueue = Promise.resolve(false);
+const appNavigationBackResolvers = [];
 const myArticleOperations = new Set();
 let readingProgressSaveTimer = null;
 let readingProgressUIFrame = null;
@@ -5964,10 +5976,65 @@ function createMyArticlesHistorySessionId() {
   return `my-articles:${Date.now()}:${Math.random().toString(36).slice(2)}`;
 }
 
-function getMyArticlesHistoryMarker(state = history.state) {
+function getHistoryStateObject(state = history.state) {
+  return state && typeof state === "object" && !Array.isArray(state) ? state : {};
+}
+
+function getAppNavigationState(state = history.state) {
   if (!state || typeof state !== "object" || Array.isArray(state)) return null;
 
-  const marker = state[MY_ARTICLES_HISTORY_KEY];
+  const navigation = state[APP_NAVIGATION_HISTORY_KEY];
+  if (!navigation || typeof navigation !== "object" ||
+      navigation.version !== APP_NAVIGATION_HISTORY_VERSION ||
+      !Number.isInteger(navigation.depth) || navigation.depth < 0) {
+    return null;
+  }
+
+  if (navigation.view === "home") {
+    return {
+      version: APP_NAVIGATION_HISTORY_VERSION,
+      view: "home",
+      depth: navigation.depth
+    };
+  }
+
+  if (navigation.view === "reader") {
+    if (typeof navigation.articleId !== "string" || !navigation.articleId.trim()) {
+      return null;
+    }
+    return {
+      version: APP_NAVIGATION_HISTORY_VERSION,
+      view: "reader",
+      depth: navigation.depth,
+      articleId: navigation.articleId
+    };
+  }
+
+  if (navigation.view === "article-library") {
+    const expectedLibraryDepth = navigation.libraryView === "active"
+      ? 1
+      : (navigation.libraryView === "deleted" ? 2 : 0);
+    if (!expectedLibraryDepth || navigation.libraryDepth !== expectedLibraryDepth ||
+        typeof navigation.sessionId !== "string" || !navigation.sessionId) {
+      return null;
+    }
+    return {
+      version: APP_NAVIGATION_HISTORY_VERSION,
+      view: "article-library",
+      depth: navigation.depth,
+      libraryView: navigation.libraryView,
+      libraryDepth: expectedLibraryDepth,
+      sessionId: navigation.sessionId
+    };
+  }
+
+  return null;
+}
+
+function getLegacyMyArticlesHistoryMarker(state = history.state) {
+  if (!state || typeof state !== "object" || Array.isArray(state)) return null;
+
+  const marker = state[LEGACY_MY_ARTICLES_HISTORY_KEY];
   if (!marker || typeof marker !== "object" ||
       marker.version !== MY_ARTICLES_HISTORY_VERSION ||
       typeof marker.sessionId !== "string" || !marker.sessionId) {
@@ -5987,37 +6054,57 @@ function getMyArticlesHistoryMarker(state = history.state) {
   };
 }
 
-function clearInvalidMyArticlesHistoryMarker() {
-  const state = history.state;
-  if (!state || typeof state !== "object" || Array.isArray(state) ||
-      !Object.prototype.hasOwnProperty.call(state, MY_ARTICLES_HISTORY_KEY) ||
-      getMyArticlesHistoryMarker(state)) {
-    return;
-  }
+function createHomeNavigationState(depth = 0) {
+  return {
+    version: APP_NAVIGATION_HISTORY_VERSION,
+    view: "home",
+    depth
+  };
+}
 
-  const nextState = { ...state };
-  delete nextState[MY_ARTICLES_HISTORY_KEY];
-  history.replaceState(Object.keys(nextState).length ? nextState : null, "");
+function createNavigationHistoryState(navigation, state = history.state) {
+  const nextState = { ...getHistoryStateObject(state) };
+  delete nextState[LEGACY_MY_ARTICLES_HISTORY_KEY];
+  nextState[APP_NAVIGATION_HISTORY_KEY] = navigation;
+  return nextState;
+}
+
+function replaceAppNavigationState(navigation) {
+  history.replaceState(createNavigationHistoryState(navigation), "");
+  return navigation;
+}
+
+function pushAppNavigationState(navigation) {
+  history.pushState(createNavigationHistoryState(navigation), "");
+  return navigation;
+}
+
+function getMyArticlesHistoryMarker(state = history.state) {
+  const navigation = getAppNavigationState(state);
+  if (!navigation || navigation.view !== "article-library") return null;
+
+  return {
+    version: MY_ARTICLES_HISTORY_VERSION,
+    view: navigation.libraryView,
+    depth: navigation.libraryDepth,
+    sessionId: navigation.sessionId
+  };
 }
 
 function pushMyArticlesHistoryState(view) {
-  const depth = view === "deleted" ? 2 : 1;
-  const marker = {
-    version: MY_ARTICLES_HISTORY_VERSION,
-    view,
-    depth,
+  const currentNavigation = getAppNavigationState();
+  const libraryDepth = view === "deleted" ? 2 : 1;
+  const navigation = {
+    version: APP_NAVIGATION_HISTORY_VERSION,
+    view: "article-library",
+    depth: (currentNavigation?.depth || 0) + 1,
+    libraryView: view,
+    libraryDepth,
     sessionId: myArticlesHistorySessionId
   };
-  const currentState = history.state && typeof history.state === "object" &&
-    !Array.isArray(history.state)
-    ? history.state
-    : {};
 
-  history.pushState({
-    ...currentState,
-    [MY_ARTICLES_HISTORY_KEY]: marker
-  }, "");
-  return marker;
+  pushAppNavigationState(navigation);
+  return getMyArticlesHistoryMarker();
 }
 
 function hideMyArticlesModalUI() {
@@ -6086,45 +6173,192 @@ function returnToActiveMyArticlesView() {
   return true;
 }
 
-function handleMyArticlesPopState() {
-  const wasPending = myArticlesHistoryNavigationPending;
-  myArticlesHistoryNavigationPending = false;
-  const marker = getMyArticlesHistoryMarker();
+function closeTransientNavigationUI() {
+  closeReaderPopovers();
+  closeWordCard();
+  hidePhraseSelectionToolbar(true);
+  hideSearchSuggestions();
+  TRANSIENT_NAVIGATION_MODAL_IDS.forEach(id => {
+    document.getElementById(id)?.classList.remove("show");
+  });
+}
 
-  if (marker) {
-    void applyMyArticlesHistoryState(marker);
+function hasOpenTransientModal() {
+  return TRANSIENT_NAVIGATION_MODAL_IDS.some(id =>
+    document.getElementById(id)?.classList.contains("show")
+  );
+}
+
+function isReaderViewActive() {
+  return document.body.classList.contains("readerActive") ||
+    document.getElementById("readerLayout")?.classList.contains("show");
+}
+
+async function restoreHomeView() {
+  myArticlesHistoryNavigationPending = false;
+  if (document.getElementById("myArticlesModal")?.classList.contains("show")) {
+    hideMyArticlesModalUI();
+  }
+  closeTransientNavigationUI();
+
+  if (isReaderViewActive()) {
+    await editArticle();
+    return true;
+  }
+
+  document.getElementById("inputPanel").style.display = "block";
+  setReaderShellActive(false);
+  return true;
+}
+
+async function restoreViewFromHistory(navigation, options = {}) {
+  if (!navigation || navigation.view === "home") {
+    return restoreHomeView();
+  }
+
+  if (navigation.view === "article-library") {
+    closeTransientNavigationUI();
+    if (isReaderViewActive()) await editArticle();
+    const marker = getMyArticlesHistoryMarker({
+      [APP_NAVIGATION_HISTORY_KEY]: navigation
+    });
+    return applyMyArticlesHistoryState(marker, {
+      resetSessionState: Boolean(options.resetSessionState)
+    });
+  }
+
+  if (navigation.view === "reader") {
+    myArticlesHistoryNavigationPending = false;
+    if (document.getElementById("myArticlesModal")?.classList.contains("show")) {
+      hideMyArticlesModalUI();
+    }
+    closeTransientNavigationUI();
+    if (isReaderViewActive() && activeArticleId === navigation.articleId) {
+      return true;
+    }
+    const opened = await openSavedArticle(navigation.articleId, { fromHistory: true });
+    if (opened) return true;
+
+    replaceAppNavigationState(createHomeNavigationState(navigation.depth));
+    await restoreHomeView();
+    return false;
+  }
+
+  replaceAppNavigationState(createHomeNavigationState());
+  return restoreHomeView();
+}
+
+function resolveAppNavigationBackRequests(result) {
+  const resolvers = appNavigationBackResolvers.splice(0);
+  resolvers.forEach(resolve => resolve(result));
+}
+
+function queueAppNavigationRestore(navigation, options = {}) {
+  appNavigationRestoreQueue = appNavigationRestoreQueue
+    .catch(() => false)
+    .then(() => restoreViewFromHistory(navigation, options))
+    .catch(error => {
+      console.error("Navigation restore error:", error);
+      replaceAppNavigationState(createHomeNavigationState(navigation?.depth || 0));
+      return restoreHomeView().then(() => false);
+    })
+    .finally(() => {
+      resolveAppNavigationBackRequests(true);
+    });
+  return appNavigationRestoreQueue;
+}
+
+function handleAppNavigationPopState(event) {
+  myArticlesHistoryNavigationPending = false;
+  if (isReaderViewActive() && hasOpenTransientModal()) {
+    closeTransientNavigationUI();
+    history.forward();
     return;
   }
 
-  if (wasPending || document.getElementById("myArticlesModal")?.classList.contains("show")) {
-    hideMyArticlesModalUI();
+  let navigation = getAppNavigationState(event.state);
+  if (!navigation) {
+    navigation = createHomeNavigationState();
+    replaceAppNavigationState(navigation);
   }
+  void queueAppNavigationRestore(navigation);
 }
 
-function handleMyArticlesPageShow(event) {
+function handleAppNavigationPageShow(event) {
   if (!event.persisted) return;
 
-  const marker = getMyArticlesHistoryMarker();
-  if (marker) {
-    void applyMyArticlesHistoryState(marker, {
-      resetSessionState: !document.getElementById("myArticlesModal")?.classList.contains("show")
-    });
-  } else if (document.getElementById("myArticlesModal")?.classList.contains("show")) {
-    hideMyArticlesModalUI();
+  let navigation = getAppNavigationState();
+  if (!navigation) {
+    navigation = createHomeNavigationState();
+    replaceAppNavigationState(navigation);
+  }
+  void queueAppNavigationRestore(navigation, { resetSessionState: true });
+}
+
+function initializeAppNavigation() {
+  if (appNavigationInitialized) return;
+  appNavigationInitialized = true;
+  window.addEventListener("popstate", handleAppNavigationPopState);
+  window.addEventListener("pageshow", handleAppNavigationPageShow);
+
+  let navigation = getAppNavigationState();
+  if (!navigation) {
+    const legacyMarker = getLegacyMyArticlesHistoryMarker();
+    navigation = legacyMarker
+      ? {
+        version: APP_NAVIGATION_HISTORY_VERSION,
+        view: "article-library",
+        depth: legacyMarker.depth,
+        libraryView: legacyMarker.view,
+        libraryDepth: legacyMarker.depth,
+        sessionId: legacyMarker.sessionId
+      }
+      : createHomeNavigationState();
+  }
+
+  replaceAppNavigationState(navigation);
+  if (navigation.view !== "home") {
+    void queueAppNavigationRestore(navigation, { resetSessionState: true });
   }
 }
 
-function initializeMyArticlesHistory() {
-  if (myArticlesHistoryInitialized) return;
-  myArticlesHistoryInitialized = true;
-  window.addEventListener("popstate", handleMyArticlesPopState);
-  window.addEventListener("pageshow", handleMyArticlesPageShow);
-
-  clearInvalidMyArticlesHistoryMarker();
-  const marker = getMyArticlesHistoryMarker();
-  if (marker) {
-    void applyMyArticlesHistoryState(marker, { resetSessionState: true });
+function pushReaderHistoryState(articleId) {
+  const currentNavigation = getAppNavigationState();
+  if (currentNavigation?.view === "reader" &&
+      currentNavigation.articleId === articleId) {
+    return currentNavigation;
   }
+
+  return pushAppNavigationState({
+    version: APP_NAVIGATION_HISTORY_VERSION,
+    view: "reader",
+    depth: (currentNavigation?.depth || 0) + 1,
+    articleId
+  });
+}
+
+function pushHomeHistoryState() {
+  const currentNavigation = getAppNavigationState();
+  if (currentNavigation?.view === "home") return currentNavigation;
+
+  return pushAppNavigationState(
+    createHomeNavigationState((currentNavigation?.depth || 0) + 1)
+  );
+}
+
+async function returnFromReader() {
+  const navigation = getAppNavigationState();
+  if (navigation?.view === "reader" && navigation.depth > 0) {
+    return new Promise(resolve => {
+      const shouldNavigate = appNavigationBackResolvers.length === 0;
+      appNavigationBackResolvers.push(resolve);
+      if (shouldNavigate) history.back();
+    });
+  }
+
+  const homeNavigation = createHomeNavigationState();
+  replaceAppNavigationState(homeNavigation);
+  return restoreViewFromHistory(homeNavigation);
 }
 
 function updateMyArticlesContinueReading(article, deletedView = false) {
@@ -6369,7 +6603,7 @@ async function deleteMyArticle(articleId, item) {
     });
 
     if (deletingCurrentArticle) {
-      await startNewArticleDraft();
+      await startNewArticleDraft({ sourceType: "paste" }, { updateHistory: false });
     }
 
     await renderMyArticles();
@@ -6623,8 +6857,8 @@ async function openMyArticles() {
   return applyMyArticlesHistoryState(activeMarker, { resetSessionState: true });
 }
 
-async function openSavedArticle(articleId) {
-  if (!confirmReplacingUnsavedDraft()) return false;
+async function openSavedArticle(articleId, options = {}) {
+  if (!options.fromHistory && !confirmReplacingUnsavedDraft()) return false;
 
   try {
     await flushReadingProgress();
@@ -6650,14 +6884,17 @@ async function openSavedArticle(articleId) {
     draftSource = getArticleSource(openedArticle);
     initializeReadingProgressSession(openedArticle);
 
-    closeModal("myArticlesModal");
+    hideMyArticlesModalUI();
     await renderArticleText(openedArticle.content, {
       articleTitle: openedArticle.title,
       restoreReading: openedArticle.reading
     });
+    if (!options.fromHistory) pushReaderHistoryState(openedArticle.id);
     return true;
   } catch (error) {
-    alert(`无法打开文章：${error.message || "未知错误"}`);
+    if (!options.fromHistory) {
+      alert(`无法打开文章：${error.message || "未知错误"}`);
+    }
     return false;
   }
 }
@@ -6890,6 +7127,7 @@ function generateArticle() {
         articleTitle: savedArticle.title,
         restoreReading: restoreExistingReading ? savedArticle.reading : null
       });
+      pushReaderHistoryState(savedArticle.id);
       void requestPersistentStorageBestEffort();
       return savedArticle;
     } catch (error) {
@@ -6932,7 +7170,7 @@ async function editArticle() {
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
-async function startNewArticleDraft(source = { sourceType: "paste" }) {
+async function startNewArticleDraft(source = { sourceType: "paste" }, options = {}) {
   await flushReadingProgress();
   clearReadingProgressSession();
   readingPositionRenderToken += 1;
@@ -6955,6 +7193,8 @@ async function startNewArticleDraft(source = { sourceType: "paste" }) {
   document.getElementById("inputPanel").style.display = "block";
   setReaderShellActive(false);
   updateReadingProgress();
+
+  if (options.updateHistory !== false) pushHomeHistoryState();
 
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
@@ -7000,7 +7240,7 @@ setupPhraseSelection();
 initializeReaderShell();
 checkBackupReminder();
 updateReadingProgress();
-initializeMyArticlesHistory();
+initializeAppNavigation();
 
 document.addEventListener("keydown", function(event) {
   if (event.key === "Escape") {
@@ -7020,7 +7260,7 @@ document.addEventListener("keydown", function(event) {
     const search = document.getElementById("directSearchInput");
     void (async () => {
       if (document.getElementById("inputPanel").style.display === "none") {
-        await editArticle();
+        await returnFromReader();
       }
       search.focus();
       search.select();

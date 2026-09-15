@@ -128,7 +128,9 @@ async function searchMyArticles(page, query, normalizedQuery = query) {
 
 async function expectMyArticlesHistoryView(page, view) {
   await expect.poll(() => page.evaluate(() => (
-    history.state?.lingoflowMyArticles?.view || null
+    history.state?.lingoflowNavigation?.view === "article-library"
+      ? history.state.lingoflowNavigation.libraryView
+      : null
   ))).toBe(view);
 }
 
@@ -517,7 +519,7 @@ test("重新编辑保持 id、createdAt 和 reading，并更新 updatedAt", asyn
   );
 
   await page.waitForTimeout(20);
-  await page.getByRole("button", { name: /重新编辑文章/ }).click();
+  await page.getByRole("button", { name: "返回上一页" }).click();
   await fillDraft(page, "Editable title\nUpdated article content.");
   await startReading(page);
 
@@ -607,7 +609,8 @@ test("页面刷新后文章仍保存在 IndexedDB", async ({ page }) => {
   const [before] = await getArticles(page);
 
   await page.reload();
-  await expect(page.locator("#inputText")).toBeVisible();
+  await expect(page.locator("#readerLayout")).toHaveClass(/show/);
+  await expect(page.locator("#readerArticleTitle")).toHaveText("Persistent title");
 
   const articles = await getArticles(page);
   expect(articles).toHaveLength(1);
@@ -785,7 +788,7 @@ test("行内编辑标题保持文章数据并同步当前文章状态", async ({
   expect(Date.parse(renamed.updatedAt)).toBeGreaterThan(Date.parse(article.updatedAt));
 
   await page.getByRole("button", { name: "关闭我的文章" }).click();
-  await page.getByRole("button", { name: /重新编辑文章/ }).click();
+  await page.getByRole("button", { name: "返回上一页" }).click();
   await fillDraft(page, "Updated article body without changing the renamed title.");
   await startReading(page);
 
@@ -802,6 +805,8 @@ test("刷新页面后仍可从我的文章重新打开旧文章", async ({ page 
   const [before] = await getArticles(page);
 
   await page.reload();
+  await expect(page.locator("#readerLayout")).toHaveClass(/show/);
+  await page.goBack();
   await expect(page.locator("#inputText")).toBeVisible();
   await openMyArticles(page);
   await getMyArticleItem(page, "Reload library title")
@@ -909,7 +914,7 @@ test("debounce 未结束时重新编辑和新草稿都会强制 flush", async ({
   await scrollArticleToProgress(page, 0.29);
   await page.evaluate(() => window.scrollTo({ top: 0, behavior: "auto" }));
   await page.waitForTimeout(100);
-  await page.getByRole("button", { name: /重新编辑文章/ }).click();
+  await page.getByRole("button", { name: "返回上一页" }).click();
   await expect(page.locator("#inputText")).toBeVisible();
 
   await expect.poll(async () => {
@@ -1044,12 +1049,8 @@ test("刷新后从我的文章打开会恢复保存的 paragraphIndex", async ({
   expect(saved.reading.paragraphIndex).toBeGreaterThan(0);
 
   await page.reload();
-  await expect(page.locator("#inputText")).toBeVisible();
-  await openMyArticles(page);
-  await getMyArticleItem(page, "Restore saved paragraph")
-    .getByRole("button", { name: "继续阅读文章：Restore saved paragraph" })
-    .click();
-  await expect(page.locator("#myArticlesModal")).not.toHaveClass(/show/);
+  await expect(page.locator("#readerLayout")).toHaveClass(/show/);
+  await expect(page.locator("#readerArticleTitle")).toHaveText("Restore saved paragraph");
   await expect.poll(() => page.evaluate(() => Boolean(calculateArticleReadingSnapshot())))
     .toBe(true);
 
@@ -1096,10 +1097,10 @@ test("paragraphIndex 无效时在不同 viewport 和字体下使用 progress 恢
 
   await page.setViewportSize({ width: 620, height: 760 });
   await page.reload();
-  await openMyArticles(page);
-  await getMyArticleItem(page, "Progress fallback after layout change")
-    .getByRole("button", { name: "继续阅读文章：Progress fallback after layout change" })
-    .click();
+  await expect(page.locator("#readerLayout")).toHaveClass(/show/);
+  await expect(page.locator("#readerArticleTitle")).toHaveText(
+    "Progress fallback after layout change"
+  );
   await expect.poll(() => page.evaluate(() => Boolean(calculateArticleReadingSnapshot())))
     .toBe(true);
 
@@ -1435,7 +1436,7 @@ test("删除有未保存正文修改的当前文章会触发草稿保护", async
   await fillDraft(page, "Protected article\nThe saved article body.");
   await startReading(page);
   const [created] = await getArticles(page);
-  await page.getByRole("button", { name: /重新编辑文章/ }).click();
+  await page.getByRole("button", { name: "返回上一页" }).click();
   await page.locator("#inputText").fill("Protected article\nUnsaved article body.");
   await openMyArticles(page);
 
@@ -2674,7 +2675,12 @@ test("刷新时会清理无效的我的文章 history marker", async ({ page }) 
   await page.reload();
   await expect(page.locator("#myArticlesModal")).not.toHaveClass(/show/);
   expect(await page.evaluate(() => history.state)).toEqual({
-    preservedState: "keep-me"
+    preservedState: "keep-me",
+    lingoflowNavigation: {
+      version: 1,
+      view: "home",
+      depth: 0
+    }
   });
   expect(page.url()).toBe(originalUrl);
 });
