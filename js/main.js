@@ -465,8 +465,11 @@ function flashSpeechButton(button, success = true) {
   if (!button) return;
 
   const original = button.dataset.originalLabel || button.textContent.trim();
+  const quietIconOnly = button.classList.contains("quietIconButton");
   button.dataset.originalLabel = original;
-  button.textContent = success ? "🔊 播放中" : "⚠️ 播放失败";
+  button.textContent = quietIconOnly
+    ? (success ? "🔊" : "⚠️")
+    : (success ? "🔊 播放中" : "⚠️ 播放失败");
   button.disabled = true;
 
   setTimeout(() => {
@@ -2712,14 +2715,37 @@ function openVocabBook() {
   renderVocabBook();
 }
 
+function setVocabSortMode(sortMode) {
+  const select = document.getElementById("vocabSortSelect");
+  if (!select || !["recent", "high"].includes(sortMode)) return;
+  select.value = sortMode;
+  renderVocabBook();
+}
+
 function renderVocabBook() {
+  closeContextualPopovers();
   const box = document.getElementById("vocabList");
   const filter = (document.getElementById("vocabFilterInput")?.value || "")
     .trim().toLowerCase();
 
   const sortMode = document.getElementById("vocabSortSelect")?.value || "recent";
+  const allData = Object.values(getVocabData());
 
-  let data = Object.values(getVocabData())
+  document.querySelectorAll("[data-history-view]").forEach(button => {
+    const selected = button.dataset.historyView === sortMode;
+    button.classList.toggle("isActive", selected);
+    button.setAttribute("aria-pressed", String(selected));
+  });
+
+  const summary = document.getElementById("vocabSummary");
+  if (summary) {
+    const lookupCount = allData.reduce((total, item) => total + Number(item.count || 0), 0);
+    summary.textContent = allData.length
+      ? `${allData.length} 个词 · 共查询 ${lookupCount} 次`
+      : "从一次查询开始，慢慢看见自己的阅读轨迹。";
+  }
+
+  let data = allData
     .filter(item => {
       if (!filter) return true;
       return (item.word || "").toLowerCase().includes(filter) ||
@@ -2740,55 +2766,119 @@ function renderVocabBook() {
   }
 
   if (!data.length) {
-    box.innerHTML =
-      '<div class="searchEmpty">这里还没有查询记录。点击文章单词或使用搜索框后会自动记录。</div>';
+    box.innerHTML = allData.length
+      ? '<div class="collectionEmpty"><strong>没有找到匹配的查询记录。</strong><span>换一个词试试。</span></div>'
+      : '<div class="collectionEmpty"><strong>还没有查询过单词。</strong><span>阅读时点一下单词，或在首页直接查词，记录会出现在这里。</span></div>';
     return;
   }
 
-  box.innerHTML = data.map(item => {
-    const articleCount = Number(item.articleCount || 0);
-    const searchCount = Number(item.searchCount || 0);
-    let sourceText = "";
-
-    if (articleCount || searchCount) {
-      const parts = [];
-      if (articleCount) parts.push(`文章点击 ${articleCount} 次`);
-      if (searchCount) parts.push(`搜索 ${searchCount} 次`);
-      sourceText = parts.join(" · ");
-    } else {
-      sourceText = "早期版本记录";
-    }
+  box.innerHTML = data.map((item, index) => {
+    const word = item.word || "";
+    const lookupCount = Number(item.count || 0);
+    const normalizedWord = normalizeWord(word);
+    const alreadyFavorited = Boolean(
+      normalizedWord && findActiveFavorites("word", normalizedWord).length
+    );
 
     return `
-      <div class="vocabItem">
-        <div>
-          <div class="vocabWord">${escapeHtml(item.word || "")}
-            <span style="font-weight:400;color:#8e8e93;font-size:13px">
-              ${escapeHtml(item.phonetic || "")}
-            </span>
+      <div class="vocabItem ${lookupCount > 1 ? "repeated" : ""}">
+        <div class="historyItemMain">
+          <div class="historyWordRow">
+            <div class="vocabWord">${escapeHtml(word)}</div>
+            ${item.phonetic ? `<span class="historyPhonetic">${escapeHtml(item.phonetic)}</span>` : ""}
           </div>
-          <div class="vocabMeaning">${escapeHtml(item.meaning || "")}</div>
-          <div class="vocabMeta">${escapeHtml(item.pos || "")}</div>
-          <div class="querySourceMeta">${escapeHtml(sourceText)}</div>
-          <div class="vocabMeta">
-            首次：${formatLearningDate(item.firstSeen)} · 最近：${formatLearningDate(item.lastSeen)}
+          ${item.meaning
+            ? `<div class="vocabMeaning historyMeaning" data-history-meaning-index="${index}"></div>`
+            : ""}
+          <div class="historyMetaRow">
+            ${item.pos ? `<span>${escapeHtml(item.pos)}</span>` : ""}
+            <span>最近查询 ${formatLearningDate(item.lastSeen)}</span>
           </div>
         </div>
 
-        <div class="vocabRight">
-          查询 ${Number(item.count || 0)} 次
+        <div class="historyItemAside">
+          <span class="historyLookupCount">查过 ${lookupCount} 次</span>
           <div class="historyItemActions">
-            <button class="secondary compactButton historySpeakButton"
-                    onclick="speakHistoryWord('${escapeJs(item.word || "")}', this)"
-                    title="朗读 ${escapeHtml(item.word || "")}">
-              🔊 发音
+            <button type="button"
+                    class="secondary compactButton dictionaryFavoriteButton historyFavoriteButton ${alreadyFavorited ? 'favoriteCardActive' : ''}"
+                    aria-pressed="${alreadyFavorited ? 'true' : 'false'}"
+                    aria-label="${alreadyFavorited ? `${escapeHtml(word)} 已收藏` : `收藏 ${escapeHtml(word)}`}"
+                    onclick="favoriteHistoryWord('${escapeJs(word)}', this)"
+                    ${alreadyFavorited ? "disabled" : ""}>
+              ${alreadyFavorited ? "★ 已收藏" : "☆ 收藏"}
             </button>
-            <button class="removeTiny" onclick="removeVocabWord('${escapeJs(item.word || "")}')">删除记录</button>
+            <button class="quietIconButton historySpeakButton"
+                    onclick="speakHistoryWord('${escapeJs(word)}', this)"
+                    aria-label="朗读 ${escapeHtml(word)}" title="朗读 ${escapeHtml(word)}">
+              🔊
+            </button>
+            <details class="itemMore historyItemMore"
+                     ontoggle="handleContextualPopoverToggle(event)">
+              <summary aria-label="更多关于 ${escapeHtml(word)} 的操作">•••</summary>
+              <div class="itemMoreMenu">
+                <button class="removeTiny" onclick="removeVocabWord('${escapeJs(word)}')">删除记录</button>
+              </div>
+            </details>
           </div>
         </div>
       </div>
     `;
   }).join("");
+
+  data.forEach((item, index) => {
+    if (!item.meaning) return;
+    renderDictionaryText(
+      box.querySelector(`[data-history-meaning-index="${index}"]`),
+      item.meaning
+    );
+  });
+}
+
+async function favoriteHistoryWord(word, button = null) {
+  const text = normalizeWord(word);
+  if (!text) return null;
+
+  const existing = findActiveFavorites("word", text);
+  if (existing.length) return existing[0];
+
+  const historyItem = Object.values(getVocabData()).find(item => (
+    normalizeWord(item?.word || "") === text
+  ));
+  if (!historyItem) return null;
+
+  if (button) {
+    button.disabled = true;
+    button.setAttribute("aria-busy", "true");
+    button.textContent = "收藏中…";
+  }
+
+  try {
+    const favorite = requireFavoriteMutation(
+      await getFavoriteAppSync().create({
+        type: "word",
+        text,
+        displayText: historyItem.word || word,
+        phonetic: historyItem.phonetic || "",
+        partOfSpeech: historyItem.pos || "",
+        meaning: historyItem.meaning || "",
+        context: "",
+        note: "",
+        tags: [],
+        origin: { kind: "query-history" }
+      }),
+      "create"
+    );
+    refreshFavoriteUi();
+    renderVocabBook();
+    return favorite;
+  } catch (error) {
+    if (button?.isConnected) {
+      button.disabled = false;
+      button.removeAttribute("aria-busy");
+      button.textContent = "☆ 收藏";
+    }
+    throw error;
+  }
 }
 
 function removeVocabWord(word) {
@@ -3114,7 +3204,15 @@ function openFavorites() {
   renderFavorites();
 }
 
+function setFavoriteMasterFilter(masterFilter) {
+  const input = document.getElementById("favoriteMasterFilter");
+  if (!input || !["all", "learning", "mastered"].includes(masterFilter)) return;
+  input.value = masterFilter;
+  renderFavorites();
+}
+
 function renderFavorites() {
+  closeContextualPopovers();
   const box = document.getElementById("favoritesList");
   const filter = (document.getElementById("favoriteFilterInput")?.value || "")
     .trim().toLowerCase();
@@ -3125,11 +3223,27 @@ function renderFavorites() {
     getFavoriteLearningRepository().list().map(state => [state.favoriteId, state])
   );
 
-  let items = getFavoriteRepository().list()
-    .map(item => ({
-      ...item,
-      isMastered: Boolean(learningByFavoriteId.get(item.id)?.mastered)
-    }))
+  const allItems = getFavoriteRepository().list().map(item => ({
+    ...item,
+    isMastered: Boolean(learningByFavoriteId.get(item.id)?.mastered)
+  }));
+  const learningCount = allItems.filter(item => !item.isMastered).length;
+  const masteredCount = allItems.length - learningCount;
+
+  document.querySelectorAll("[data-master-filter]").forEach(button => {
+    const selected = button.dataset.masterFilter === masterFilter;
+    button.classList.toggle("isActive", selected);
+    button.setAttribute("aria-pressed", String(selected));
+  });
+
+  const summary = document.getElementById("favoritesSummary");
+  if (summary) {
+    summary.textContent = allItems.length
+      ? `${allItems.length} 项收藏 · ${learningCount} 项学习中 · ${masteredCount} 项已掌握`
+      : "把值得回看的词留下来，形成自己的学习清单。";
+  }
+
+  let items = allItems
     .filter(item => {
       const matchesText = !filter ||
         (item.text || "").toLowerCase().includes(filter) ||
@@ -3159,8 +3273,9 @@ function renderFavorites() {
   }
 
   if (!items.length) {
-    box.innerHTML =
-      '<div class="searchEmpty">还没有收藏。点开单词可以收藏单词；划选多个英文单词可以收藏词组。</div>';
+    box.innerHTML = allItems.length
+      ? '<div class="collectionEmpty"><strong>这个筛选下还没有收藏。</strong><span>试试“全部”，或换一个关键词。</span></div>'
+      : '<div class="collectionEmpty"><strong>还没有收藏的词。</strong><span>阅读时点一下「收藏」，值得复习的词会出现在这里。</span></div>';
     return;
   }
 
@@ -3171,43 +3286,29 @@ function renderFavorites() {
     const favoriteId = item.id;
 
     return `
-      <div class="favoriteItem" data-favorite-id="${escapeHtml(favoriteId)}">
+      <div class="favoriteItem ${item.isMastered ? "mastered" : "learning"}"
+           data-favorite-id="${escapeHtml(favoriteId)}">
         <div class="favoriteTop">
-          <div>
-            <div class="favoriteWord">
-              <span class="favoriteTypeBadge ${favoriteType}">${favoriteType === "phrase" ? "PHRASE" : "WORD"}</span>
-              ${escapeHtml(item.text || "")}
-              <span class="favoritePhonetic">${escapeHtml(item.phonetic || "")}</span>
+          <div class="favoritePrimary">
+            <div class="favoriteIdentityRow">
+              <span class="favoriteTypeBadge ${favoriteType}">${favoriteType === "phrase" ? "词组" : "单词"}</span>
+              <div class="favoriteWord">${escapeHtml(item.displayText || item.text || "")}</div>
+              ${item.phonetic ? `<span class="favoritePhonetic">${escapeHtml(item.phonetic)}</span>` : ""}
             </div>
             <div class="favoriteMeaning">
               ${item.meaning
                 ? escapeHtml(item.meaning)
-                : '<span style="color:#999">未填写释义</span>'}
+                : '<span class="favoriteMissingMeaning">还没有填写释义</span>'}
             </div>
-            <div class="vocabMeta">
-              ${item.partOfSpeech
-                ? escapeHtml(item.partOfSpeech)
-                : '<span style="color:#aaa">词性 / 说明未填写</span>'}
-            </div>
-
-            <div class="favoriteBadgeRow">
-              <span class="masterBadge ${item.isMastered ? 'mastered' : ''}">
-                ${item.isMastered ? '✓ 已掌握' : '学习中'}
-              </span>
-              ${(item.tags || []).map(tag => `<span class="tagBadge">#${escapeHtml(tag)}</span>`).join("")}
-            </div>
+            ${item.partOfSpeech ? `<div class="favoritePartOfSpeech">${escapeHtml(item.partOfSpeech)}</div>` : ""}
           </div>
 
           <div class="favoriteTopActions">
-            <button class="secondary compactButton favoriteSpeakButton"
+            <button class="quietIconButton favoriteSpeakButton"
                     onclick="event.stopPropagation(); speakFavoriteWord('${escapeJs(item.displayText || item.text || "")}', this)"
+                    aria-label="朗读 ${escapeHtml(item.displayText || item.text || "")}"
                     title="朗读 ${escapeHtml(item.displayText || item.text || "")}">
-              🔊 发音
-            </button>
-
-            <button class="secondary compactButton editFavoriteButton"
-                    onclick="editFavorite('${escapeJs(favoriteId)}', this)">
-              ✏️ 编辑
+              🔊
             </button>
 
             <button class="secondary compactButton favoriteCancelEditButton"
@@ -3215,32 +3316,50 @@ function renderFavorites() {
               收起
             </button>
 
-            <button class="removeTiny"
-                    onclick="removeFavorite('${escapeJs(favoriteId)}')">
-              取消收藏
-            </button>
+            <details class="itemMore favoriteMore"
+                     ontoggle="handleContextualPopoverToggle(event)">
+              <summary aria-label="更多关于 ${escapeHtml(item.displayText || item.text || "")} 的操作">•••</summary>
+              <div class="itemMoreMenu">
+                <button class="secondary compactButton editFavoriteButton"
+                        onclick="editFavorite('${escapeJs(favoriteId)}', this)">
+                  编辑收藏
+                </button>
+                <button class="removeTiny"
+                        onclick="removeFavorite('${escapeJs(favoriteId)}')">
+                  取消收藏
+                </button>
+              </div>
+            </details>
           </div>
         </div>
 
         <div class="favoritePreviewArea">
-          ${sentence ? `
-            <div class="favoritePreviewBlock">
-              <div class="favoritePreviewLabel">上下文</div>
-              <div class="favoritePreviewText">${escapeHtml(sentence)}</div>
+          ${note ? `
+            <div class="favoritePreviewBlock favoriteNotePreview">
+              <div class="favoritePreviewLabel">备注</div>
+              <div class="favoritePreviewText">${escapeHtml(note)}</div>
             </div>
           ` : ""}
 
-          ${note ? `
-            <div class="favoritePreviewBlock favoriteNotePreview">
-              <div class="favoritePreviewLabel">我的备注</div>
-              <div class="favoritePreviewText">${escapeHtml(note)}</div>
+          ${(item.tags || []).length ? `
+            <div class="favoriteTagRow">
+              ${(item.tags || []).map(tag => `<span class="tagBadge">#${escapeHtml(tag)}</span>`).join("")}
+            </div>
+          ` : ""}
+
+          ${sentence ? `
+            <div class="favoriteContextLine">
+              <span>上下文</span>
+              <q>${escapeHtml(sentence)}</q>
             </div>
           ` : ""}
 
           <div class="favoriteCompactBottom">
             <div class="favoriteCompactMeta">
-              <div class="favoriteDate">收藏：${formatLearningDate(item.createdAt)}</div>
-              ${note ? '<div class="favoriteDate">已有备注</div>' : ''}
+              <span class="masterBadge ${item.isMastered ? "mastered" : ""}">
+                ${item.isMastered ? "✓ 已掌握" : "学习中"}
+              </span>
+              <span class="favoriteDate">收藏于 ${formatLearningDate(item.createdAt)}</span>
             </div>
             <button type="button"
                     class="secondary compactButton favoriteLearningQuickButton ${item.isMastered ? 'mastered' : ''}"
@@ -3342,6 +3461,9 @@ async function toggleFavoriteMastered(favoriteId, button) {
 function editFavorite(favoriteId, button) {
   const card = button.closest(".favoriteItem");
   if (!card) return;
+
+  const menu = button.closest("details");
+  if (menu) menu.open = false;
 
   // 一次只展开一个收藏，避免页面又被撑得很长
   document.querySelectorAll(".favoriteItem.editing").forEach(item => {
@@ -5148,8 +5270,43 @@ document.getElementById("articleFindInput").addEventListener("keydown", event =>
    ========================= */
 
 const modalBackdropPointerIds = new Map();
+let activeContextualPopover = null;
+
+function closeContextualPopovers(except = null) {
+  document.querySelectorAll(".collectionManage[open], .itemMore[open]")
+    .forEach(popover => {
+      if (popover !== except) popover.open = false;
+    });
+  activeContextualPopover = except?.open ? except : null;
+}
+
+function handleContextualPopoverToggle(event) {
+  const popover = event.currentTarget;
+  if (!popover?.open) {
+    if (activeContextualPopover === popover) activeContextualPopover = null;
+    return;
+  }
+  closeContextualPopovers(popover);
+}
+
+document.addEventListener("pointerdown", event => {
+  if (!event.target.closest(".collectionManage, .itemMore")) {
+    closeContextualPopovers();
+  }
+});
+
+document.addEventListener("keydown", event => {
+  if (event.key !== "Escape" || !document.querySelector(
+    ".collectionManage[open], .itemMore[open]"
+  )) return;
+
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  closeContextualPopovers();
+}, true);
 
 function closeModal(id) {
+  closeContextualPopovers();
   modalBackdropPointerIds.delete(id);
   if (id === "myArticlesModal") {
     closeMyArticlesModal();

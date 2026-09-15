@@ -69,7 +69,7 @@ async function waitForSyncState(page, expected, options = {}) {
   }
 }
 
-test("页面五个 Favorite writer 全部经过 App Sync boundary", async ({ page }) => {
+test("页面 Favorite writer（含 History 收藏）全部经过 App Sync boundary", async ({ page }) => {
   await page.goto("/");
   const result = await page.evaluate(async () => {
     const repository = window.LingoFlowFavoriteRepository;
@@ -111,6 +111,13 @@ test("页面五个 Favorite writer 全部经过 App Sync boundary", async ({ pag
     });
     const phrase = repository.findByContent({ type: "phrase", text: "make progress" })[0];
 
+    addToVocab("Historical", {
+      phonetic: "/hɪˈstɒrɪkəl/",
+      pos: "adjective",
+      meaning: "历史的"
+    }, "search");
+    const historyFavorite = await favoriteHistoryWord("Historical");
+
     renderFavorites();
     const wordCard = document.querySelector(`[data-favorite-id="${word.id}"]`);
     wordCard.querySelector(".meaningEditor").value = "updated meaning";
@@ -121,6 +128,7 @@ test("页面五个 Favorite writer 全部经过 App Sync boundary", async ({ pag
     return {
       calls,
       phraseResult,
+      historyFavorite,
       word: repository.getById(word.id, { includeDeleted: true }),
       phrase: repository.getById(phrase.id, { includeDeleted: true })
     };
@@ -129,12 +137,18 @@ test("页面五个 Favorite writer 全部经过 App Sync boundary", async ({ pag
   expect(result.calls).toEqual([
     "create",
     "create",
+    "create",
     "update",
     "setMastered",
     "softDelete",
     "softDelete"
   ]);
   expect(result.phraseResult).toMatchObject({ saved: true, existed: false });
+  expect(result.historyFavorite).toMatchObject({
+    type: "word",
+    text: "historical",
+    meaning: "历史的"
+  });
   expect(result.word.meaning).toBe("updated meaning");
   expect(result.word.deletedAt).not.toBeNull();
   expect(result.phrase.deletedAt).not.toBeNull();

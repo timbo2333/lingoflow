@@ -4142,3 +4142,593 @@
       grid-column: 1 / -1;
     }
   }
+
+  /* =========================
+     UI Refresh Phase 4
+     Learning collections
+     ========================= */
+
+  .learningCollectionModal {
+    width: min(900px, 100%);
+    padding: 24px 26px 18px;
+  }
+
+  .learningCollectionModal .modalHeader {
+    margin-bottom: 8px;
+  }
+
+  .learningCollectionModal .modalTitle {
+    color: var(--color-text);
+    font-size: 27px;
+    letter-spacing: -.025em;
+  }
+
+  .learningCollectionModal .modalSub,
+  .collectionSummary {
+    color: var(--color-text-secondary);
+  }
+
+  .collectionSummary {
+    margin-bottom: 18px;
+    font-size: 13px;
+    line-height: 1.55;
+  }
+
+  .collectionToolbar {
+    position: relative;
+    display: grid;
+    grid-template-columns: auto minmax(180px, 1fr) auto;
+    align-items: center;
+    gap: 10px;
+    padding: 0 0 14px;
+    border-bottom: 1px solid color-mix(in srgb, var(--color-border) 65%, transparent);
+  }
+
+  .collectionToolbar .smallInput {
+    min-height: 44px;
+    border-color: color-mix(in srgb, var(--color-border) 74%, transparent);
+    background: color-mix(in srgb, var(--color-surface) 78%, var(--color-page));
+    color: var(--color-text);
+  }
+
+  .collectionFilters {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding: 3px;
+    border-radius: 12px;
+    background: var(--color-surface-subtle);
+  }
+
+  .collectionFilter {
+    min-height: 38px;
+    padding: 7px 12px;
+    border: 0;
+    border-radius: 9px;
+    background: transparent;
+    color: var(--color-text-secondary);
+    font-size: 14px;
+    white-space: nowrap;
+  }
+
+  .collectionFilter.isActive {
+    background: var(--color-surface);
+    color: var(--color-text);
+    box-shadow: 0 1px 4px rgba(29, 29, 31, .09);
+    font-weight: 700;
+  }
+
+  .collectionFilter:focus-visible,
+  .collectionManage > summary:focus-visible,
+  .itemMore > summary:focus-visible,
+  .quietIconButton:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
+  }
+
+  .collectionManage,
+  .itemMore {
+    position: relative;
+  }
+
+  .collectionManage > summary,
+  .itemMore > summary {
+    display: grid;
+    place-items: center;
+    min-height: 44px;
+    padding: 0 13px;
+    border-radius: 10px;
+    color: var(--color-text-secondary);
+    cursor: pointer;
+    list-style: none;
+    user-select: none;
+  }
+
+  .collectionManage > summary {
+    border: 1px solid color-mix(in srgb, var(--color-border) 72%, transparent);
+    font-size: 14px;
+  }
+
+  .collectionManage > summary::-webkit-details-marker,
+  .itemMore > summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .collectionManage[open] > summary,
+  .itemMore[open] > summary,
+  .collectionManage > summary:hover,
+  .itemMore > summary:hover {
+    background: var(--color-surface-subtle);
+    color: var(--color-text);
+  }
+
+  .collectionManageMenu,
+  .itemMoreMenu {
+    position: absolute;
+    right: 0;
+    z-index: 20;
+    display: grid;
+    gap: 7px;
+    padding: 9px;
+    border: 1px solid var(--color-border);
+    border-radius: 12px;
+    background: var(--color-surface);
+    box-shadow: 0 14px 36px rgba(29, 29, 31, .16);
+  }
+
+  .collectionManageMenu {
+    right: calc(100% + 7px);
+    top: 0;
+    width: 210px;
+  }
+
+  .collectionManageMenu button,
+  .collectionManageMenu select,
+  .itemMoreMenu button {
+    width: 100%;
+    min-height: 42px;
+    margin: 0;
+  }
+
+  .collectionManageLabel {
+    padding: 2px 3px 0;
+    color: var(--color-text-secondary);
+    font-size: 11px;
+    font-weight: 700;
+  }
+
+  .collectionManageMenu .historySortSelect {
+    color: var(--color-text);
+    background: var(--color-surface);
+  }
+
+  .favoritesList,
+  .vocabList {
+    display: grid;
+    gap: 0;
+  }
+
+  .favoriteItem,
+  .vocabItem {
+    border: 0;
+    border-bottom: 1px solid color-mix(in srgb, var(--color-border) 58%, transparent);
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .favoriteItem {
+    padding: 20px 4px;
+  }
+
+  .favoriteItem.mastered {
+    background: color-mix(in srgb, var(--color-surface-subtle) 22%, transparent);
+  }
+
+  .favoriteTop {
+    gap: 18px;
+  }
+
+  .favoritePrimary {
+    min-width: 0;
+  }
+
+  .favoriteIdentityRow,
+  .historyWordRow {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 6px 9px;
+  }
+
+  .favoriteWord {
+    color: var(--color-text);
+    font-family: Georgia, "Times New Roman", serif;
+    font-size: 23px;
+    line-height: 1.2;
+    letter-spacing: -.01em;
+  }
+
+  .favoriteItem.mastered .favoriteWord {
+    color: color-mix(in srgb, var(--color-text) 74%, var(--color-text-secondary));
+  }
+
+  .favoriteTypeBadge {
+    order: -1;
+    margin: 0;
+    padding: 0;
+    border-radius: 0;
+    background: transparent;
+    color: var(--color-text-secondary);
+    font-size: 10px;
+    font-weight: 750;
+    letter-spacing: .05em;
+  }
+
+  .favoriteTypeBadge.phrase,
+  body.darkMode .favoriteTypeBadge,
+  body.darkMode .favoriteTypeBadge.phrase {
+    background: transparent;
+    color: var(--color-text-secondary);
+  }
+
+  .favoritePhonetic,
+  .historyPhonetic {
+    margin: 0;
+    color: var(--color-text-secondary);
+    font-size: 13px;
+    font-weight: 400;
+  }
+
+  .favoriteMeaning {
+    max-width: 660px;
+    margin-top: 7px;
+    color: var(--color-text);
+    font-size: 15px;
+    line-height: 1.62;
+  }
+
+  .favoriteMissingMeaning,
+  .favoritePartOfSpeech {
+    color: var(--color-text-secondary);
+  }
+
+  .favoritePartOfSpeech {
+    margin-top: 4px;
+    font-size: 12px;
+  }
+
+  .favoriteTopActions {
+    flex: 0 0 auto;
+    gap: 3px;
+    flex-wrap: nowrap;
+  }
+
+  .quietIconButton,
+  .itemMore > summary {
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--color-text-secondary);
+    font-size: 15px;
+  }
+
+  .quietIconButton:hover {
+    background: var(--color-surface-subtle);
+    opacity: 1;
+  }
+
+  .itemMoreMenu {
+    top: calc(100% + 5px);
+    width: 165px;
+  }
+
+  .itemMoreMenu .removeTiny {
+    color: var(--color-danger);
+  }
+
+  .favoritePreviewBlock {
+    margin: 10px 0 0;
+    padding: 0;
+    border-radius: 0;
+    background: transparent;
+  }
+
+  .favoriteNotePreview,
+  body.darkMode .favoritePreviewBlock,
+  body.darkMode .favoriteNotePreview {
+    background: transparent;
+  }
+
+  .favoritePreviewLabel {
+    margin-bottom: 3px;
+    color: var(--color-text-secondary);
+  }
+
+  .favoritePreviewText {
+    color: var(--color-text);
+  }
+
+  .favoriteTagRow {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    margin-top: 9px;
+  }
+
+  .tagBadge,
+  body.darkMode .tagBadge {
+    padding: 2px 7px;
+    background: var(--color-surface-subtle);
+    color: var(--color-text-secondary);
+  }
+
+  .favoriteContextLine {
+    display: flex;
+    gap: 8px;
+    margin-top: 10px;
+    color: var(--color-text-secondary);
+    font-size: 12px;
+    line-height: 1.55;
+  }
+
+  .favoriteContextLine > span {
+    flex: 0 0 auto;
+    font-weight: 700;
+  }
+
+  .favoriteContextLine q {
+    display: -webkit-box;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+
+  .favoriteCompactBottom {
+    margin-top: 13px;
+    padding-top: 11px;
+    border-top: 1px solid color-mix(in srgb, var(--color-border) 42%, transparent);
+  }
+
+  .masterBadge,
+  body.darkMode .masterBadge {
+    padding: 2px 0;
+    background: transparent;
+    color: var(--color-text-secondary);
+    font-size: 12px;
+  }
+
+  .masterBadge.mastered,
+  body.darkMode .masterBadge.mastered {
+    background: transparent;
+    color: #3d8457;
+  }
+
+  body.darkMode .masterBadge.mastered {
+    color: #78c594;
+  }
+
+  .favoriteLearningQuickButton {
+    min-height: 44px;
+    background: transparent;
+    color: var(--color-text);
+  }
+
+  .favoriteLearningQuickButton.mastered,
+  body.darkMode .favoriteLearningQuickButton.mastered {
+    border-color: color-mix(in srgb, var(--color-border) 70%, transparent);
+    background: transparent;
+    color: var(--color-text-secondary);
+  }
+
+  .favoriteItem.editing {
+    background: var(--color-surface-subtle);
+  }
+
+  .favoriteItem.editing .favoriteMore {
+    display: none;
+  }
+
+  .favoriteEditPanel {
+    border-color: color-mix(in srgb, var(--color-border) 64%, transparent);
+  }
+
+  .favoriteEditPanel .favoriteInlineEditor,
+  .favoriteEditPanel .favoriteEditor {
+    background: var(--color-surface);
+    color: var(--color-text);
+  }
+
+  .vocabItem {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: start;
+    gap: 20px;
+    padding: 19px 4px;
+  }
+
+  .historyItemMain {
+    min-width: 0;
+  }
+
+  .vocabWord {
+    color: var(--color-text);
+    font-family: Georgia, "Times New Roman", serif;
+    font-size: 21px;
+    line-height: 1.25;
+  }
+
+  .vocabMeaning {
+    max-width: 650px;
+    margin-top: 6px;
+    color: var(--color-text);
+    font-size: 14px;
+    line-height: 1.58;
+  }
+
+  .historyFavoriteButton {
+    min-height: 44px;
+    padding-inline: 11px;
+    white-space: nowrap;
+  }
+
+  .historyFavoriteButton.favoriteCardActive:disabled {
+    cursor: default;
+    opacity: 1;
+  }
+
+  .historyMetaRow {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 10px;
+    margin-top: 7px;
+    color: var(--color-text-secondary);
+    font-size: 12px;
+  }
+
+  .historyItemAside {
+    display: grid;
+    justify-items: end;
+    gap: 6px;
+  }
+
+  .historyLookupCount {
+    color: var(--color-text-secondary);
+    font-size: 12px;
+    white-space: nowrap;
+  }
+
+  .vocabItem.repeated .historyLookupCount {
+    color: var(--color-text);
+    font-weight: 700;
+  }
+
+  .historyItemActions {
+    align-items: center;
+    margin: 0;
+    gap: 3px;
+    flex-wrap: nowrap;
+  }
+
+  .collectionEmpty {
+    display: grid;
+    justify-items: start;
+    gap: 7px;
+    padding: 42px 4px 36px;
+    color: var(--color-text-secondary);
+    font-size: 14px;
+    line-height: 1.6;
+  }
+
+  .collectionEmpty strong {
+    color: var(--color-text);
+    font-size: 17px;
+    font-weight: 700;
+  }
+
+  body.darkMode .collectionFilter.isActive {
+    box-shadow: 0 1px 5px rgba(0, 0, 0, .28);
+  }
+
+  @media (max-width: 680px) {
+    .learningCollectionModal {
+      padding: 18px 14px 12px;
+    }
+
+    .learningCollectionModal .modalTitle {
+      font-size: 24px;
+    }
+
+    .collectionToolbar {
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 9px 7px;
+    }
+
+    .collectionFilters {
+      grid-column: 1 / -1;
+      max-width: 100%;
+      overflow-x: auto;
+    }
+
+    .collectionFilters .collectionFilter {
+      flex: 1 0 auto;
+      min-height: 42px;
+    }
+
+    .collectionManageMenu {
+      right: calc(100% + 7px);
+      left: auto;
+      top: 0;
+      bottom: auto;
+      width: min(240px, calc(100vw - 96px));
+    }
+
+    .collectionManageMenu button,
+    .collectionManageMenu select {
+      min-height: 46px;
+    }
+
+    .favoriteItem,
+    .vocabItem {
+      padding: 17px 1px;
+    }
+
+    .favoriteTop {
+      gap: 8px;
+    }
+
+    .favoriteTopActions {
+      max-width: none;
+    }
+
+    .favoriteWord {
+      font-size: 21px;
+    }
+
+    .favoriteCompactBottom {
+      align-items: stretch;
+    }
+
+    .favoriteCompactMeta {
+      min-width: 100%;
+    }
+
+    .favoriteLearningQuickButton {
+      width: 100%;
+      margin-left: 0;
+    }
+
+    .favoriteContextLine {
+      display: grid;
+      gap: 3px;
+    }
+
+    .vocabItem {
+      grid-template-columns: 1fr;
+      gap: 10px;
+    }
+
+    .historyItemAside {
+      grid-template-columns: 1fr auto;
+      align-items: center;
+      justify-items: start;
+    }
+
+    .historyItemActions {
+      justify-self: end;
+    }
+
+    .itemMoreMenu {
+      right: 0;
+      left: auto;
+      top: calc(100% + 5px);
+      bottom: auto;
+      width: min(180px, calc(100vw - 48px));
+    }
+
+    .itemMoreMenu button {
+      min-height: 46px;
+    }
+  }

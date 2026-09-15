@@ -209,6 +209,7 @@ test("Favorite UI 编辑保持稳定身份，并将 mastered 写入独立 Learni
   await page.evaluate(() => openFavorites());
   let wordCard = page.locator(`.favoriteItem[data-favorite-id="${created.id}"]`);
   await expect(wordCard).toBeVisible();
+  await wordCard.locator(".favoriteMore > summary").click();
   await wordCard.locator(".editFavoriteButton").click();
   await wordCard.locator(".meaningEditor").fill("发展；培养");
   await wordCard.locator(".contextEditor").fill("Practice helps people develop lasting skills.");
@@ -251,13 +252,14 @@ test("Favorite UI 编辑保持稳定身份，并将 mastered 写入独立 Learni
   await expect(page.locator(`.favoriteItem[data-favorite-id="${created.id}"] .masterBadge`))
     .toHaveText("✓ 已掌握");
 
-  await page.locator("#favoriteMasterFilter").selectOption("mastered");
+  await page.locator('[data-master-filter="mastered"]').click();
   await expect(page.locator(`.favoriteItem[data-favorite-id="${created.id}"]`)).toBeVisible();
-  await page.locator("#favoriteMasterFilter").selectOption("learning");
+  await page.locator('[data-master-filter="learning"]').click();
   await expect(page.locator(`.favoriteItem[data-favorite-id="${created.id}"]`)).toHaveCount(0);
-  await page.locator("#favoriteMasterFilter").selectOption("all");
+  await page.locator('[data-master-filter="all"]').click();
 
   wordCard = page.locator(`.favoriteItem[data-favorite-id="${created.id}"]`);
+  await wordCard.locator(".favoriteMore > summary").click();
   await wordCard.locator(".editFavoriteButton").click();
   await wordCard.locator(".masteredEditor").uncheck();
   await wordCard.getByRole("button", { name: "保存修改", exact: true }).click();
@@ -417,6 +419,7 @@ test("Favorite UI 删除使用 soft delete，并保留独立 Learning State", as
   await expect(wordCard).toBeVisible();
   await expect(siblingCard).toBeVisible();
   page.once("dialog", dialog => dialog.accept());
+  await wordCard.locator(".favoriteMore > summary").click();
   await wordCard.locator(".removeTiny").click();
 
   await expect(wordCard).toHaveCount(0);

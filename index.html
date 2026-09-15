@@ -650,28 +650,42 @@
        onpointerdown="modalBackdropPointerDown(event, 'vocabModal')"
        onpointerup="modalBackdropPointerUp(event, 'vocabModal')"
        onpointercancel="modalBackdropPointerCancel(event, 'vocabModal')">
-    <div class="modalCard">
+    <div class="modalCard learningCollectionModal">
       <div class="modalHeader">
         <div>
-          <div class="modalTitle">🕘 查询记录</div>
-          <div class="modalSub">文章点击和搜索框查询都会自动留痕；这里不代表你已经决定收藏或学习这个词。</div>
+          <div class="modalTitle">查询记录</div>
+          <div class="modalSub">看看最近查过、或反复查询的词。</div>
         </div>
-        <button class="iconClose" onclick="closeModal('vocabModal')">×</button>
+        <button class="iconClose" aria-label="关闭查询记录" onclick="closeModal('vocabModal')">×</button>
       </div>
 
-      <div class="modalActions historyActions">
+      <div id="vocabSummary" class="collectionSummary" aria-live="polite"></div>
+
+      <div class="collectionToolbar">
+        <div class="collectionFilters historyViewFilters" role="group" aria-label="查询记录视图">
+          <button type="button" class="collectionFilter isActive" data-history-view="recent"
+                  aria-pressed="true" onclick="setVocabSortMode('recent')">最近</button>
+          <button type="button" class="collectionFilter" data-history-view="high"
+                  aria-pressed="false" onclick="setVocabSortMode('high')">高频</button>
+        </div>
+
         <input id="vocabFilterInput" class="smallInput" type="text"
-               placeholder="筛选查询记录…" oninput="renderVocabBook()">
+               aria-label="搜索查询记录" placeholder="搜索查询记录…" oninput="renderVocabBook()">
 
-        <select id="vocabSortSelect" class="historySortSelect" onchange="renderVocabBook()">
-          <option value="recent" selected>最近查询</option>
-          <option value="high">高频查询</option>
-          <option value="earliest">最早遇到</option>
-          <option value="az">A–Z</option>
-        </select>
-
-        <button class="secondary" onclick="exportVocabCSV()">导出 CSV</button>
-        <button class="dangerButton" onclick="clearVocabBook()">清空查询记录</button>
+        <details class="collectionManage" ontoggle="handleContextualPopoverToggle(event)">
+          <summary aria-label="更多查询记录操作">管理</summary>
+          <div class="collectionManageMenu">
+            <label class="collectionManageLabel" for="vocabSortSelect">排序</label>
+            <select id="vocabSortSelect" class="historySortSelect" onchange="renderVocabBook()">
+              <option value="recent" selected>最近查询</option>
+              <option value="high">高频查询</option>
+              <option value="earliest">最早遇到</option>
+              <option value="az">A–Z</option>
+            </select>
+            <button class="secondary" onclick="exportVocabCSV()">导出 CSV</button>
+            <button class="dangerButton" onclick="clearVocabBook()">清空查询记录</button>
+          </div>
+        </details>
       </div>
 
       <div id="vocabList" class="vocabList"></div>
@@ -683,32 +697,44 @@
        onpointerdown="modalBackdropPointerDown(event, 'favoritesModal')"
        onpointerup="modalBackdropPointerUp(event, 'favoritesModal')"
        onpointercancel="modalBackdropPointerCancel(event, 'favoritesModal')">
-    <div class="modalCard favoritesModalCard">
+    <div class="modalCard favoritesModalCard learningCollectionModal">
       <div class="modalHeader">
         <div>
-          <div class="modalTitle">⭐ 我的收藏</div>
-          <div class="modalSub">主动收藏的单词和词组都会进入这里。上下文句子、释义和个人备注都可以自己修改。</div>
+          <div class="modalTitle">我的收藏</div>
+          <div class="modalSub">值得继续复习的词和词组。</div>
         </div>
-        <button class="iconClose" onclick="closeModal('favoritesModal')">×</button>
+        <button class="iconClose" aria-label="关闭我的收藏" onclick="closeModal('favoritesModal')">×</button>
       </div>
 
-      <div class="modalActions favoriteActions">
+      <div id="favoritesSummary" class="collectionSummary" aria-live="polite"></div>
+
+      <div class="collectionToolbar">
+        <div class="collectionFilters favoriteStateFilters" role="group" aria-label="收藏学习状态">
+          <button type="button" class="collectionFilter isActive" data-master-filter="all"
+                  aria-pressed="true" onclick="setFavoriteMasterFilter('all')">全部</button>
+          <button type="button" class="collectionFilter" data-master-filter="learning"
+                  aria-pressed="false" onclick="setFavoriteMasterFilter('learning')">学习中</button>
+          <button type="button" class="collectionFilter" data-master-filter="mastered"
+                  aria-pressed="false" onclick="setFavoriteMasterFilter('mastered')">已掌握</button>
+        </div>
+
         <input id="favoriteFilterInput" class="smallInput" type="text"
-               placeholder="筛选收藏…" oninput="renderFavorites()">
-        <select id="favoriteSortSelect" class="historySortSelect" onchange="renderFavorites()">
-          <option value="recent" selected>最近收藏</option>
-          <option value="az">A–Z</option>
-          <option value="mastered">已掌握优先</option>
-          <option value="learning">未掌握优先</option>
-        </select>
+               aria-label="搜索收藏" placeholder="搜索收藏…" oninput="renderFavorites()">
+        <input id="favoriteMasterFilter" type="hidden" value="all">
 
-        <select id="favoriteMasterFilter" class="historySortSelect" onchange="renderFavorites()">
-          <option value="all" selected>全部状态</option>
-          <option value="learning">学习中</option>
-          <option value="mastered">已掌握</option>
-        </select>
-
-        <button class="secondary" onclick="exportFavoritesCSV()">导出 CSV</button>
+        <details class="collectionManage" ontoggle="handleContextualPopoverToggle(event)">
+          <summary aria-label="更多收藏操作">管理</summary>
+          <div class="collectionManageMenu">
+            <label class="collectionManageLabel" for="favoriteSortSelect">排序</label>
+            <select id="favoriteSortSelect" class="historySortSelect" onchange="renderFavorites()">
+              <option value="recent" selected>最近收藏</option>
+              <option value="az">A–Z</option>
+              <option value="mastered">已掌握优先</option>
+              <option value="learning">学习中优先</option>
+            </select>
+            <button class="secondary" onclick="exportFavoritesCSV()">导出 CSV</button>
+          </div>
+        </details>
       </div>
 
       <div id="favoritesList" class="favoritesList"></div>
