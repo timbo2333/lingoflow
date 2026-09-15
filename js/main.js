@@ -4058,13 +4058,15 @@ function openHelp() {
 
 function resetTxtImportUI() {
   const zone = document.getElementById("textDropZone");
+  const surface = document.getElementById("articleInputSurface");
   const fileInput = document.getElementById("fileInput");
   const title = zone?.querySelector(".dropZoneTitle");
   const hint = zone?.querySelector(".dropZoneHint");
 
   zone?.classList.remove("dragging");
-  if (title) title.textContent = "拖拽 TXT 文件到这里";
-  if (hint) hint.textContent = "或点击此区域选择文件";
+  surface?.classList.remove("dragging");
+  if (title) title.textContent = "拖入 TXT，或点击选择文件";
+  if (hint) hint.textContent = "支持 .txt 文件";
   if (fileInput) fileInput.value = "";
 }
 
@@ -4083,14 +4085,37 @@ async function loadTxtFile(file) {
     sourceTitle: file.name
   });
   document.getElementById("inputText").value = text;
+  updateStartReadingButtonState();
   return true;
+}
+
+const ARTICLE_INPUT_EXAMPLE = "I felt nervous when I asked my friends for advice, but their suggestions helped me solve the problem.";
+
+function updateStartReadingButtonState() {
+  const input = document.getElementById("inputText");
+  const button = document.getElementById("startReadingButton");
+  if (!input || !button) return;
+  button.disabled = input.disabled || !input.value.trim();
+}
+
+function insertArticleExample() {
+  const input = document.getElementById("inputText");
+  if (!input) return;
+
+  const currentValue = input.value.trimEnd();
+  input.value = currentValue
+    ? `${currentValue}\n\n${ARTICLE_INPUT_EXAMPLE}`
+    : ARTICLE_INPUT_EXAMPLE;
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+  input.focus();
 }
 
 function setupTextDropZone() {
   const zone = document.getElementById("textDropZone");
+  const surface = document.getElementById("articleInputSurface");
   const fileInput = document.getElementById("fileInput");
   const inputText = document.getElementById("inputText");
-  if (!zone || !fileInput) return;
+  if (!zone || !surface || !fileInput) return;
 
   const title = zone.querySelector(".dropZoneTitle");
   const hint = zone.querySelector(".dropZoneHint");
@@ -4098,7 +4123,7 @@ function setupTextDropZone() {
 
   const showLoaded = file => {
     if (title) title.textContent = `已载入：${file.name}`;
-    if (hint) hint.textContent = "现在点击“开始阅读”，文章会自动保存";
+    if (hint) hint.textContent = "TXT 文件";
   };
 
   zone.addEventListener("click", () => fileInput.click());
@@ -4110,31 +4135,31 @@ function setupTextDropZone() {
     }
   });
 
-  zone.addEventListener("dragenter", event => {
+  surface.addEventListener("dragenter", event => {
     event.preventDefault();
     dragDepth += 1;
-    zone.classList.add("dragging");
+    surface.classList.add("dragging");
     if (title) title.textContent = "松开即可导入 TXT";
     if (hint) hint.textContent = "文件只会先载入，不会自动生成文章";
   });
 
-  zone.addEventListener("dragover", event => {
+  surface.addEventListener("dragover", event => {
     event.preventDefault();
   });
 
-  zone.addEventListener("dragleave", event => {
+  surface.addEventListener("dragleave", event => {
     event.preventDefault();
     dragDepth = Math.max(0, dragDepth - 1);
     if (dragDepth === 0) {
-      zone.classList.remove("dragging");
+      surface.classList.remove("dragging");
       resetTxtImportUI();
     }
   });
 
-  zone.addEventListener("drop", async event => {
+  surface.addEventListener("drop", async event => {
     event.preventDefault();
     dragDepth = 0;
-    zone.classList.remove("dragging");
+    surface.classList.remove("dragging");
 
     const file = event.dataTransfer?.files?.[0];
     if (!file) {
@@ -4159,10 +4184,13 @@ function setupTextDropZone() {
   });
 
   inputText?.addEventListener("input", () => {
+    updateStartReadingButtonState();
     if (draftSource.sourceType !== "txt") return;
     draftSource = { sourceType: "paste" };
     resetTxtImportUI();
   });
+
+  updateStartReadingButtonState();
 }
 
 function clampReadingProgress(value) {
@@ -6167,6 +6195,58 @@ function getContinueReadingArticle(articles) {
     || null;
 }
 
+async function refreshHomeContinueReading(articles = null) {
+  const container = document.getElementById("homeContinueReading");
+  const button = document.getElementById("homeContinueButton");
+  const titleElement = document.getElementById("homeContinueTitle");
+  const metaElement = document.getElementById("homeContinueMeta");
+  if (!container || !button || !titleElement || !metaElement) return false;
+
+  try {
+    const library = window.LingoFlowArticleLibrary;
+    if (!library) throw new Error("article_library_unavailable");
+    const availableArticles = Array.isArray(articles)
+      ? articles
+      : await library.listArticles();
+    const article = getContinueReadingArticle(availableArticles);
+
+    if (!article) {
+      container.hidden = true;
+      button.disabled = false;
+      delete button.dataset.articleId;
+      button.removeAttribute("aria-label");
+      titleElement.textContent = "";
+      metaElement.textContent = "";
+      return false;
+    }
+
+    const title = article.title || "未命名文章";
+    const status = getArticleReadingStatus(article);
+    container.hidden = false;
+    button.disabled = false;
+    button.dataset.articleId = article.id;
+    button.setAttribute("aria-label", `继续阅读文章：${title}，已阅读 ${status.percent}%`);
+    titleElement.textContent = title;
+    metaElement.textContent = `已阅读 ${status.percent}%`;
+    return true;
+  } catch (_) {
+    container.hidden = true;
+    delete button.dataset.articleId;
+    return false;
+  }
+}
+
+async function continueReadingFromHome() {
+  const button = document.getElementById("homeContinueButton");
+  const articleId = button?.dataset.articleId;
+  if (!button || !articleId || button.disabled) return false;
+
+  button.disabled = true;
+  const opened = await openSavedArticle(articleId);
+  if (!opened) button.disabled = false;
+  return opened;
+}
+
 function updateMyArticlesFilterUI(deletedView = false) {
   const filterGroup = document.getElementById("myArticlesFilters");
   if (!filterGroup) return;
@@ -6478,6 +6558,7 @@ async function restoreHomeView() {
 
   document.getElementById("inputPanel").style.display = "block";
   setReaderShellActive(false);
+  void refreshHomeContinueReading();
   return true;
 }
 
@@ -6743,11 +6824,11 @@ function updateMyArticlesViewUI() {
   const viewButton = document.getElementById("myArticlesViewButton");
   const newDraftButton = document.getElementById("newDraftFromArticlesButton");
 
-  if (title) title.textContent = deletedView ? "🗑️ 最近删除" : "📚 我的文章";
+  if (title) title.textContent = deletedView ? "最近删除" : "我的文章";
   if (subtitle) {
     subtitle.textContent = deletedView
       ? "这里保留已删除的文章，可以随时恢复。"
-      : "从保存在本机的文章继续阅读，或开始一篇新草稿。";
+      : "继续上次阅读，或从列表中选择一篇文章。";
   }
   if (viewButton) viewButton.textContent = deletedView ? "← 我的文章" : "最近删除";
   if (newDraftButton) newDraftButton.hidden = deletedView;
@@ -6814,6 +6895,7 @@ function setMyArticlesMessage(message, state, allowRetry = false) {
 
 function setMyArticleEditing(item, editing) {
   item.classList.toggle("editing", editing);
+  if (editing) item.querySelector(".myArticleMore")?.removeAttribute("open");
   const input = item.querySelector(".myArticleTitleInput");
   if (!editing || !input) return;
 
@@ -6924,10 +7006,15 @@ function createMyArticleListItem(article, options = {}) {
 
   const meta = document.createElement("div");
   meta.className = "myArticleMeta";
-  meta.textContent = deletedView
-    ? `${getArticleSourceLabel(article)} · 删除于：${formatLearningDate(article.deletedAt)}`
-    : `${getArticleSourceLabel(article)} · ${getArticleReadingLabel(article)} · ` +
-      `最近阅读：${formatLearningDate(article.lastReadAt)}`;
+  const readingMeta = document.createElement("span");
+  readingMeta.className = "myArticleReadingMeta";
+  readingMeta.textContent = deletedView
+    ? `删除于：${formatLearningDate(article.deletedAt)}`
+    : `${getArticleReadingLabel(article)} · 最近阅读：${formatLearningDate(article.lastReadAt)}`;
+  const sourceMeta = document.createElement("span");
+  sourceMeta.className = "myArticleSourceMeta";
+  sourceMeta.textContent = getArticleSourceLabel(article);
+  meta.append(readingMeta, sourceMeta);
   summary.append(title, meta);
 
   if (deletedView) {
@@ -6996,7 +7083,7 @@ function createMyArticleListItem(article, options = {}) {
   const openLabel = readingStatus.key === "reading" || readingStatus.key === "near-complete"
     ? "继续阅读"
     : "打开";
-  openButton.className = "secondary compactButton";
+  openButton.className = "compactButton myArticleOpenButton";
   openButton.type = "button";
   openButton.textContent = openLabel;
   openButton.setAttribute(
@@ -7022,10 +7109,23 @@ function createMyArticleListItem(article, options = {}) {
   deleteButton.textContent = "删除";
   deleteButton.setAttribute("aria-label", `删除文章：${article.title || "未命名文章"}`);
   deleteButton.addEventListener("click", () => {
+    more.removeAttribute("open");
     void deleteMyArticle(article.id, item);
   });
 
-  actions.append(openButton, editButton, deleteButton);
+  const more = document.createElement("details");
+  more.className = "myArticleMore";
+
+  const moreSummary = document.createElement("summary");
+  moreSummary.textContent = "•••";
+  moreSummary.setAttribute("aria-label", `更多文章操作：${article.title || "未命名文章"}`);
+
+  const moreMenu = document.createElement("div");
+  moreMenu.className = "myArticleMoreMenu";
+  moreMenu.append(editButton, deleteButton);
+  more.append(moreSummary, moreMenu);
+
+  actions.append(openButton, more);
   item.append(main, actions);
   return item;
 }
@@ -7067,12 +7167,13 @@ async function renderMyArticles() {
       deletedView ? null : getContinueReadingArticle(articles),
       deletedView
     );
+    if (!deletedView) void refreshHomeContinueReading(articles);
 
     if (!articles.length) {
       setMyArticlesMessage(
         deletedView
           ? "最近删除中没有文章。"
-          : "还没有文章。粘贴或导入 TXT 后，点击“开始阅读”会自动保存到这里。",
+          : "还没有保存的文章。回到首页粘贴一篇英文文章开始阅读。",
         "empty"
       );
       return;
@@ -7409,7 +7510,7 @@ function generateArticle() {
       return null;
     } finally {
       input.disabled = false;
-      if (startButton) startButton.disabled = false;
+      updateStartReadingButtonState();
     }
   })();
 
@@ -7432,10 +7533,12 @@ async function editArticle() {
     articleDraftMode = "editing";
     draftSource = getArticleSource(currentArticle);
     document.getElementById("inputText").value = currentArticle.content;
+    updateStartReadingButtonState();
   }
 
   document.getElementById("inputPanel").style.display = "block";
   setReaderShellActive(false);
+  void refreshHomeContinueReading();
 
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
@@ -7460,9 +7563,11 @@ async function startNewArticleDraft(source = { sourceType: "paste" }, options = 
   }
 
   document.getElementById("inputText").value = "";
+  updateStartReadingButtonState();
   document.getElementById("inputPanel").style.display = "block";
   setReaderShellActive(false);
   updateReadingProgress();
+  void refreshHomeContinueReading();
 
   if (options.updateHistory !== false) pushHomeHistoryState();
 
@@ -7511,6 +7616,7 @@ initializeReaderShell();
 checkBackupReminder();
 updateReadingProgress();
 initializeAppNavigation();
+void refreshHomeContinueReading();
 
 document.addEventListener("keydown", function(event) {
   if (event.key === "Escape") {

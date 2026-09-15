@@ -138,6 +138,12 @@ function getMyArticleItem(page, title) {
   return page.locator(".myArticleItem").filter({ hasText: title });
 }
 
+async function openMyArticleMore(item) {
+  const menu = item.locator(".myArticleMore");
+  await menu.locator("summary").click();
+  await expect(menu).toHaveAttribute("open", "");
+}
+
 function makeLongArticle(title, paragraphCount = 48) {
   const paragraphs = Array.from({ length: paragraphCount }, (_, index) => (
     `Paragraph ${index + 1} contains enough English words to create a stable reading ` +
@@ -170,6 +176,9 @@ async function uploadTxt(page, filename, content) {
 
 async function inspectDatabase(page, databaseName) {
   return await page.evaluate(async name => {
+    const databases = await indexedDB.databases();
+    if (!databases.some(database => database.name === name)) return null;
+
     const db = await new Promise((resolve, reject) => {
       const request = indexedDB.open(name);
       request.onsuccess = () => resolve(request.result);
@@ -549,8 +558,8 @@ test("TXT 后创建新草稿会清除旧来源", async ({ page }) => {
   await startReading(page);
   await startNewDraftFromReader(page);
 
-  await expect(page.locator(".dropZoneTitle")).toHaveText("拖拽 TXT 文件到这里");
-  await expect(page.locator(".dropZoneHint")).toHaveText("或点击此区域选择文件");
+  await expect(page.locator(".dropZoneTitle")).toHaveText("拖入 TXT，或点击选择文件");
+  await expect(page.locator(".dropZoneHint")).toHaveText("支持 .txt 文件");
   await expect(page.locator("#inputText")).toHaveValue("");
 
   await fillDraft(page, "A clean pasted draft.");
@@ -567,7 +576,7 @@ test("手动修改 TXT 草稿后保存为 paste 且移除 sourceTitle", async ({
   await uploadTxt(page, "test.txt", "Original TXT article content.");
   await fillDraft(page, "Manually replaced article content.");
 
-  await expect(page.locator(".dropZoneTitle")).toHaveText("拖拽 TXT 文件到这里");
+  await expect(page.locator(".dropZoneTitle")).toHaveText("拖入 TXT，或点击选择文件");
   await startReading(page);
 
   const [article] = await getArticles(page);
@@ -618,13 +627,9 @@ test("页面刷新后文章仍保存在 IndexedDB", async ({ page }) => {
   expect(articles[0].content).toBe(before.content);
 });
 
-test("文章操作不会改变 EnglishReaderECDICT schema", async ({ page }) => {
+test("Cloud-first 下文章操作不会创建 EnglishReaderECDICT", async ({ page }) => {
   const before = await inspectDatabase(page, "EnglishReaderECDICT");
-  expect(before).toEqual({
-    name: "EnglishReaderECDICT",
-    version: 2,
-    stores: ["entries", "lemmas", "meta"]
-  });
+  expect(before).toBeNull();
 
   await fillDraft(page, "Dictionary boundary\nArticle data belongs in its own database.");
   await startReading(page);
@@ -637,7 +642,7 @@ test("我的文章空状态可以创建新草稿且不会提前落库", async ({
   await openMyArticles(page);
 
   await expect(page.locator("#myArticlesList")).toHaveAttribute("data-state", "empty");
-  await expect(page.locator("#myArticlesList")).toContainText("还没有文章");
+  await expect(page.locator("#myArticlesList")).toContainText("还没有保存的文章");
   await expect(page.locator("#myArticlesSummary")).toHaveText(
     "共 0 篇 · 未开始 0 · 阅读中 0 · 接近读完 0 · 已读完 0"
   );
@@ -773,6 +778,7 @@ test("行内编辑标题保持文章数据并同步当前文章状态", async ({
 
   await openMyArticles(page);
   const item = getMyArticleItem(page, "Original title");
+  await openMyArticleMore(item);
   await item.getByRole("button", { name: "编辑文章标题：Original title" }).click();
   await item.locator(".myArticleTitleInput").fill("Renamed article");
   await item.getByRole("button", { name: "保存" }).click();
@@ -1340,7 +1346,8 @@ test("普通 UI 删除无需确认并在操作期间禁用，最近删除只提�
   });
 
   const item = getMyArticleItem(page, "Delete through UI");
-  const deleteButton = item.getByRole("button", { name: "删除文章：Delete through UI" });
+  await openMyArticleMore(item);
+  const deleteButton = item.locator(".myArticleDeleteButton");
   await deleteButton.click();
   await expect(item).toHaveClass(/busy/);
   await expect(deleteButton).toBeDisabled();
@@ -1365,9 +1372,11 @@ test("删除当前阅读文章前 flush 进度并清理 active、current 和 ses
   await scrollArticleToProgress(page, 0.47);
   await openMyArticles(page);
 
-  await getMyArticleItem(page, "Delete active reading article")
-    .getByRole("button", { name: "删除文章：Delete active reading article" })
-    .click();
+  const activeItem = getMyArticleItem(page, "Delete active reading article");
+  await openMyArticleMore(activeItem);
+  await activeItem.getByRole("button", {
+    name: "删除文章：Delete active reading article"
+  }).click();
   await expect(getMyArticleItem(page, "Delete active reading article")).toHaveCount(0);
 
   const state = await page.evaluate(async id => ({
@@ -1409,9 +1418,9 @@ test("删除非当前文章不影响正在阅读的文章", async ({ page }) => 
   });
 
   await openMyArticles(page);
-  await getMyArticleItem(page, "Other article to delete")
-    .getByRole("button", { name: "删除文章：Other article to delete" })
-    .click();
+  const otherItem = getMyArticleItem(page, "Other article to delete");
+  await openMyArticleMore(otherItem);
+  await otherItem.getByRole("button", { name: "删除文章：Other article to delete" }).click();
 
   const state = await page.evaluate(() => ({
     activeArticleId,
@@ -1445,9 +1454,9 @@ test("删除有未保存正文修改的当前文章会触发草稿保护", async
     dialogMessage = dialog.message();
     await dialog.dismiss();
   });
-  await getMyArticleItem(page, "Protected article")
-    .getByRole("button", { name: "删除文章：Protected article" })
-    .click();
+  const protectedItem = getMyArticleItem(page, "Protected article");
+  await openMyArticleMore(protectedItem);
+  await protectedItem.getByRole("button", { name: "删除文章：Protected article" }).click();
 
   const article = await page.evaluate(id => (
     window.LingoFlowArticleLibrary.getArticle(id)
@@ -1692,9 +1701,11 @@ test("删除和恢复会即时更新统计，最近删除不显示摘要", async
     "共 2 篇 · 未开始 1 · 阅读中 0 · 接近读完 0 · 已读完 1"
   );
 
-  await getMyArticleItem(page, "Statistics completed article")
-    .getByRole("button", { name: "删除文章：Statistics completed article" })
-    .click();
+  const statisticsItem = getMyArticleItem(page, "Statistics completed article");
+  await openMyArticleMore(statisticsItem);
+  await statisticsItem.getByRole("button", {
+    name: "删除文章：Statistics completed article"
+  }).click();
   await expect(summary).toHaveText(
     "共 1 篇 · 未开始 1 · 阅读中 0 · 接近读完 0 · 已读完 0"
   );
@@ -2051,9 +2062,9 @@ test("删除恢复会重算继续阅读且最近删除隐藏控件并保留筛�
   const continueButton = page.locator("#myArticlesContinueButton");
   await expect(continueButton).toHaveAttribute("data-article-id", ids.latest);
 
-  await getMyArticleItem(page, "Latest continue candidate")
-    .getByRole("button", { name: "删除文章：Latest continue candidate" })
-    .click();
+  const latestItem = getMyArticleItem(page, "Latest continue candidate");
+  await openMyArticleMore(latestItem);
+  await latestItem.getByRole("button", { name: "删除文章：Latest continue candidate" }).click();
   await expect(continueButton).toHaveAttribute("data-article-id", ids.fallback);
   await expect(continueButton).toContainText("Fallback continue candidate");
 

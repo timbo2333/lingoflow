@@ -14,20 +14,19 @@
 <body>
 <div class="page">
 
-  <h1>英语点读阅读器</h1>
+  <h1>LingoFlow</h1>
   <div class="description">
-    文章库、阅读进度与继续阅读体验升级。
+    阅读英文，点一下就懂。
   </div>
 
   <div class="topActions">
-    <span class="versionBadge">V0.7 · 正式版</span>
     <button id="accountButton" class="secondary compactButton" type="button">
-      👤 登录 / 注册
+      登录 / 注册
     </button>
+    <button id="homeSettingsButton" class="secondary compactButton topSettingsButton"
+            type="button" onclick="openSettings()">⚙ 设置</button>
     <span id="favoriteSyncStatusBadge" class="syncStatusBadge" data-state="local"
           role="status" aria-live="polite">收藏仅保存在当前设备</span>
-    <button class="secondary compactButton" onclick="openChangelog()">📝 更新日志</button>
-    <span class="shortcutHint">⌘/Ctrl + K 快速查词</span>
   </div>
 
   <!-- 账号与 Favorite 云同步 -->
@@ -225,8 +224,92 @@
   </div>
 
   <section id="inputPanel">
+    <section class="homePrimary" aria-labelledby="homeStartTitle">
+      <div id="articleInputSurface" class="articleInputSurface">
+        <div class="articleInputHeader">
+          <div>
+            <div id="homeStartTitle" class="homeSectionEyebrow">开始阅读</div>
+            <div class="articleInputHint">粘贴英文文章，或导入 TXT 文件。</div>
+          </div>
+          <button id="insertArticleExampleButton" class="homeTextButton articleExampleButton"
+                  type="button" onclick="insertArticleExample()">插入示例</button>
+        </div>
 
-    <div class="dictionaryPanel">
+        <textarea id="inputText" placeholder="粘贴英文文章…"></textarea>
+
+        <div id="articleDropOverlay" class="articleDropOverlay" aria-hidden="true">
+          <span>松开即可导入 TXT</span>
+        </div>
+
+        <div class="articleInputFooter">
+          <div id="textDropZone" class="textDropZone" role="button" tabindex="0"
+               aria-label="拖拽或点击选择 TXT 文件">
+            <span class="dropZoneIcon" aria-hidden="true">＋</span>
+            <span class="dropZoneText">
+              <span class="dropZoneTitle">拖入 TXT，或点击选择文件</span>
+              <span class="dropZoneHint">支持 .txt 文件</span>
+            </span>
+          </div>
+
+          <div class="controls">
+            <button id="startReadingButton" onclick="generateArticle()" disabled>开始阅读</button>
+            <button id="myArticlesInputButton" class="secondary" type="button"
+                    onclick="openMyArticles()">我的文章</button>
+            <input type="file" id="fileInput" accept=".txt,text/plain">
+          </div>
+        </div>
+      </div>
+
+      <div id="homeContinueReading" class="homeContinueReading" hidden>
+        <div class="homeContinueCopy">
+          <span class="homeContinueEyebrow">继续阅读</span>
+          <strong id="homeContinueTitle" class="homeContinueTitle"></strong>
+          <span id="homeContinueMeta" class="homeContinueMeta"></span>
+        </div>
+        <button id="homeContinueButton" class="secondary" type="button"
+                onclick="continueReadingFromHome()">继续</button>
+      </div>
+    </section>
+
+    <section class="homeSecondary" aria-label="阅读工具">
+      <div class="searchPanel">
+        <div class="homeSecondaryHeading">
+          <div>
+            <div id="directSearchTitle" class="searchTitle">直接查词</div>
+            <div class="homeSecondaryHint">不打开文章，也可以快速查询一个单词。</div>
+          </div>
+          <span class="shortcutHint">⌘/Ctrl + K</span>
+        </div>
+        <div class="searchRow searchRowWithSuggest">
+          <div class="searchInputWrap">
+            <input id="directSearchInput" type="text"
+                   placeholder="输入单词，例如：gave / better / environment"
+                   aria-labelledby="directSearchTitle"
+                   aria-controls="directSearchResult searchSuggestions"
+                   autocomplete="off">
+            <div id="searchSuggestions" class="searchSuggestions"></div>
+          </div>
+          <button class="directSearchButton" type="button" onclick="directSearch()">查询</button>
+        </div>
+
+        <div id="directSearchResult" class="directSearchResult"
+             role="status" aria-live="polite" aria-atomic="true">
+          <div class="searchEmpty">输入单词即可查询。</div>
+        </div>
+      </div>
+
+      <nav class="homeQuickActions" aria-label="常用功能">
+        <button class="homeUtilityButton secondary" type="button" onclick="openFavorites()">
+          我的收藏 <span id="favoriteCountBadge"></span>
+        </button>
+        <button class="homeUtilityButton secondary" type="button" onclick="openVocabBook()">
+          查询记录 <span id="vocabCountBadge"></span>
+        </button>
+      </nav>
+
+      <details class="homeOfflineDisclosure">
+        <summary>完整离线词典（可选）</summary>
+        <div class="dictionaryPanel">
       <div class="dictionaryRow">
         <button id="manualECDICTButton" class="secondary" type="button"
                 onclick="requestManualDictionaryFile('ecdict')">
@@ -236,22 +319,6 @@
         <button id="manualLemmaButton" class="secondary" type="button"
                 onclick="requestManualDictionaryFile('lemma')">
           🔤 导入 Legacy Lemma（可选）
-        </button>
-
-        <button class="secondary" type="button" onclick="openSettings()">
-          ⚙️ 设置
-        </button>
-
-        <button class="secondary" type="button" onclick="openVocabBook()">
-          🕘 查询记录 <span id="vocabCountBadge"></span>
-        </button>
-
-        <button class="secondary" type="button" onclick="openFavorites()">
-          ⭐ 我的收藏 <span id="favoriteCountBadge"></span>
-        </button>
-
-        <button class="secondary" type="button" onclick="openHelp()">
-          ❓ 一分钟上手
         </button>
 
         <input type="file" id="dictFileInput" accept=".csv,text/csv" hidden>
@@ -297,48 +364,15 @@
         普通查词默认使用在线 Core Dictionary，无需先下载。
         完整离线词典约 68 MB，下载后断网也可查询更多词汇。
       </div>
-    </div>
-
-    <div class="searchPanel">
-      <div id="directSearchTitle" class="searchTitle">直接查词</div>
-      <div class="searchRow searchRowWithSuggest">
-        <div class="searchInputWrap">
-          <input id="directSearchInput" type="text"
-                 placeholder="输入单词，例如：gave / better / environment"
-                 aria-labelledby="directSearchTitle"
-                 aria-controls="directSearchResult searchSuggestions"
-                 autocomplete="off">
-          <div id="searchSuggestions" class="searchSuggestions"></div>
         </div>
-        <button class="directSearchButton" type="button" onclick="directSearch()">查询</button>
+      </details>
+
+      <div class="homeMetaActions" aria-label="帮助与版本">
+        <button class="homeTextButton" type="button" onclick="openHelp()">一分钟上手</button>
+        <button class="homeTextButton" type="button" onclick="openChangelog()">更新日志</button>
+        <span class="versionBadge">V0.7 · 正式版</span>
       </div>
-
-      <div id="directSearchResult" class="directSearchResult"
-           role="status" aria-live="polite" aria-atomic="true">
-        <div class="searchEmpty">不用粘贴文章，也可以直接查词。</div>
-      </div>
-    </div>
-
-    <textarea id="inputText" placeholder="把英文文章粘贴到这里……
-
-Example:
-
-I felt nervous when I asked my friends for advice, but their suggestions helped me solve the problem."></textarea>
-
-    <div id="textDropZone" class="textDropZone" role="button" tabindex="0"
-         aria-label="拖拽或点击选择 TXT 文件">
-      <div class="dropZoneIcon">📄</div>
-      <div class="dropZoneTitle">拖拽 TXT 文件到这里</div>
-      <div class="dropZoneHint">或点击此区域选择文件</div>
-      <div class="dropZoneSub">载入完成后，再点击“开始阅读”</div>
-    </div>
-
-    <div class="controls">
-      <button onclick="generateArticle()">开始阅读</button>
-      <button id="myArticlesInputButton" class="secondary" type="button"
-              onclick="openMyArticles()">📚 我的文章</button>
-      <input type="file" id="fileInput" accept=".txt,text/plain">
-    </div>
+    </section>
 
     <div id="backupReminder" class="backupReminder">
       <span>💾 旧版学习备份（legacy）已经有一段时间没有导出。</span>
@@ -551,8 +585,8 @@ I felt nervous when I asked my friends for advice, but their suggestions helped 
     <div class="modalCard myArticlesModalCard">
       <div class="modalHeader">
         <div>
-          <div id="myArticlesTitle" class="modalTitle">📚 我的文章</div>
-          <div id="myArticlesSubtitle" class="modalSub">从保存在本机的文章继续阅读，或开始一篇新草稿。</div>
+          <div id="myArticlesTitle" class="modalTitle">我的文章</div>
+          <div id="myArticlesSubtitle" class="modalSub">继续上次阅读，或从列表中选择一篇文章。</div>
         </div>
         <button class="iconClose" type="button" aria-label="关闭我的文章"
                 onclick="closeModal('myArticlesModal')">×</button>

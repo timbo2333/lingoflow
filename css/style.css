@@ -3450,3 +3450,695 @@
       animation: none;
     }
   }
+
+
+  /* =========================
+     UI Refresh Phase 3
+     Home, import and article library
+     ========================= */
+
+  .page > h1,
+  .page > .description,
+  .page > .topActions,
+  #inputPanel {
+    width: min(100%, 940px);
+    margin-left: auto;
+    margin-right: auto;
+  }
+
+  .page > h1 {
+    margin-top: 22px;
+    font-size: clamp(40px, 5vw, 54px);
+    font-weight: 800;
+    letter-spacing: -.045em;
+  }
+
+  .page > .description {
+    margin-bottom: 0;
+    color: var(--color-text-secondary);
+    font-size: 16px;
+  }
+
+  .topActions {
+    min-height: 46px;
+    justify-content: flex-end;
+    margin-top: -56px;
+    margin-bottom: 32px;
+  }
+
+  .topActions #accountButton,
+  .topActions .topSettingsButton {
+    min-height: 40px;
+    border-color: transparent;
+    background: transparent;
+  }
+
+  .topActions .topSettingsButton {
+    padding-inline: 9px;
+    color: var(--color-text-secondary);
+    font-size: 13px;
+    font-weight: 600;
+  }
+
+  .topActions .topSettingsButton:hover,
+  .topActions .topSettingsButton:focus-visible {
+    background: var(--color-surface-subtle);
+    color: var(--color-text);
+    opacity: 1;
+  }
+
+  .homePrimary,
+  .homeSecondary {
+    display: grid;
+    gap: var(--space-4);
+  }
+
+  .articleInputSurface {
+    position: relative;
+    padding: 26px;
+    overflow: hidden;
+    border: 1px solid var(--color-border);
+    border-radius: 24px;
+    background: var(--color-surface);
+    box-shadow: 0 18px 48px rgba(45, 42, 36, .07);
+  }
+
+  .articleInputHeader,
+  .homeSecondaryHeading {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--space-4);
+  }
+
+  .homeSectionEyebrow,
+  .homeContinueEyebrow {
+    color: var(--color-text);
+    font-size: 14px;
+    font-weight: 750;
+    letter-spacing: .01em;
+  }
+
+  .articleInputHint,
+  .homeSecondaryHint {
+    margin-top: 4px;
+    color: var(--color-text-secondary);
+    font-size: 13px;
+    line-height: 1.55;
+  }
+
+  .articleInputSurface #inputText {
+    height: 235px;
+    min-height: 210px;
+    margin-top: 18px;
+    padding: 20px 2px;
+    border: 0;
+    border-top: 1px solid color-mix(in srgb, var(--color-border) 72%, transparent);
+    border-radius: 0;
+    background: transparent;
+    color: var(--color-text);
+    font-family: inherit;
+    font-size: 18px;
+    line-height: 1.75;
+  }
+
+  .articleInputSurface #inputText:focus {
+    box-shadow: none;
+  }
+
+  .articleInputFooter {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-4);
+    padding-top: 16px;
+    border-top: 1px solid color-mix(in srgb, var(--color-border) 72%, transparent);
+  }
+
+  .articleInputSurface .textDropZone {
+    min-height: 44px;
+    max-width: 430px;
+    margin: 0;
+    padding: 7px 10px;
+    flex: 1 1 auto;
+    flex-direction: row;
+    justify-content: flex-start;
+    gap: 9px;
+    border: 0;
+    border-radius: var(--radius-control);
+    text-align: left;
+  }
+
+  .articleInputSurface .textDropZone:hover,
+  .articleInputSurface .textDropZone:focus-visible {
+    background: var(--color-surface-subtle);
+  }
+
+  .articleInputSurface .dropZoneIcon {
+    width: 30px;
+    height: 30px;
+    margin: 0;
+    display: inline-flex;
+    flex: 0 0 30px;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--color-border);
+    border-radius: 50%;
+    color: var(--color-text-secondary);
+    font-size: 20px;
+    font-weight: 400;
+  }
+
+  .dropZoneText {
+    min-width: 0;
+    display: grid;
+  }
+
+  .articleInputSurface .dropZoneTitle {
+    color: var(--color-text);
+    font-size: 13px;
+    font-weight: 650;
+  }
+
+  .articleInputSurface .dropZoneHint {
+    color: var(--color-text-secondary);
+    font-size: 11px;
+  }
+
+  .articleInputSurface .controls {
+    margin: 0;
+    flex: 0 0 auto;
+    justify-content: flex-end;
+  }
+
+  .articleInputSurface #fileInput {
+    display: none;
+  }
+
+  .articleInputSurface .controls button {
+    min-height: 46px;
+  }
+
+  #startReadingButton {
+    min-width: 128px;
+  }
+
+  #startReadingButton:disabled {
+    cursor: default;
+    opacity: .36;
+  }
+
+  .articleInputSurface #myArticlesInputButton {
+    padding-inline: 12px;
+    border-color: transparent;
+    background: transparent;
+    color: var(--color-text-secondary);
+    font-weight: 600;
+  }
+
+  .articleInputSurface #myArticlesInputButton:hover,
+  .articleInputSurface #myArticlesInputButton:focus-visible {
+    background: var(--color-surface-subtle);
+    color: var(--color-text);
+    opacity: 1;
+  }
+
+  .articleExampleButton {
+    flex: 0 0 auto;
+    margin-top: -3px;
+  }
+
+  .articleDropOverlay {
+    position: absolute;
+    inset: 10px;
+    z-index: 4;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 2px dashed var(--color-accent);
+    border-radius: 18px;
+    background: color-mix(in srgb, var(--color-surface) 92%, var(--color-accent));
+    color: var(--color-accent);
+    font-size: 18px;
+    font-weight: 750;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 120ms ease-out;
+  }
+
+  .articleInputSurface.dragging .articleDropOverlay {
+    opacity: 1;
+  }
+
+  .homeContinueReading {
+    padding: 17px 18px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-4);
+    border: 1px solid color-mix(in srgb, var(--color-border) 72%, transparent);
+    border-radius: var(--radius-card);
+    background: color-mix(in srgb, var(--color-surface) 70%, var(--color-page));
+  }
+
+  .homeContinueReading[hidden] {
+    display: none;
+  }
+
+  .homeContinueCopy {
+    min-width: 0;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: baseline;
+    gap: 8px;
+  }
+
+  .homeContinueEyebrow {
+    color: var(--color-accent);
+  }
+
+  .homeContinueTitle {
+    overflow: hidden;
+    font-size: 16px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .homeContinueMeta {
+    color: var(--color-text-secondary);
+    font-size: 12px;
+    white-space: nowrap;
+  }
+
+  .homeContinueButton {
+    min-height: 42px;
+    flex: 0 0 auto;
+  }
+
+  .homeSecondary {
+    margin-top: 30px;
+  }
+
+  .homeSecondary .searchPanel {
+    margin: 0;
+    padding: 18px 20px;
+    border-color: color-mix(in srgb, var(--color-border) 80%, transparent);
+    background: color-mix(in srgb, var(--color-surface) 68%, var(--color-page));
+    box-shadow: none;
+  }
+
+  .homeSecondary .searchTitle {
+    margin: 0;
+  }
+
+  .homeSecondary .searchRow {
+    margin-top: 12px;
+  }
+
+  .homeSecondary .directSearchResult {
+    min-height: 20px;
+    margin-top: 9px;
+  }
+
+  .homeSecondary .directSearchResult > .searchEmpty {
+    font-size: 12px;
+  }
+
+  .homeQuickActions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .homeUtilityButton {
+    min-height: 44px;
+    border-color: transparent;
+    background: transparent;
+    color: var(--color-text-secondary);
+  }
+
+  .homeUtilityButton:hover,
+  .homeUtilityButton:focus-visible {
+    border-color: transparent;
+    background: var(--color-surface-subtle);
+    color: var(--color-text);
+    opacity: 1;
+  }
+
+  .homeOfflineDisclosure {
+    border-top: 1px solid color-mix(in srgb, var(--color-border) 72%, transparent);
+  }
+
+  .homeOfflineDisclosure > summary {
+    min-height: 44px;
+    padding: 12px 2px;
+    cursor: pointer;
+    color: var(--color-text-secondary);
+    font-size: 13px;
+    list-style-position: inside;
+  }
+
+  .homeOfflineDisclosure > .dictionaryPanel {
+    margin: 0 0 14px;
+    background: color-mix(in srgb, var(--color-surface) 76%, var(--color-page));
+  }
+
+  .homeMetaActions {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    color: var(--color-text-secondary);
+  }
+
+  .homeTextButton {
+    min-height: 36px;
+    padding: 6px 8px;
+    background: transparent;
+    color: var(--color-text-secondary);
+    font-size: 12px;
+  }
+
+  .homeTextButton:hover,
+  .homeTextButton:focus-visible {
+    color: var(--color-text);
+    opacity: 1;
+  }
+
+  .homeMetaActions .versionBadge {
+    padding: 4px 7px;
+    background: transparent;
+    color: var(--color-text-secondary);
+    font-weight: 600;
+  }
+
+  .myArticlesModalCard {
+    width: min(860px, 100%);
+  }
+
+  .myArticlesActions {
+    margin-bottom: 18px;
+  }
+
+  #myArticlesViewButton {
+    border-color: transparent;
+    background: transparent;
+    color: var(--color-text-secondary);
+  }
+
+  .myArticlesSummary {
+    margin-bottom: 12px;
+  }
+
+  .myArticlesContinueButton {
+    border-color: color-mix(in srgb, var(--color-accent) 22%, var(--color-border));
+    background: color-mix(in srgb, var(--color-accent) 5%, var(--color-surface));
+  }
+
+  .myArticlesList {
+    gap: 10px;
+  }
+
+  .myArticleItem {
+    min-height: 84px;
+    padding: 16px 14px 16px 17px;
+    border-color: color-mix(in srgb, var(--color-border) 78%, transparent);
+    border-radius: 14px;
+    background: var(--color-surface);
+  }
+
+  .myArticleTitle {
+    font-size: 16px;
+    font-weight: 720;
+  }
+
+  .myArticleMeta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 10px;
+  }
+
+  .myArticleReadingMeta {
+    color: var(--color-text-secondary);
+  }
+
+  .myArticleSourceMeta {
+    color: color-mix(in srgb, var(--color-text-secondary) 75%, transparent);
+  }
+
+  .myArticleButtons {
+    align-items: center;
+    flex-wrap: nowrap;
+  }
+
+  .myArticleOpenButton {
+    min-height: 40px;
+    white-space: nowrap;
+  }
+
+  .myArticleMore {
+    position: relative;
+  }
+
+  .myArticleMore > summary {
+    width: 40px;
+    height: 40px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    cursor: pointer;
+    color: var(--color-text-secondary);
+    font-size: 20px;
+    letter-spacing: .08em;
+    list-style: none;
+  }
+
+  .myArticleMore > summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .myArticleMore > summary:hover,
+  .myArticleMore > summary:focus-visible,
+  .myArticleMore[open] > summary {
+    background: var(--color-surface-subtle);
+    color: var(--color-text);
+    outline: none;
+  }
+
+  .myArticleMore > summary:focus-visible {
+    box-shadow: var(--focus-ring);
+  }
+
+  .myArticleMoreMenu {
+    position: absolute;
+    top: calc(100% + 4px);
+    right: 0;
+    z-index: 3;
+    width: max-content;
+    min-width: 132px;
+    padding: 6px;
+    display: grid;
+    gap: 3px;
+    border: 1px solid var(--color-border);
+    border-radius: 11px;
+    background: var(--color-surface);
+    box-shadow: 0 12px 30px rgba(29, 29, 31, .14);
+  }
+
+  .myArticleMoreMenu button {
+    width: 100%;
+    min-height: 38px;
+    justify-content: flex-start;
+    border-color: transparent;
+    text-align: left;
+  }
+
+  .myArticleItem.editing .myArticleMore {
+    display: none;
+  }
+
+  body.darkMode .articleInputSurface,
+  body.darkMode .homeContinueReading,
+  body.darkMode .myArticleItem,
+  body.darkMode .myArticleMoreMenu {
+    background: var(--color-surface);
+    border-color: var(--color-border);
+  }
+
+  body.darkMode .articleDropOverlay {
+    background: color-mix(in srgb, var(--color-surface) 90%, var(--color-accent));
+  }
+
+  body.darkMode .articleInputSurface #inputText,
+  body.darkMode .articleInputSurface .textDropZone {
+    background: transparent;
+  }
+
+  body.darkMode .articleInputSurface #myArticlesInputButton {
+    background: transparent;
+    color: var(--color-text-secondary);
+  }
+
+  .topActions .syncStatusBadge[data-state="local"] {
+    min-height: auto;
+    padding: 3px 0;
+    border-color: transparent;
+    background: transparent;
+    color: var(--color-text-secondary);
+    font-size: 11px;
+    font-weight: 500;
+    opacity: .68;
+  }
+
+  body.darkMode .homeSecondary .searchPanel,
+  body.darkMode .homeOfflineDisclosure > .dictionaryPanel {
+    background: color-mix(in srgb, var(--color-surface) 74%, var(--color-page));
+  }
+
+  body.darkMode .homeUtilityButton,
+  body.darkMode .homeTextButton,
+  body.darkMode .topActions #accountButton,
+  body.darkMode .topActions .topSettingsButton,
+  body.darkMode #myArticlesViewButton {
+    background: transparent;
+    color: var(--color-text-secondary);
+  }
+
+  body.darkMode #startReadingButton,
+  body.darkMode .directSearchButton,
+  body.darkMode .myArticleOpenButton,
+  body.darkMode #newDraftFromArticlesButton {
+    background: #f4f4f5;
+    color: #1d1d1f;
+  }
+
+  @media (max-width: 700px) {
+    .page > h1 {
+      margin-top: 0;
+      font-size: 38px;
+    }
+
+    .topActions {
+      min-height: 0;
+      display: grid;
+      grid-template-columns: auto auto;
+      justify-content: start;
+      column-gap: 4px;
+      row-gap: 2px;
+      margin-top: 16px;
+      margin-bottom: 22px;
+    }
+
+    .topActions .syncStatusBadge {
+      grid-column: 1 / -1;
+      justify-self: start;
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .articleInputSurface {
+      padding: 20px 16px;
+      border-radius: 19px;
+    }
+
+    .articleInputSurface #inputText {
+      height: 240px;
+      padding: 17px 0;
+      font-size: 16px;
+    }
+
+    .articleInputFooter {
+      align-items: stretch;
+      flex-direction: column;
+    }
+
+    .articleInputSurface .textDropZone {
+      width: 100%;
+      max-width: none;
+      min-height: 48px;
+      padding-inline: 4px;
+    }
+
+    .articleInputSurface .controls {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      width: 100%;
+    }
+
+    .articleInputSurface .controls button {
+      width: 100%;
+      min-width: 0;
+    }
+
+    .articleInputSurface #myArticlesInputButton {
+      width: auto;
+    }
+
+    .homeContinueReading {
+      align-items: stretch;
+    }
+
+    .homeContinueCopy {
+      grid-template-columns: 1fr;
+      gap: 3px;
+    }
+
+    .homeContinueMeta {
+      white-space: normal;
+    }
+
+    .homeQuickActions {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .dictionaryRow {
+      display: grid;
+      grid-template-columns: 1fr;
+    }
+
+    .myArticlesModalCard {
+      padding: 18px 14px;
+    }
+
+    .myArticleItem {
+      align-items: flex-start;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+      padding: 14px 10px 14px 14px;
+    }
+
+    .myArticleButtons {
+      gap: 3px;
+    }
+
+    .myArticleOpenButton {
+      min-height: 40px;
+      padding-inline: 10px;
+    }
+
+    .myArticleMoreMenu {
+      position: fixed;
+      right: 22px;
+      left: 22px;
+      top: auto;
+      bottom: calc(20px + env(safe-area-inset-bottom));
+      z-index: 20002;
+      width: auto;
+      padding: 9px;
+    }
+
+    .myArticleMoreMenu button {
+      min-height: 46px;
+    }
+
+    .myArticleTitleEditor {
+      grid-template-columns: 1fr auto;
+    }
+
+    .myArticleTitleEditor .myArticleTitleInput {
+      grid-column: 1 / -1;
+    }
+  }
