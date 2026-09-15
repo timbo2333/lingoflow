@@ -3002,19 +3002,18 @@ function updateFavoriteButton() {
   if (!currentLookupState.word) {
     btn.textContent = "☆ 收藏";
     btn.classList.remove("favoriteCardActive");
+    btn.setAttribute("aria-pressed", "false");
+    btn.setAttribute("aria-label", "收藏当前单词");
     btn.disabled = true;
     return;
   }
 
   btn.disabled = false;
-
-  if (isFavorite(currentLookupState.word, currentLookupState.result)) {
-    btn.textContent = "★ 已收藏";
-    btn.classList.add("favoriteCardActive");
-  } else {
-    btn.textContent = "☆ 收藏";
-    btn.classList.remove("favoriteCardActive");
-  }
+  setDictionaryFavoriteAction(
+    btn,
+    currentLookupState.word,
+    currentLookupState.result
+  );
 }
 
 async function saveCurrentFavorite() {
@@ -4480,10 +4479,285 @@ function getDictionaryUnavailableMessage(reason = "") {
     : "暂未找到该词。完整离线词典未安装；如需更多离线查询，可在设置中下载。";
 }
 
-function getDictionaryPrepareButtonHtml(reason = "") {
-  return reason === "legacy_dictionary_loading"
-    ? ""
-    : '<button class="secondary" onclick="openSettings()">查看完整离线词典</button>';
+function normalizeDictionaryPresentationText(value) {
+  return String(value ?? "")
+    .replace(/\r\n?/g, "\n")
+    .replace(/\\r\\n|\\n|\\r/g, "\n")
+    .replace(/[\u2028\u2029]/g, "\n");
+}
+
+function getDictionaryPresentationLines(value, fallback = "") {
+  const lines = normalizeDictionaryPresentationText(value)
+    .split("\n")
+    .map(line => line.trim())
+    .filter(Boolean);
+
+  if (lines.length) return lines;
+  return fallback ? [fallback] : [];
+}
+
+function getDictionaryRelationPresentation(line) {
+  const match = String(line || "").match(
+    /^(.*?)\s*[（(]\s*([A-Za-z][A-Za-z'’-]*)\s*的(复数|过去式|过去分词|现在分词|第三人称单数|比较级|最高级)形式\s*[）)]$/
+  );
+  if (!match) return null;
+  return {
+    definition: match[1].trim(),
+    relation: `${match[2]} 的${match[3]}形式`
+  };
+}
+
+function renderDictionaryText(container, value, fallback = "", options = {}) {
+  if (!container) return [];
+  const lines = getDictionaryPresentationLines(value, fallback);
+  const fragment = document.createDocumentFragment();
+
+  lines.forEach(line => {
+    const relation = options.relationLines
+      ? getDictionaryRelationPresentation(line)
+      : null;
+    if (relation?.definition) {
+      const definitionBlock = document.createElement("div");
+      definitionBlock.className = "dictionaryDefinitionLine";
+      definitionBlock.textContent = relation.definition;
+      fragment.appendChild(definitionBlock);
+    }
+    const block = document.createElement("div");
+    block.className = "dictionaryDefinitionLine";
+    if (relation) block.classList.add("dictionaryDefinitionRelationLine");
+    block.textContent = relation?.relation || line;
+    fragment.appendChild(block);
+  });
+
+  container.replaceChildren(fragment);
+  return lines;
+}
+
+function setOptionalDictionaryText(element, value) {
+  if (!element) return;
+  const text = String(value || "").trim();
+  element.textContent = text;
+  element.hidden = !text;
+}
+
+function setDictionaryPronunciationPresentation(
+  identity,
+  phoneticElement,
+  pronunciationButton,
+  phonetic,
+  word
+) {
+  const phoneticText = String(phonetic || "").trim();
+  setOptionalDictionaryText(phoneticElement, phoneticText);
+  identity?.classList.toggle("dictionaryIdentityNoPhonetic", !phoneticText);
+  pronunciationButton?.setAttribute("aria-label", `朗读 ${word}`);
+}
+
+function createDictionaryPresentation(word, result) {
+  const query = String(word || "").trim();
+  const normalizedQuery = normalizeWord(query);
+  const headword = normalizeWord(result?.baseWord || "") || normalizedQuery;
+  const isLemma = Boolean(headword && headword !== normalizedQuery);
+  const exchangeItems = formatExchange(result?.exchange || "");
+
+  return {
+    query,
+    normalizedQuery,
+    headword: isLemma ? headword : query,
+    phonetic: String(result?.phonetic || "").trim(),
+    pos: String(result?.pos || "").trim(),
+    meaning: result?.meaning || "暂无中文释义",
+    isLemma,
+    relation: isLemma ? `来自 ${query}` : "",
+    surfaceMeaning: isLemma && result?.surfaceMeaning &&
+      normalizeDictionaryPresentationText(result.surfaceMeaning) !==
+        normalizeDictionaryPresentationText(result.meaning)
+      ? `${query}：${result.surfaceMeaning}`
+      : "",
+    exchangeItems,
+    ielts: result?.ielts || "",
+    source: result?.source || ""
+  };
+}
+
+function renderDictionaryMorphology(elements, presentation) {
+  const hasContent = Boolean(
+    presentation.relation ||
+    presentation.surfaceMeaning ||
+    presentation.exchangeItems.length
+  );
+  elements.box?.classList.toggle("show", hasContent);
+  if (!hasContent) {
+    if (elements.relation) elements.relation.textContent = "";
+    elements.surface?.replaceChildren();
+    elements.exchange?.replaceChildren();
+    return;
+  }
+
+  if (elements.relation) elements.relation.textContent = presentation.relation;
+  renderDictionaryText(elements.surface, presentation.surfaceMeaning);
+
+  const fragment = document.createDocumentFragment();
+  presentation.exchangeItems.forEach(item => {
+    const chip = document.createElement("span");
+    chip.className = "exchangeChip";
+    chip.textContent = item;
+    fragment.appendChild(chip);
+  });
+  elements.exchange?.replaceChildren(fragment);
+}
+
+function renderDictionaryPrepareAction(container, reason = "") {
+  if (!container) return;
+  container.replaceChildren();
+  if (reason === "legacy_dictionary_loading") return;
+
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "secondary dictionaryActionButton";
+  button.textContent = "查看完整离线词典";
+  button.addEventListener("click", () => openSettings());
+  container.appendChild(button);
+}
+
+function createDictionaryActionButton({
+  label,
+  ariaLabel,
+  className = "secondary",
+  pressed,
+  onClick
+}) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = `dictionaryActionButton ${className}`.trim();
+  button.textContent = label;
+  if (ariaLabel) button.setAttribute("aria-label", ariaLabel);
+  if (typeof pressed === "boolean") {
+    button.setAttribute("aria-pressed", String(pressed));
+  }
+  button.addEventListener("click", onClick);
+  return button;
+}
+
+function setDictionaryFavoriteAction(button, word, result) {
+  if (!button) return;
+  const active = isFavorite(word, result);
+  button.textContent = active ? "★ 已收藏" : "☆ 收藏";
+  button.setAttribute("aria-pressed", String(active));
+  button.setAttribute(
+    "aria-label",
+    active ? `${word} 已收藏` : `收藏 ${word}`
+  );
+  button.classList.toggle("favoriteCardActive", active);
+}
+
+function createDirectSearchCard(word, status = "loading") {
+  const card = document.createElement("section");
+  card.className = "searchResultCard dictionaryResultCard";
+  card.dataset.lookupStatus = status;
+
+  const header = document.createElement("div");
+  header.className = "dictionaryResultHeader";
+
+  const identity = document.createElement("div");
+  identity.className = "dictionaryIdentity dictionaryIdentityNoPhonetic";
+
+  const headword = document.createElement("div");
+  headword.className = "searchResultWord dictionaryHeadword";
+  headword.textContent = word;
+
+  const pronunciationLine = document.createElement("div");
+  pronunciationLine.className = "dictionaryPronunciationLine";
+
+  const phonetic = document.createElement("span");
+  phonetic.className = "searchResultPhonetic dictionaryPhonetic";
+
+  const pronunciation = createDictionaryActionButton({
+    label: "🔊",
+    ariaLabel: `朗读 ${word}`,
+    className: "dictionaryPronunciationButton",
+    onClick: () => speakWord(word)
+  });
+
+  const pos = document.createElement("span");
+  pos.className = "searchResultPos dictionaryPos";
+  pos.hidden = true;
+
+  pronunciationLine.append(phonetic, pronunciation, pos);
+  identity.append(headword, pronunciationLine);
+  header.appendChild(identity);
+
+  const meaning = document.createElement("div");
+  meaning.className = "searchResultMeaning dictionaryDefinition";
+
+  const morphology = document.createElement("div");
+  morphology.className = "morphologyBox dictionaryMorphology";
+  const morphologyTitle = document.createElement("div");
+  morphologyTitle.className = "morphologyTitle";
+  morphologyTitle.textContent = "词形关系";
+  const relation = document.createElement("div");
+  relation.className = "morphologyRelation";
+  const surface = document.createElement("div");
+  surface.className = "surfaceMeaning";
+  const exchange = document.createElement("div");
+  exchange.className = "exchangeList";
+  morphology.append(morphologyTitle, relation, surface, exchange);
+
+  const ielts = document.createElement("div");
+  ielts.className = "dictionaryIelts";
+  ielts.hidden = true;
+  const ieltsTitle = document.createElement("div");
+  ieltsTitle.className = "dictionaryIeltsTitle";
+  ieltsTitle.textContent = "IELTS 雅思提示";
+  const ieltsText = document.createElement("div");
+  ieltsText.className = "dictionaryIeltsText";
+  ielts.append(ieltsTitle, ieltsText);
+
+  const actions = document.createElement("div");
+  actions.className = "dictionaryActions";
+  const statusBox = document.createElement("div");
+  statusBox.className = "dictionaryResultStatus";
+
+  card.append(header, meaning, morphology, ielts, actions, statusBox);
+
+  return {
+    card,
+    identity,
+    headword,
+    phonetic,
+    pronunciation,
+    pos,
+    meaning,
+    morphology: { box: morphology, relation, surface, exchange },
+    ielts,
+    ieltsText,
+    actions,
+    statusBox
+  };
+}
+
+function renderDirectSearchPresentation(view, presentation) {
+  view.headword.textContent = presentation.headword;
+  setDictionaryPronunciationPresentation(
+    view.identity,
+    view.phonetic,
+    view.pronunciation,
+    presentation.phonetic,
+    presentation.query
+  );
+  setOptionalDictionaryText(view.pos, presentation.pos);
+  renderDictionaryText(
+    view.meaning,
+    presentation.meaning,
+    "暂无中文释义",
+    { relationLines: true }
+  );
+  renderDictionaryMorphology(view.morphology, presentation);
+
+  view.ielts.hidden = !presentation.ielts;
+  renderDictionaryText(view.ieltsText, presentation.ielts);
+  view.card.dataset.dictionarySource = presentation.source;
+  view.card.dataset.lookupStatus = "found";
 }
 
 function configureDictionaryLookupService() {
@@ -4585,20 +4859,26 @@ async function directSearch(explicitWord = "") {
   const lookupRequestId = ++directSearchLookupRequestId;
 
   const resultBox = document.getElementById("directSearchResult");
-  resultBox.innerHTML = '<div class="searchEmpty">正在查询词典…</div>';
+  const view = createDirectSearchCard(word);
+  view.card.classList.add("dictionaryLoading");
+  renderDictionaryText(view.meaning, "正在查询词典…");
+  resultBox.replaceChildren(view.card);
+  resultBox.setAttribute("aria-busy", "true");
 
   speakWord(word);
   const outcome = await window.LingoFlowDictionaryLookupService.lookup({ word });
   if (lookupRequestId !== directSearchLookupRequestId) return;
 
+  resultBox.setAttribute("aria-busy", "false");
+  view.card.classList.remove("dictionaryLoading");
+
   if (outcome.status === "unavailable") {
-    resultBox.innerHTML = `
-      <div class="searchResultCard">
-        <div class="searchResultWord">${escapeHtml(word)}</div>
-        <div class="searchResultMeaning">${getDictionaryUnavailableMessage(outcome.reason)}</div>
-        <div style="margin-top:10px">${getDictionaryPrepareButtonHtml(outcome.reason)}</div>
-      </div>
-    `;
+    view.card.dataset.lookupStatus = "unavailable";
+    renderDictionaryText(
+      view.meaning,
+      getDictionaryUnavailableMessage(outcome.reason)
+    );
+    renderDictionaryPrepareAction(view.statusBox, outcome.reason);
     return;
   }
 
@@ -4612,20 +4892,20 @@ async function directSearch(explicitWord = "") {
       source: "search"
     };
 
-    resultBox.innerHTML = `
-      <div class="searchResultCard">
-        <div class="searchResultWord">${escapeHtml(word)}</div>
-        <div class="searchResultMeaning">
-          暂未找到该词，但你仍然可以收藏并建立自己的个人词卡。
-        </div>
-        <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
-          <button class="secondary" onclick="speakWord('${escapeJs(word)}')">🔊 再听一次</button>
-          <button class="secondary" onclick="favoriteDirectSearchUnknown('${escapeJs(word)}', this)">
-            ${isFavorite(word, null) ? "★ 已收藏" : "☆ 收藏"}
-          </button>
-        </div>
-      </div>
-    `;
+    view.card.dataset.lookupStatus = "not_found";
+    renderDictionaryText(
+      view.meaning,
+      "暂未找到该词，但你仍然可以收藏并建立自己的个人词卡。"
+    );
+    const favoriteButton = createDictionaryActionButton({
+      label: "☆ 收藏",
+      ariaLabel: `收藏 ${word}`,
+      className: "secondary dictionaryFavoriteButton",
+      pressed: false,
+      onClick: () => favoriteDirectSearchUnknown(word, favoriteButton)
+    });
+    setDictionaryFavoriteAction(favoriteButton, word, null);
+    view.actions.appendChild(favoriteButton);
     return;
   }
 
@@ -4640,49 +4920,18 @@ async function directSearch(explicitWord = "") {
     source: "search"
   };
 
-  const exchangeItems = formatExchange(result.exchange || "");
+  const presentation = createDictionaryPresentation(word, result);
+  renderDirectSearchPresentation(view, presentation);
 
-  resultBox.innerHTML = `
-    <div class="searchResultCard">
-      <div class="searchResultTop">
-        <span class="searchResultWord">${escapeHtml(word)}</span>
-        <span class="searchResultPhonetic">${escapeHtml(result.phonetic || "")}</span>
-      </div>
-
-      <div class="searchResultPos">${escapeHtml(result.pos || "词性未标注")}</div>
-      <div class="searchResultMeaning">${escapeHtml(result.meaning || "暂无中文释义")}</div>
-
-      ${result.baseWord && result.baseWord !== normalizeWord(word) ? `
-        <div style="margin-top:11px;padding:10px;background:#fff;border-radius:8px;line-height:1.55">
-          <b>词形关系：</b>${escapeHtml(normalizeWord(word))} → ${escapeHtml(result.baseWord)}
-          ${result.surfaceMeaning ? `<div style="margin-top:5px;color:#666">当前词形释义：${escapeHtml(result.surfaceMeaning)}</div>` : ""}
-        </div>
-      ` : ""}
-
-      ${exchangeItems.length ? `
-        <div style="margin-top:9px;display:flex;flex-wrap:wrap;gap:5px">
-          ${exchangeItems.map(x => `<span class="exchangeChip" style="background:#e9e9ee;color:#333">${escapeHtml(x)}</span>`).join("")}
-        </div>
-      ` : ""}
-
-      ${result.ielts ? `
-        <div style="margin-top:12px;padding:10px;background:#fff;border-radius:8px;line-height:1.55">
-          <b>IELTS 提示：</b>${escapeHtml(result.ielts)}
-        </div>
-      ` : ""}
-
-      <div class="searchResultMeta">
-        来源：${escapeHtml(result.source || "")}
-      </div>
-
-      <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
-        <button class="secondary" onclick="speakWord('${escapeJs(word)}')">🔊 再听一次</button>
-        <button class="secondary" onclick="favoriteDirectSearch('${escapeJs(word)}')">
-          ${isFavorite(word, result) ? "★ 已收藏" : "☆ 收藏"}
-        </button>
-      </div>
-    </div>
-  `;
+  const favoriteButton = createDictionaryActionButton({
+    label: "☆ 收藏",
+    ariaLabel: `收藏 ${word}`,
+    className: "secondary dictionaryFavoriteButton",
+    pressed: false,
+    onClick: () => favoriteDirectSearch(word, favoriteButton)
+  });
+  setDictionaryFavoriteAction(favoriteButton, word, result);
+  view.actions.appendChild(favoriteButton);
 }
 
 async function favoriteDirectSearchUnknown(word, button) {
@@ -4697,10 +4946,10 @@ async function favoriteDirectSearchUnknown(word, button) {
     await saveCurrentFavorite();
   }
 
-  if (button) button.textContent = "★ 已收藏";
+  setDictionaryFavoriteAction(button, word, null);
 }
 
-async function favoriteDirectSearch(word) {
+async function favoriteDirectSearch(word, button) {
   if (!currentLookupState.result ||
       normalizeWord(currentLookupState.word) !== normalizeWord(word)) {
     return;
@@ -4710,14 +4959,11 @@ async function favoriteDirectSearch(word) {
     await saveCurrentFavorite();
   }
 
-  const buttons = document.getElementById("directSearchResult")
-    .querySelectorAll("button");
-
-  buttons.forEach(btn => {
-    if (btn.textContent.includes("收藏")) {
-      btn.textContent = "★ 已收藏";
-    }
-  });
+  setDictionaryFavoriteAction(
+    button,
+    currentLookupState.word,
+    currentLookupState.result
+  );
 }
 
 async function refreshSearchSuggestions() {
@@ -5617,17 +5863,44 @@ async function showWordCard(word, contextSentence = "", sourceType = "article") 
   const lookupRequestId = ++wordCardLookupRequestId;
   const card = document.getElementById("wordCard");
   const emptySide = document.getElementById("emptySide");
+  const identity = card.querySelector(".dictionaryIdentity");
+  const headword = document.getElementById("currentWord");
+  const phonetic = document.getElementById("phonetic");
+  const pronunciation = document.getElementById("wordCardPronunciation");
+  const pos = document.getElementById("partOfSpeech");
+  const meaning = document.getElementById("meaning");
+  const morphology = {
+    box: document.getElementById("morphologyBox"),
+    relation: document.getElementById("morphologyRelation"),
+    surface: document.getElementById("surfaceMeaning"),
+    exchange: document.getElementById("exchangeList")
+  };
+  const ieltsBox = document.getElementById("ieltsBox");
+  const ieltsText = document.getElementById("ieltsText");
+  const statusBox = document.getElementById("dictionaryStatus");
 
-  document.getElementById("currentWord").textContent = word;
-  document.getElementById("phonetic").textContent = "";
-  document.getElementById("partOfSpeech").textContent = "查询中";
-  document.getElementById("meaning").textContent = "正在查询词典…";
-  document.getElementById("ieltsBox").style.display = "none";
-  document.getElementById("morphologyBox").classList.remove("show");
-  document.getElementById("morphologyRelation").textContent = "";
-  document.getElementById("surfaceMeaning").textContent = "";
-  document.getElementById("exchangeList").innerHTML = "";
-  document.getElementById("dictionaryStatus").textContent = "";
+  headword.textContent = word;
+  setDictionaryPronunciationPresentation(
+    identity,
+    phonetic,
+    pronunciation,
+    "",
+    word
+  );
+  setOptionalDictionaryText(pos, "");
+  renderDictionaryText(meaning, "正在查询词典…");
+  renderDictionaryMorphology(morphology, {
+    relation: "",
+    surfaceMeaning: "",
+    exchangeItems: []
+  });
+  ieltsBox.style.display = "none";
+  renderDictionaryText(ieltsText, "");
+  statusBox.replaceChildren();
+  card.dataset.lookupStatus = "loading";
+  card.dataset.dictionarySource = "";
+  card.setAttribute("aria-busy", "true");
+  card.classList.add("dictionaryLoading");
   currentLookupState = {
     word,
     result: null,
@@ -5647,14 +5920,18 @@ async function showWordCard(word, contextSentence = "", sourceType = "article") 
   });
 
   if (lookupRequestId !== wordCardLookupRequestId ||
-      document.getElementById("currentWord").textContent !== word) return;
+      headword.textContent !== word) return;
+
+  card.setAttribute("aria-busy", "false");
+  card.classList.remove("dictionaryLoading");
 
   if (outcome.status === "unavailable") {
-    document.getElementById("partOfSpeech").textContent = "暂时不可用";
-    document.getElementById("meaning").textContent =
-      getDictionaryUnavailableMessage(outcome.reason);
-    document.getElementById("dictionaryStatus").innerHTML =
-      getDictionaryPrepareButtonHtml(outcome.reason);
+    card.dataset.lookupStatus = "unavailable";
+    renderDictionaryText(
+      meaning,
+      getDictionaryUnavailableMessage(outcome.reason)
+    );
+    renderDictionaryPrepareAction(statusBox, outcome.reason);
     return;
   }
 
@@ -5670,46 +5947,31 @@ async function showWordCard(word, contextSentence = "", sourceType = "article") 
     };
     updateFavoriteButton();
 
-    document.getElementById("phonetic").textContent = result.phonetic || "";
-    document.getElementById("partOfSpeech").textContent =
-      result.pos || "词性未标注";
-    document.getElementById("meaning").textContent =
-      result.meaning || "暂无中文释义";
-
-    const exchangeItems = formatExchange(result.exchange || "");
-    const hasMorphology =
-      (result.baseWord && result.baseWord !== normalizeWord(word)) ||
-      result.surfaceMeaning ||
-      exchangeItems.length;
-
-    if (hasMorphology) {
-      document.getElementById("morphologyBox").classList.add("show");
-      document.getElementById("morphologyRelation").textContent =
-        result.baseWord && result.baseWord !== normalizeWord(word)
-          ? `原形：${result.baseWord}（${normalizeWord(word)} → ${result.baseWord}）`
-          : `词形变化：${result.baseWord || normalizeWord(word)}`;
-
-      document.getElementById("surfaceMeaning").textContent =
-        result.surfaceMeaning && result.surfaceMeaning !== result.meaning
-          ? `当前词形释义：${result.surfaceMeaning}`
-          : "";
-
-      document.getElementById("exchangeList").innerHTML = exchangeItems
-        .map(item => `<span class="exchangeChip">${escapeHtml(item)}</span>`)
-        .join("");
-    }
-
-    document.getElementById("dictionaryStatus").textContent =
-      "来源：" + result.source +
-      (result.baseWord && result.baseWord !== normalizeWord(word)
-        ? " · 原形：" + result.baseWord
-        : "");
+    const presentation = createDictionaryPresentation(word, result);
+    headword.textContent = presentation.headword;
+    setDictionaryPronunciationPresentation(
+      identity,
+      phonetic,
+      pronunciation,
+      presentation.phonetic,
+      presentation.query
+    );
+    setOptionalDictionaryText(pos, presentation.pos);
+    renderDictionaryText(
+      meaning,
+      presentation.meaning,
+      "暂无中文释义",
+      { relationLines: true }
+    );
+    renderDictionaryMorphology(morphology, presentation);
+    card.dataset.lookupStatus = "found";
+    card.dataset.dictionarySource = presentation.source;
 
     if (result.ielts) {
-      document.getElementById("ieltsBox").style.display = "block";
-      document.getElementById("ieltsText").textContent = result.ielts;
+      ieltsBox.style.display = "block";
+      renderDictionaryText(ieltsText, result.ielts);
     } else {
-      document.getElementById("ieltsBox").style.display = "none";
+      ieltsBox.style.display = "none";
     }
   } else {
     currentLookupState = {
@@ -5722,20 +5984,28 @@ async function showWordCard(word, contextSentence = "", sourceType = "article") 
 
     addToVocab(word, null, sourceType);
 
-    document.getElementById("phonetic").textContent = "";
-    document.getElementById("partOfSpeech").textContent = "未收录";
-    document.getElementById("meaning").textContent =
-      "暂未找到该词。你仍然可以点“☆ 收藏”，之后在“我的收藏”里自己填写释义、词性、上下文和备注。";
-    document.getElementById("ieltsBox").style.display = "none";
-    document.getElementById("morphologyBox").classList.remove("show");
-    document.getElementById("dictionaryStatus").textContent =
-      "暂未找到 · 已记入查询记录 · 仍可建立个人词卡";
+    card.dataset.lookupStatus = "not_found";
+    setOptionalDictionaryText(phonetic, "");
+    setOptionalDictionaryText(pos, "");
+    renderDictionaryText(
+      meaning,
+      "暂未找到该词。你仍然可以收藏，并在“我的收藏”里补充释义、词性、上下文和备注。"
+    );
+    ieltsBox.style.display = "none";
+    renderDictionaryMorphology(morphology, {
+      relation: "",
+      surfaceMeaning: "",
+      exchangeItems: []
+    });
+    statusBox.textContent = "已记入查询记录";
   }
 }
 
 function closeWordCard() {
   wordCardLookupRequestId += 1;
-  document.getElementById("wordCard").classList.remove("show");
+  const card = document.getElementById("wordCard");
+  card.classList.remove("show", "dictionaryLoading");
+  card.setAttribute("aria-busy", "false");
   document.body.classList.remove("readerWordCardOpen");
   resetReaderHeaderScrollIntent();
   currentLookupState = { word: "", result: null, sentence: "", source: "" };

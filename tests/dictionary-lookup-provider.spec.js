@@ -281,7 +281,7 @@ test("showWordCard 通过 service 查询，并保持 Query History 与 Favorite 
       requests,
       word: document.getElementById("currentWord").textContent,
       meaning: document.getElementById("meaning").textContent,
-      source: document.getElementById("dictionaryStatus").textContent,
+      source: document.getElementById("wordCard").dataset.dictionarySource,
       history: window.LingoFlowQueryEventRepository.list(),
       favorite,
       currentLookupState
@@ -294,7 +294,7 @@ test("showWordCard 通过 service 查询，并保持 Query History 与 Favorite 
   }]);
   expect(result.word).toBe("Develop");
   expect(result.meaning).toBe("发展；培养");
-  expect(result.source).toContain("测试词典");
+  expect(result.source).toBe("测试词典");
   expect(result.history).toHaveLength(1);
   expect(result.history[0]).toMatchObject({
     word: "develop",
@@ -338,13 +338,16 @@ test("directSearch 通过 service 查询并保留搜索结果与 Query History",
     return {
       requests,
       rendered: document.getElementById("directSearchResult").textContent,
+      source: document.querySelector("#directSearchResult .dictionaryResultCard")
+        ?.dataset.dictionarySource,
       history: window.LingoFlowQueryEventRepository.list()
     };
   });
 
   expect(result.requests).toEqual([{ word: "Develop", context: "" }]);
   expect(result.rendered).toContain("发展；培养");
-  expect(result.rendered).toContain("测试词典");
+  expect(result.rendered).not.toContain("测试词典");
+  expect(result.source).toBe("测试词典");
   expect(result.history).toHaveLength(1);
   expect(result.history[0]).toMatchObject({
     word: "develop",

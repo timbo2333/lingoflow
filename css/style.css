@@ -2978,3 +2978,475 @@
       max-width: none;
     }
   }
+
+
+  /* =========================
+     UI Refresh Phase 2
+     Dictionary presentation
+     ========================= */
+
+  :root {
+    --dictionary-surface: #fbfaf7;
+    --dictionary-surface-muted: #f2f0eb;
+    --dictionary-border: #dfdcd4;
+    --dictionary-text: #242322;
+    --dictionary-muted: #74716c;
+    --dictionary-accent: #315f49;
+  }
+
+  .searchPanel {
+    padding: 18px;
+    border-color: var(--dictionary-border);
+    background: var(--dictionary-surface);
+    box-shadow: 0 1px 0 rgba(29, 29, 31, .03);
+  }
+
+  .searchTitle {
+    color: var(--dictionary-text);
+    font-size: 15px;
+    letter-spacing: .01em;
+  }
+
+  #directSearchInput {
+    min-height: 44px;
+    border-color: var(--dictionary-border);
+    background: rgba(255, 255, 255, .72);
+  }
+
+  #directSearchInput:focus {
+    border-color: #7e8f85;
+    box-shadow: var(--focus-ring);
+  }
+
+  .directSearchButton {
+    min-height: 44px;
+  }
+
+  .directSearchResult {
+    min-height: 26px;
+  }
+
+  .searchResultCard.dictionaryResultCard {
+    padding: 18px 2px 2px;
+    border-top: 1px solid var(--dictionary-border);
+    border-radius: 0;
+    background: transparent;
+    color: var(--dictionary-text);
+  }
+
+  .dictionaryResultHeader,
+  .cardHeader {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  #wordCard .cardHeader {
+    gap: 6px;
+  }
+
+  .dictionaryIdentity {
+    min-width: 0;
+  }
+
+  .dictionaryIdentity.dictionaryIdentityNoPhonetic {
+    display: flex;
+    align-items: center;
+    gap: 4px 2px;
+    flex-wrap: nowrap;
+  }
+
+  .dictionaryIdentityNoPhonetic .dictionaryPronunciationLine {
+    min-height: 0;
+    margin-top: 0;
+    gap: 6px;
+  }
+
+  .dictionaryIdentityNoPhonetic .dictionaryPronunciationButton {
+    color: var(--dictionary-muted);
+  }
+
+  @media (min-width: 821px) {
+    #wordCard .dictionaryIdentityNoPhonetic #currentWord {
+      font-size: 27px;
+    }
+  }
+
+  .dictionaryHeadword,
+  #currentWord,
+  .searchResultWord {
+    color: var(--dictionary-text);
+    font-size: clamp(25px, 2.2vw, 31px);
+    font-weight: 760;
+    line-height: 1.16;
+    letter-spacing: -.02em;
+    overflow-wrap: anywhere;
+  }
+
+  .dictionaryPronunciationLine {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    min-height: 32px;
+    margin-top: 5px;
+    flex-wrap: wrap;
+  }
+
+  .dictionaryPhonetic,
+  #phonetic,
+  .searchResultPhonetic {
+    color: var(--dictionary-muted);
+    font-size: 14px;
+    line-height: 1.4;
+  }
+
+  .dictionaryPronunciationButton {
+    display: inline-grid;
+    place-items: center;
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    padding: 0;
+    border: 1px solid transparent;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--dictionary-text);
+    font-size: 15px;
+    line-height: 1;
+  }
+
+  .dictionaryPronunciationButton:hover {
+    border-color: var(--dictionary-border);
+    background: var(--dictionary-surface-muted);
+    opacity: 1;
+  }
+
+  .dictionaryPos,
+  #partOfSpeech,
+  .searchResultPos {
+    display: inline-flex;
+    align-items: center;
+    min-height: 25px;
+    margin: 0;
+    padding: 3px 8px;
+    border-radius: 999px;
+    background: var(--dictionary-surface-muted);
+    color: var(--dictionary-muted);
+    font-size: 12px;
+    font-weight: 650;
+    line-height: 1.2;
+  }
+
+  .dictionaryPos[hidden],
+  #partOfSpeech[hidden],
+  .searchResultPos[hidden] {
+    display: none;
+  }
+
+  .dictionaryDefinition,
+  #meaning,
+  .searchResultMeaning {
+    margin-top: 18px;
+    color: var(--dictionary-text);
+    font-size: 17px;
+    line-height: 1.68;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  #meaning {
+    font-size: 18px;
+  }
+
+  .dictionaryDefinitionLine + .dictionaryDefinitionLine {
+    margin-top: 7px;
+  }
+
+  .dictionaryDefinitionRelationLine {
+    color: var(--dictionary-muted);
+    font-size: .82em;
+    line-height: 1.55;
+  }
+
+  .morphologyBox,
+  .dictionaryMorphology {
+    margin-top: 18px;
+    padding: 15px 0 0;
+    border-top: 1px solid var(--dictionary-border);
+    border-radius: 0;
+    background: transparent;
+    color: var(--dictionary-text);
+  }
+
+  .morphologyTitle,
+  #ieltsTitle,
+  .dictionaryIeltsTitle {
+    margin-bottom: 6px;
+    color: var(--dictionary-muted);
+    font-size: 11px;
+    font-weight: 720;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+  }
+
+  .morphologyRelation {
+    color: var(--dictionary-accent);
+    font-size: 14px;
+    font-weight: 700;
+    line-height: 1.5;
+  }
+
+  .surfaceMeaning {
+    margin-top: 7px;
+    color: var(--dictionary-muted);
+    font-size: 13px;
+    line-height: 1.6;
+    white-space: normal;
+  }
+
+  .exchangeList {
+    margin-top: 9px;
+    gap: 6px;
+  }
+
+  .exchangeChip {
+    padding: 4px 8px;
+    border: 1px solid var(--dictionary-border);
+    border-radius: 999px;
+    background: transparent;
+    color: var(--dictionary-muted);
+    font-size: 11px;
+  }
+
+  #ieltsBox,
+  .dictionaryIelts {
+    margin-top: 18px;
+    padding: 15px 0 0;
+    border-top: 1px solid var(--dictionary-border);
+    border-radius: 0;
+    background: transparent;
+  }
+
+  #ieltsText,
+  .dictionaryIeltsText {
+    color: var(--dictionary-text);
+    font-size: 14px;
+    line-height: 1.65;
+  }
+
+  .dictionaryActions,
+  .cardButtons.dictionaryActions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 18px;
+    flex-wrap: wrap;
+  }
+
+  .dictionaryActionButton,
+  .dictionaryFavoriteButton {
+    min-height: 42px;
+    padding: 8px 13px;
+    border: 1px solid var(--dictionary-border);
+    background: transparent;
+    color: var(--dictionary-text);
+    font-size: 14px;
+  }
+
+  .dictionaryActionButton.dictionaryPronunciationButton {
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    min-height: 44px;
+    padding: 0;
+    border-color: transparent;
+    border-radius: 50%;
+    background: transparent;
+    font-size: 15px;
+  }
+
+  .dictionaryActionButton:hover,
+  .dictionaryFavoriteButton:hover {
+    background: var(--dictionary-surface-muted);
+    opacity: 1;
+  }
+
+  .dictionaryFavoriteButton.favoriteCardActive {
+    border-color: #a8c7b8;
+    background: #e9f4ed !important;
+    color: #24583e !important;
+  }
+
+  .dictionaryPronunciationButton:focus-visible,
+  .dictionaryActionButton:focus-visible,
+  .dictionaryFavoriteButton:focus-visible,
+  #closeCard:focus-visible,
+  .directSearchButton:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
+  }
+
+  .dictionaryResultStatus,
+  #dictionaryStatus {
+    margin-top: 12px;
+    color: var(--dictionary-muted);
+    font-size: 12px;
+    line-height: 1.55;
+  }
+
+  .dictionaryResultStatus:empty,
+  #dictionaryStatus:empty {
+    display: none;
+  }
+
+  #wordCard {
+    padding: 20px;
+    border: 1px solid var(--dictionary-border);
+    background: var(--dictionary-surface);
+    color: var(--dictionary-text);
+    box-shadow: 0 14px 38px rgba(45, 42, 36, .12);
+    overscroll-behavior: contain;
+  }
+
+  #closeCard {
+    width: 44px;
+    height: 44px;
+    flex: 0 0 44px;
+    padding: 0;
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--dictionary-muted);
+    line-height: 42px;
+  }
+
+  #closeCard:hover {
+    border-color: var(--dictionary-border);
+    background: var(--dictionary-surface-muted);
+    opacity: 1;
+  }
+
+  .dictionaryLoading .dictionaryDefinitionLine {
+    color: var(--dictionary-muted);
+    animation: dictionaryLoadingPulse 1.3s ease-in-out infinite alternate;
+  }
+
+  @keyframes dictionaryLoadingPulse {
+    from { opacity: .52; }
+    to { opacity: 1; }
+  }
+
+  body.darkMode {
+    --dictionary-surface: #232326;
+    --dictionary-surface-muted: #2d2d31;
+    --dictionary-border: #3c3c41;
+    --dictionary-text: #f1f0ec;
+    --dictionary-muted: #aaa8a2;
+    --dictionary-accent: #8ec5a8;
+  }
+
+  body.darkMode .searchPanel,
+  body.darkMode #wordCard {
+    border-color: var(--dictionary-border);
+    background: var(--dictionary-surface);
+    color: var(--dictionary-text);
+  }
+
+  body.darkMode #directSearchInput {
+    border-color: var(--dictionary-border);
+    background: #1d1d20;
+  }
+
+  body.darkMode .searchResultCard.dictionaryResultCard,
+  body.darkMode .morphologyBox,
+  body.darkMode .dictionaryMorphology,
+  body.darkMode #ieltsBox,
+  body.darkMode .dictionaryIelts {
+    border-color: var(--dictionary-border);
+    background: transparent;
+    color: var(--dictionary-text);
+  }
+
+  body.darkMode .dictionaryPos,
+  body.darkMode #partOfSpeech,
+  body.darkMode .searchResultPos,
+  body.darkMode .dictionaryPronunciationButton:hover,
+  body.darkMode .dictionaryActionButton:hover,
+  body.darkMode .dictionaryFavoriteButton:hover,
+  body.darkMode #closeCard:hover {
+    background: var(--dictionary-surface-muted);
+    color: var(--dictionary-text);
+  }
+
+  body.darkMode .dictionaryFavoriteButton.favoriteCardActive {
+    border-color: #3f7658;
+    background: #243f30 !important;
+    color: #bce7cd !important;
+  }
+
+  @media (max-width: 1359px) and (min-width: 821px) {
+    #wordCard {
+      width: min(372px, calc(100vw - 48px));
+      max-height: min(70vh, 640px);
+    }
+  }
+
+  @media (max-width: 820px) {
+    #wordCard {
+      max-height: min(54vh, 520px);
+      padding: 17px 17px calc(17px + env(safe-area-inset-bottom));
+      border-radius: 16px;
+      box-shadow: 0 -12px 38px rgba(30, 29, 26, .2);
+    }
+
+    body.readerWordCardOpen #readerLayout {
+      padding-bottom: calc(54vh + env(safe-area-inset-bottom) + var(--space-4));
+    }
+
+    .dictionaryHeadword,
+    #currentWord,
+    .searchResultWord {
+      font-size: 25px;
+    }
+
+    .dictionaryDefinition,
+    #meaning,
+    .searchResultMeaning {
+      margin-top: 14px;
+      font-size: 16px;
+      line-height: 1.62;
+    }
+
+    .morphologyBox,
+    .dictionaryMorphology,
+    #ieltsBox,
+    .dictionaryIelts {
+      margin-top: 14px;
+      padding-top: 12px;
+    }
+
+    .dictionaryActions,
+    .cardButtons.dictionaryActions {
+      margin-top: 14px;
+    }
+  }
+
+  @media (max-width: 520px) {
+    .searchRow {
+      grid-template-columns: 1fr;
+    }
+
+    .directSearchButton {
+      width: 100%;
+    }
+
+    .searchPanel {
+      padding: 15px;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .dictionaryLoading .dictionaryDefinitionLine {
+      animation: none;
+    }
+  }

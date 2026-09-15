@@ -300,18 +300,21 @@
     </div>
 
     <div class="searchPanel">
-      <div class="searchTitle">直接查词</div>
+      <div id="directSearchTitle" class="searchTitle">直接查词</div>
       <div class="searchRow searchRowWithSuggest">
         <div class="searchInputWrap">
           <input id="directSearchInput" type="text"
                  placeholder="输入单词，例如：gave / better / environment"
+                 aria-labelledby="directSearchTitle"
+                 aria-controls="directSearchResult searchSuggestions"
                  autocomplete="off">
           <div id="searchSuggestions" class="searchSuggestions"></div>
         </div>
-        <button onclick="directSearch()">查询</button>
+        <button class="directSearchButton" type="button" onclick="directSearch()">查询</button>
       </div>
 
-      <div id="directSearchResult" class="directSearchResult">
+      <div id="directSearchResult" class="directSearchResult"
+           role="status" aria-live="polite" aria-atomic="true">
         <div class="searchEmpty">不用粘贴文章，也可以直接查词。</div>
       </div>
     </div>
@@ -472,21 +475,26 @@ I felt nervous when I asked my friends for advice, but their suggestions helped 
         点击原文中的任意英文单词，释义会显示在这里。
       </div>
 
-      <div id="wordCard">
+      <div id="wordCard" role="region" aria-label="单词释义" aria-busy="false">
         <div class="cardHeader">
-          <div>
+          <div class="dictionaryIdentity">
             <div class="wordLine">
-              <span id="currentWord">word</span>
-              <span id="phonetic"></span>
+              <span id="currentWord" class="dictionaryHeadword">word</span>
             </div>
-            <div id="partOfSpeech"></div>
+            <div class="dictionaryPronunciationLine">
+              <span id="phonetic" class="dictionaryPhonetic"></span>
+              <button id="wordCardPronunciation" class="dictionaryPronunciationButton"
+                      type="button" onclick="repeatCurrentWord()"
+                      title="朗读当前单词" aria-label="朗读当前单词">🔊</button>
+              <span id="partOfSpeech" class="dictionaryPos" hidden></span>
+            </div>
           </div>
 
           <button id="closeCard" type="button" onclick="closeWordCard()"
                   title="关闭释义" aria-label="关闭单词释义">×</button>
         </div>
 
-        <div id="meaning"></div>
+        <div id="meaning" class="dictionaryDefinition" aria-live="polite"></div>
 
         <div id="morphologyBox" class="morphologyBox">
           <div class="morphologyTitle">词形关系</div>
@@ -500,9 +508,10 @@ I felt nervous when I asked my friends for advice, but their suggestions helped 
           <div id="ieltsText"></div>
         </div>
 
-        <div class="cardButtons">
-          <button class="cardButton" onclick="repeatCurrentWord()">🔊 再听一次</button>
-          <button id="favoriteCurrentButton" class="cardButton" onclick="toggleCurrentFavorite()">☆ 收藏</button>
+        <div class="cardButtons dictionaryActions">
+          <button id="favoriteCurrentButton" class="cardButton dictionaryFavoriteButton"
+                  type="button" onclick="toggleCurrentFavorite()"
+                  aria-pressed="false" aria-label="收藏当前单词">☆ 收藏</button>
         </div>
 
         <div id="dictionaryStatus"></div>
