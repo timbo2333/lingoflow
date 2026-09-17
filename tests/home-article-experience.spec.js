@@ -65,6 +65,46 @@ test("Home 首屏以文章输入和开始阅读为主，次级功能仍可到达
   await expect(page.locator("#dictionarySetupStatus")).toBeVisible();
 });
 
+test("Mobile Account 与 Settings 保持 44px 点击区域且不挤压 Desktop header", async ({ page }) => {
+  for (const width of [320, 375, 390, 1440]) {
+    await page.setViewportSize({ width, height: 844 });
+    const layout = await page.evaluate(() => {
+      const measure = id => {
+        const rect = document.getElementById(id).getBoundingClientRect();
+        return { width: rect.width, height: rect.height };
+      };
+      return {
+        account: measure("accountButton"),
+        settings: measure("homeSettingsButton"),
+        overflowX: document.documentElement.scrollWidth > window.innerWidth
+      };
+    });
+
+    if (width <= 390) {
+      expect(layout.account.height).toBeGreaterThanOrEqual(44);
+      expect(layout.settings.height).toBeGreaterThanOrEqual(44);
+      expect(layout.account.width).toBeGreaterThanOrEqual(44);
+      expect(layout.settings.width).toBeGreaterThanOrEqual(44);
+    } else {
+      expect(layout.account.height).toBeLessThanOrEqual(40);
+      expect(layout.settings.height).toBeLessThanOrEqual(40);
+    }
+    expect(layout.overflowX).toBe(false);
+  }
+});
+
+test("Home Footer 降低工程数据集曝光并在 About 保留完整 attribution", async ({ page }) => {
+  const footer = page.locator(".appFooter");
+  await expect(footer).toContainText("词典数据来源与版权说明");
+  await expect(footer).not.toContainText("ECDICT");
+
+  await page.locator("#homeSettingsButton").click();
+  await page.locator("#settingsAboutDisclosure > summary").click();
+  const attribution = page.locator(".settingsDictionaryAttribution");
+  await expect(attribution).toContainText("第三方 ECDICT 数据集");
+  await expect(attribution).toContainText("原项目及各自数据来源所有");
+});
+
 test("整个文章输入区域接受 TXT drop 并保留既有导入来源", async ({ page }) => {
   const surface = page.locator("#articleInputSurface");
   await page.evaluate(() => {

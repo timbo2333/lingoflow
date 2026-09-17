@@ -224,6 +224,58 @@ test("Cloud 与 Legacy 都 unavailable 时返回最终 unavailable", async ({ pa
   });
 });
 
+test("Word Card 在 Cloud timeout 且无 Legacy 时从 loading 收口为 unavailable", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    const cloud = window.LingoFlowSupabaseDictionaryProvider.create({
+      getClient: async () => ({
+        rpc: () => new Promise(() => {})
+      }),
+      timeoutMs: 25
+    });
+    window.LingoFlowDictionaryLookupService.setProviders([
+      cloud,
+      {
+        name: "legacy_test",
+        lookup: async ({ word }) => ({
+          status: "unavailable",
+          query: word,
+          reason: "legacy_dictionary_not_ready"
+        })
+      }
+    ]);
+
+    const lookup = showWordCard("uncachedphasefinal", "", "article");
+    const card = document.getElementById("wordCard");
+    const initial = {
+      status: card.dataset.lookupStatus,
+      busy: card.getAttribute("aria-busy"),
+      text: document.getElementById("meaning").textContent
+    };
+    await lookup;
+    return {
+      initial,
+      final: {
+        status: card.dataset.lookupStatus,
+        busy: card.getAttribute("aria-busy"),
+        loadingClass: card.classList.contains("dictionaryLoading"),
+        text: document.getElementById("meaning").textContent
+      }
+    };
+  });
+
+  expect(result.initial).toEqual({
+    status: "loading",
+    busy: "true",
+    text: "正在查询词典…"
+  });
+  expect(result.final).toEqual({
+    status: "unavailable",
+    busy: "false",
+    loadingClass: false,
+    text: "在线词典暂时不可用，请稍后重试。如需离线查询，可在设置中下载完整离线词典。"
+  });
+});
+
 test("stale Cloud response 不覆盖后续 Word Card lookup", async ({ page }) => {
   const result = await page.evaluate(async () => {
     let resolveOlder;

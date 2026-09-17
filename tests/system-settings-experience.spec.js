@@ -95,10 +95,10 @@ test("Settings stays viewport-bound from 320px to 1440px and keeps advanced cont
   }
 
   await expect(page.locator("#settingsAdvancedDisclosure")).not.toHaveAttribute("open", "");
-  await expect(page.locator("#settingsModal").getByText("ECDICT 数据")).toBeHidden();
+  await expect(page.locator("#settingsModal").getByText("ECDICT 数据", { exact: true })).toBeHidden();
   await page.locator("#settingsAdvancedDisclosure > summary").click();
   await page.locator("#offlineTechnicalDisclosure > summary").click();
-  await expect(page.locator("#settingsModal").getByText("ECDICT 数据")).toBeVisible();
+  await expect(page.locator("#settingsModal").getByText("ECDICT 数据", { exact: true })).toBeVisible();
 
   await page.setViewportSize({ width: 390, height: 844 });
   const beforeScroll = await page.locator("#settingsModal").evaluate(modal => {
