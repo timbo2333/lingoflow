@@ -1258,13 +1258,20 @@ function setDictionarySetupState(state, title, detail, options = {}) {
   }
 }
 
-function setDictionaryGuideVisible(visible, manual = false) {
+function setDictionaryGuideVisible(visible, manual = false, trigger = null) {
   const modal = document.getElementById("dictionaryGuideModal");
   const manualActions = document.getElementById("dictionaryGuideManualActions");
   if (!modal || !manualActions) return;
 
-  modal.classList.toggle("show", visible);
   manualActions.classList.toggle("show", visible && manual);
+  if (visible) {
+    openModal("dictionaryGuideModal", {
+      trigger,
+      initialFocus: manual ? "#dictionaryGuideManualActions button" : ".dictionaryGuideOption"
+    });
+  } else {
+    closeModal("dictionaryGuideModal");
+  }
 }
 
 function markDictionaryReadyLocally() {
@@ -1312,12 +1319,12 @@ function showDictionaryNeedsPreparation(integrity, options = {}) {
   }
 }
 
-function openDictionaryGuide() {
+function openDictionaryGuide(trigger = null) {
   if (dictionaryIntegritySnapshot?.ecdict.complete && dictionaryIntegritySnapshot?.lemma.complete) {
     setDictionaryGuideVisible(false);
     return;
   }
-  setDictionaryGuideVisible(true, false);
+  setDictionaryGuideVisible(true, false, trigger);
 }
 
 function deferDictionarySetup() {
@@ -2711,8 +2718,8 @@ function updateVocabBadges() {
 }
 
 function openVocabBook() {
-  document.getElementById("vocabModal").classList.add("show");
   renderVocabBook();
+  openModal("vocabModal", { initialFocus: "#vocabFilterInput" });
 }
 
 function setVocabSortMode(sortMode) {
@@ -3200,8 +3207,8 @@ async function toggleCurrentFavorite() {
 }
 
 function openFavorites() {
-  document.getElementById("favoritesModal").classList.add("show");
   renderFavorites();
+  openModal("favoritesModal", { initialFocus: "#favoriteFilterInput" });
 }
 
 function setFavoriteMasterFilter(masterFilter) {
@@ -4046,7 +4053,7 @@ function openReadingSettings() {
   keepReaderHeaderVisible();
   closeReaderPopovers();
   applyReadingPreferences();
-  document.getElementById("readingSettingsModal").classList.add("show");
+  openModal("readingSettingsModal", { initialFocus: "#readerFontSizeQuick" });
 }
 
 function isReaderHeaderInteractionLocked() {
@@ -4175,7 +4182,7 @@ function initializeReaderShell() {
 }
 
 function openHelp() {
-  document.getElementById("helpModal").classList.add("show");
+  openModal("helpModal");
 }
 
 function resetTxtImportUI() {
@@ -4556,11 +4563,8 @@ document.addEventListener("keydown", event => {
   const cmd = event.ctrlKey || event.metaKey;
 
   if (cmd && event.key.toLowerCase() === "k") {
+    if (getTopOpenModal()) return;
     event.preventDefault();
-    closeModal("settingsModal");
-    closeModal("favoritesModal");
-    closeModal("vocabModal");
-    closeModal("myArticlesModal");
     const input = document.getElementById("directSearchInput");
     input?.focus();
     input?.select();
@@ -5270,6 +5274,17 @@ document.getElementById("articleFindInput").addEventListener("keydown", event =>
    ========================= */
 
 const modalBackdropPointerIds = new Map();
+const modalFocusState = new Map();
+const modalOpenStack = [];
+const MODAL_FOCUSABLE_SELECTOR = [
+  "button:not([disabled])",
+  "input:not([disabled]):not([type='hidden'])",
+  "select:not([disabled])",
+  "textarea:not([disabled])",
+  "a[href]",
+  "summary",
+  "[tabindex]:not([tabindex='-1'])"
+].join(",");
 let activeContextualPopover = null;
 
 function closeContextualPopovers(except = null) {
@@ -5305,14 +5320,129 @@ document.addEventListener("keydown", event => {
   closeContextualPopovers();
 }, true);
 
-function closeModal(id) {
+function isVisibleModalControl(element) {
+  if (!(element instanceof HTMLElement) || element.hidden) return false;
+  if (element.closest("[hidden]")) return false;
+  let details = element.closest("details");
+  while (details) {
+    const summary = details.querySelector(":scope > summary");
+    if (!details.open && element !== summary) return false;
+    details = details.parentElement?.closest("details") || null;
+  }
+  const style = getComputedStyle(element);
+  return style.display !== "none" && style.visibility !== "hidden" &&
+    element.getClientRects().length > 0;
+}
+
+function getModalFocusableElements(modal) {
+  if (!modal) return [];
+  return [...modal.querySelectorAll(MODAL_FOCUSABLE_SELECTOR)]
+    .filter(isVisibleModalControl);
+}
+
+function prepareModalCard(modal) {
+  if (!modal) return null;
+  modal.setAttribute("aria-modal", "true");
+  if (!modal.hasAttribute("role")) modal.setAttribute("role", "dialog");
+  if (!modal.hasAttribute("tabindex")) modal.setAttribute("tabindex", "-1");
+
+  const card = modal.querySelector(":scope > .modalCard");
+  if (!card || card.querySelector(":scope > .modalBody")) return card;
+  const header = card.querySelector(":scope > .modalHeader");
+  const body = document.createElement("div");
+  body.className = "modalBody";
+  [...card.children].forEach(child => {
+    if (child !== header) body.appendChild(child);
+  });
+  card.appendChild(body);
+  return card;
+}
+
+function syncModalBodyLock() {
+  const hasOpenModal = Boolean(document.querySelector(".modalOverlay.show"));
+  document.body.classList.toggle("modalOpen", hasOpenModal);
+}
+
+function getTopOpenModal() {
+  for (let index = modalOpenStack.length - 1; index >= 0; index--) {
+    const modal = document.getElementById(modalOpenStack[index]);
+    if (modal?.classList.contains("show")) return modal;
+    modalOpenStack.splice(index, 1);
+  }
+  const openModals = [...document.querySelectorAll(".modalOverlay.show")];
+  return openModals.at(-1) || null;
+}
+
+function focusModal(modal, initialFocus = null) {
+  if (!modal?.classList.contains("show")) return;
+  let target = initialFocus;
+  if (typeof initialFocus === "string") target = modal.querySelector(initialFocus);
+  if (!isVisibleModalControl(target)) {
+    target = modal.querySelector("[data-modal-initial-focus]");
+  }
+  if (!isVisibleModalControl(target)) {
+    target = modal.querySelector(".iconClose") || getModalFocusableElements(modal)[0];
+  }
+  (isVisibleModalControl(target) ? target : modal).focus({ preventScroll: true });
+}
+
+function openModal(id, options = {}) {
+  const modal = document.getElementById(id);
+  if (!modal) return false;
+  prepareModalCard(modal);
+
+  if (!modal.classList.contains("show") && !modalFocusState.has(id)) {
+    const active = options.trigger || document.activeElement;
+    modalFocusState.set(id, {
+      trigger: active instanceof HTMLElement && active !== document.body &&
+        !modal.contains(active) ? active : null
+    });
+  }
+
+  modal.classList.add("show");
+  modal.setAttribute("aria-hidden", "false");
+  const existingIndex = modalOpenStack.indexOf(id);
+  if (existingIndex >= 0) modalOpenStack.splice(existingIndex, 1);
+  modalOpenStack.push(id);
+  syncModalBodyLock();
+  requestAnimationFrame(() => focusModal(modal, options.initialFocus));
+  return true;
+}
+
+function finishModalClose(id, options = {}) {
+  const modal = document.getElementById(id);
+  if (!modal) return false;
+  const wasOpen = modal.classList.contains("show");
+  const focusState = modalFocusState.get(id);
+  modal.classList.remove("show");
+  modal.setAttribute("aria-hidden", "true");
+  modalFocusState.delete(id);
+  const stackIndex = modalOpenStack.lastIndexOf(id);
+  if (stackIndex >= 0) modalOpenStack.splice(stackIndex, 1);
+  syncModalBodyLock();
+
+  if (wasOpen && options.restoreFocus !== false) {
+    requestAnimationFrame(() => {
+      const trigger = focusState?.trigger;
+      if (isVisibleModalControl(trigger)) {
+        trigger.focus({ preventScroll: true });
+        return;
+      }
+      const topModal = getTopOpenModal();
+      if (topModal) focusModal(topModal);
+    });
+  }
+  return wasOpen;
+}
+
+function closeModal(id, options = {}) {
   closeContextualPopovers();
   modalBackdropPointerIds.delete(id);
   if (id === "myArticlesModal") {
     closeMyArticlesModal();
     return;
   }
-  document.getElementById(id).classList.remove("show");
+  finishModalClose(id, options);
 }
 
 function modalBackdropPointerDown(event, id) {
@@ -5340,6 +5470,108 @@ function modalBackdropPointerCancel(event, id) {
   if (pointers && pointers.size === 0) modalBackdropPointerIds.delete(id);
 }
 
+function handleModalKeyboard(event) {
+  const modal = getTopOpenModal();
+  if (!modal) return;
+
+  if (event.key === "Escape") {
+    event.preventDefault();
+    event.stopPropagation();
+    closeModal(modal.id);
+    return;
+  }
+
+  if (event.key !== "Tab") return;
+  const focusable = getModalFocusableElements(modal);
+  if (!focusable.length) {
+    event.preventDefault();
+    modal.focus({ preventScroll: true });
+    return;
+  }
+
+  const active = document.activeElement;
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (!modal.contains(active)) {
+    event.preventDefault();
+    (event.shiftKey ? last : first).focus({ preventScroll: true });
+  } else if (event.shiftKey && active === first) {
+    event.preventDefault();
+    last.focus({ preventScroll: true });
+  } else if (!event.shiftKey && active === last) {
+    event.preventDefault();
+    first.focus({ preventScroll: true });
+  }
+}
+
+function initializeModalSystem() {
+  document.querySelectorAll(".modalOverlay").forEach(modal => {
+    prepareModalCard(modal);
+    if (!modal.classList.contains("show")) modal.setAttribute("aria-hidden", "true");
+  });
+  document.addEventListener("keydown", handleModalKeyboard, true);
+  document.querySelectorAll(".modalOverlay.show").forEach(modal => {
+    openModal(modal.id);
+  });
+}
+
+window.LingoFlowModalSystem = Object.freeze({
+  open: openModal,
+  close: closeModal,
+  getTop: getTopOpenModal
+});
+
+function updateSettingsAccountSummary() {
+  const authState = window.LingoFlowSupabaseAuth?.getState?.() || {};
+  const authenticated = ["authenticated", "password-recovery"].includes(
+    authState.status
+  );
+  const accountValue = document.getElementById("settingsAccountValue");
+  const syncValue = document.getElementById("settingsSyncValue");
+  const accountButton = document.getElementById("settingsAccountButton");
+  const syncBadge = document.getElementById("favoriteSyncStatusBadge");
+
+  if (accountValue) {
+    accountValue.textContent = authenticated
+      ? (authState.user?.email || "已登录")
+      : "未登录";
+  }
+  if (syncValue) {
+    syncValue.textContent = syncBadge?.textContent || (
+      authenticated ? "正在检查收藏与学习状态同步…" : "数据保存在当前设备"
+    );
+  }
+  if (accountButton) {
+    accountButton.textContent = authenticated ? "管理账号" : "登录 / 注册";
+  }
+}
+
+function openAccountFromSettings() {
+  closeModal("settingsModal", { restoreFocus: false });
+  window.LingoFlowFavoriteAuthUI?.open?.(
+    document.getElementById("accountButton")
+  );
+}
+
+function openOfflineDictionaryFromSettings() {
+  closeModal("settingsModal", { restoreFocus: false });
+  openDictionaryGuide(document.getElementById("homeSettingsButton"));
+}
+
+function updateLegacyImportModePresentation() {
+  const mode = document.getElementById("learningImportMode")?.value || "merge";
+  const hint = document.getElementById("learningImportModeHint");
+  if (!hint) return;
+  hint.dataset.mode = mode;
+  if (mode === "overwrite") {
+    hint.textContent = "完全覆盖会替换当前旧版查询记录、阅读／朗读设置和旧格式收藏；当前 Favorite Entity 与 Learning State 不受影响。导入前会再次确认。";
+  } else if (mode === "preview") {
+    hint.textContent = "导入前会先显示旧版查询事件和收藏数量，确认后再执行智能合并。";
+  } else {
+    hint.textContent = "智能合并会按事件 ID 去重，并保留当前 Favorite Entity 与 Learning State。";
+  }
+}
+
 function formatBytes(bytes) {
   if (!Number.isFinite(bytes)) return "未知";
   const units = ["B", "KB", "MB", "GB"];
@@ -5354,10 +5586,20 @@ function formatBytes(bytes) {
   return `${value.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
 }
 
-async function openSettings() {
+async function openSettings(section = "") {
   applyReadingPreferences();
   loadVoices();
-  document.getElementById("settingsModal").classList.add("show");
+  if (section === "compatibility") {
+    const disclosure = document.getElementById("settingsCompatibilityDisclosure");
+    if (disclosure) disclosure.open = true;
+  }
+  openModal("settingsModal", {
+    initialFocus: section === "compatibility"
+      ? "#settingsCompatibilityDisclosure > summary"
+      : "#readerFontSize"
+  });
+  updateSettingsAccountSummary();
+  updateLegacyImportModePresentation();
 
   const ready = await getECDICTMeta("ready");
   const count = await getECDICTMeta("count");
@@ -5373,6 +5615,16 @@ async function openSettings() {
     lemmaReady?.value
       ? `已导入 · ${lemmaCount ? Number(lemmaCount.value).toLocaleString() : "未知"} 条映射`
       : "未导入";
+
+  const offlineSummary = document.getElementById("settingsOfflineSummary");
+  if (offlineSummary) {
+    offlineSummary.textContent = ready?.value && lemmaReady?.value
+      ? `已安装完整离线词典 · ${Number(count?.value || 0).toLocaleString()} 条词条`
+      : "尚未完整安装；在线查词仍可正常使用。";
+    offlineSummary.dataset.state = ready?.value && lemmaReady?.value
+      ? "ready"
+      : "optional";
+  }
 
   const vocabCount = Object.keys(getVocabData()).length;
   const favoriteCount = getFavoriteRepository().count();
@@ -5539,6 +5791,111 @@ function downloadBlob(blob, filename) {
   a.download = filename;
   a.click();
   setTimeout(() => URL.revokeObjectURL(url), 1500);
+}
+
+function setCurrentBackupStatus(message, state = "") {
+  const status = document.getElementById("currentBackupStatus");
+  if (!status) return;
+  status.textContent = message;
+  status.dataset.state = state;
+}
+
+async function exportCurrentBackup(button = null) {
+  const exporter = window.LingoFlowBackupV2Export;
+  if (typeof exporter?.exportBackup !== "function") {
+    setCurrentBackupStatus("暂时无法导出备份，请稍后再试。", "error");
+    return null;
+  }
+
+  if (button) button.disabled = true;
+  setCurrentBackupStatus("正在整理完整数据备份…", "working");
+  try {
+    const result = await exporter.exportBackup();
+    if (result?.status !== "ready" || !result.payload) {
+      setCurrentBackupStatus("备份未能完整生成，本地数据没有改变。请稍后再试。", "error");
+      return result || null;
+    }
+    const blob = new Blob([JSON.stringify(result.payload, null, 2)], {
+      type: "application/json;charset=utf-8"
+    });
+    downloadBlob(
+      blob,
+      `lingoflow-backup-v2-${new Date().toISOString().slice(0, 10)}.json`
+    );
+    setCurrentBackupStatus(
+      "备份已导出。请将文件保存到安全的位置。",
+      "success"
+    );
+    return result;
+  } catch {
+    setCurrentBackupStatus("暂时无法导出备份，请稍后再试。", "error");
+    return null;
+  } finally {
+    if (button?.isConnected) button.disabled = false;
+  }
+}
+
+function formatCurrentBackupRestoreSummary(result) {
+  const summary = result?.summary || {};
+  const restored = Number(summary.restored || 0);
+  const unchanged = Number(summary.unchanged || 0);
+  const conflicts = Number(summary.conflicts || 0);
+  if (result?.status === "completed-with-conflicts" || conflicts > 0) {
+    return `备份已安全合并：恢复 ${restored} 项，保留 ${unchanged} 项未变，${conflicts} 项冲突继续保留本地版本。`;
+  }
+  return `备份已安全合并：恢复 ${restored} 项，${unchanged} 项无需更改。`;
+}
+
+async function importCurrentBackupFile(file) {
+  if (!file) return null;
+  const restorer = window.LingoFlowBackupV2;
+  if (typeof restorer?.restoreBackup !== "function") {
+    setCurrentBackupStatus("暂时无法导入备份，请稍后再试。", "error");
+    return null;
+  }
+
+  setCurrentBackupStatus("正在检查备份文件…", "working");
+  let envelope;
+  try {
+    const text = await file.text();
+    envelope = JSON.parse(text);
+  } catch {
+    setCurrentBackupStatus("无法识别这个备份文件，本地数据没有改变。", "error");
+    return null;
+  }
+
+  const confirmed = confirm(
+    "导入会把备份中的文章、收藏、学习状态、查询记录和偏好安全合并到当前设备。遇到冲突会保留本地数据，不会执行完全覆盖。继续吗？"
+  );
+  if (!confirmed) {
+    setCurrentBackupStatus("已取消导入，本地数据没有改变。", "info");
+    return { status: "cancelled" };
+  }
+
+  try {
+    setCurrentBackupStatus("正在安全合并备份…", "working");
+    const result = await restorer.restoreBackup(envelope);
+    if (!["completed", "completed-with-conflicts"].includes(result?.status)) {
+      setCurrentBackupStatus("备份文件未通过检查，本地数据没有被覆盖。", "error");
+      return result || null;
+    }
+
+    applyReadingPreferences();
+    updateVocabBadges();
+    refreshFavoriteUi();
+    if (document.getElementById("vocabModal")?.classList.contains("show")) {
+      renderVocabBook();
+    }
+    if (document.getElementById("favoritesModal")?.classList.contains("show")) {
+      renderFavorites();
+    }
+    void refreshHomeContinueReading();
+    setCurrentBackupStatus(formatCurrentBackupRestoreSummary(result), "success");
+    return result;
+  } catch {
+    setCurrentBackupStatus("导入未能完成，请检查当前数据后再试。", "error");
+    return null;
+  }
 }
 
 async function exportLearningBackup() {
@@ -5929,6 +6286,19 @@ async function importBackupFile(file, expectedType = "auto") {
     "旧格式收藏已恢复到 legacy 兼容存储。";
 }
 
+document.getElementById("currentBackupFileInput")?.addEventListener("change", async event => {
+  const file = event.target.files[0];
+  if (!file) return;
+  const button = document.getElementById("currentBackupImportButton");
+  if (button) button.disabled = true;
+  try {
+    await importCurrentBackupFile(file);
+  } finally {
+    event.target.value = "";
+    if (button) button.disabled = false;
+  }
+});
+
 document.getElementById("learningBackupFileInput").addEventListener("change", async event => {
   const file = event.target.files[0];
   if (!file) return;
@@ -5962,7 +6332,7 @@ document.getElementById("fullBackupFileInput").addEventListener("change", async 
 });
 
 function openChangelog() {
-  document.getElementById("changelogModal").classList.add("show");
+  openModal("changelogModal");
 }
 
 async function deleteECDICTOnly() {
@@ -6615,7 +6985,7 @@ function pushMyArticlesHistoryState(view) {
 }
 
 function hideMyArticlesModalUI() {
-  document.getElementById("myArticlesModal")?.classList.remove("show");
+  finishModalClose("myArticlesModal");
   resetMyArticlesSearchState();
   myArticlesFilter = "all";
   myArticlesView = "active";
@@ -6637,7 +7007,7 @@ async function applyMyArticlesHistoryState(marker, options = {}) {
   }
 
   myArticlesView = marker.view;
-  modal.classList.add("show");
+  openModal("myArticlesModal", { initialFocus: "#myArticlesSearchInput" });
   updateMyArticlesViewUI();
   setMyArticlesMessage("正在读取文章…", "loading");
 
@@ -6686,7 +7056,7 @@ function closeTransientNavigationUI() {
   hidePhraseSelectionToolbar(true);
   hideSearchSuggestions();
   TRANSIENT_NAVIGATION_MODAL_IDS.forEach(id => {
-    document.getElementById(id)?.classList.remove("show");
+    finishModalClose(id, { restoreFocus: false });
   });
 }
 
@@ -7761,6 +8131,10 @@ function initializeFavoriteSync() {
   });
 }
 
+initializeModalSystem();
+updateLegacyImportModePresentation();
+window.addEventListener("lingoflow:auth-state", updateSettingsAccountSummary);
+window.addEventListener("lingoflow:favorite-sync-status", updateSettingsAccountSummary);
 ensureHistoryMigration();
 initializeFavoriteSync();
 initializeDictionaryOnStartup();
@@ -7778,17 +8152,11 @@ void refreshHomeContinueReading();
 document.addEventListener("keydown", function(event) {
   if (event.key === "Escape") {
     closeReaderPopovers();
-    closeModal("vocabModal");
-    closeModal("favoritesModal");
-    closeModal("settingsModal");
-    closeModal("readingSettingsModal");
-    closeModal("helpModal");
-    closeModal("changelogModal");
-    closeModal("myArticlesModal");
     hideSearchSuggestions();
   }
 
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+    if (getTopOpenModal()) return;
     event.preventDefault();
     const search = document.getElementById("directSearchInput");
     void (async () => {

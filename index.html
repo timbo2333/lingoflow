@@ -35,10 +35,10 @@
     <div class="modalCard authModalCard">
       <div class="modalHeader">
         <div>
-          <div id="authModalTitle" class="modalTitle">👤 LingoFlow 账号</div>
-          <div class="modalSub">无需登录也能使用；登录并开启云同步后，可在自己的设备之间同步收藏与学习状态。</div>
+          <div id="authModalTitle" class="modalTitle">账号</div>
+          <div class="modalSub">无需登录也能使用；登录后可在自己的设备之间同步收藏与学习状态，其他数据仍保存在本机。</div>
         </div>
-        <button id="authModalClose" class="iconClose" type="button" aria-label="关闭">×</button>
+        <button id="authModalClose" class="iconClose" type="button" aria-label="关闭账号">×</button>
       </div>
 
       <div id="authSignedOutPanel">
@@ -376,13 +376,16 @@
 
     <div id="backupReminder" class="backupReminder">
       <span>💾 旧版学习备份（legacy）已经有一段时间没有导出。</span>
-      <button class="secondary compactButton" onclick="openSettings()">查看旧版备份</button>
+      <button class="secondary compactButton" onclick="openSettings('compatibility')">查看旧版备份</button>
       <button class="secondary compactButton" onclick="dismissBackupReminder()">今天不提醒</button>
     </div>
   </section>
 
   <div id="dictionaryGuideModal" class="modalOverlay" role="dialog"
-       aria-modal="true" aria-labelledby="dictionaryGuideTitle">
+       aria-modal="true" aria-labelledby="dictionaryGuideTitle"
+       onpointerdown="modalBackdropPointerDown(event, 'dictionaryGuideModal')"
+       onpointerup="modalBackdropPointerUp(event, 'dictionaryGuideModal')"
+       onpointercancel="modalBackdropPointerCancel(event, 'dictionaryGuideModal')">
     <div class="modalCard dictionaryGuideCard">
       <div class="modalHeader">
         <div>
@@ -391,6 +394,8 @@
             在线词典无需下载即可使用。如需断网查询更多词汇，可额外下载约 68 MB 的完整离线词典。
           </div>
         </div>
+        <button class="iconClose" type="button" aria-label="关闭完整离线词典"
+                onclick="deferDictionarySetup()">×</button>
       </div>
 
       <div class="dictionaryGuideOptions">
@@ -646,17 +651,18 @@
   </div>
 
   <!-- 查询记录 -->
-  <div id="vocabModal" class="modalOverlay"
+  <div id="vocabModal" class="modalOverlay" role="dialog" aria-modal="true"
+       aria-labelledby="vocabModalTitle"
        onpointerdown="modalBackdropPointerDown(event, 'vocabModal')"
        onpointerup="modalBackdropPointerUp(event, 'vocabModal')"
        onpointercancel="modalBackdropPointerCancel(event, 'vocabModal')">
     <div class="modalCard learningCollectionModal">
       <div class="modalHeader">
         <div>
-          <div class="modalTitle">查询记录</div>
+          <div id="vocabModalTitle" class="modalTitle">查询记录</div>
           <div class="modalSub">看看最近查过、或反复查询的词。</div>
         </div>
-        <button class="iconClose" aria-label="关闭查询记录" onclick="closeModal('vocabModal')">×</button>
+        <button class="iconClose" type="button" aria-label="关闭查询记录" onclick="closeModal('vocabModal')">×</button>
       </div>
 
       <div id="vocabSummary" class="collectionSummary" aria-live="polite"></div>
@@ -693,17 +699,18 @@
   </div>
 
   <!-- 我的收藏 -->
-  <div id="favoritesModal" class="modalOverlay"
+  <div id="favoritesModal" class="modalOverlay" role="dialog" aria-modal="true"
+       aria-labelledby="favoritesModalTitle"
        onpointerdown="modalBackdropPointerDown(event, 'favoritesModal')"
        onpointerup="modalBackdropPointerUp(event, 'favoritesModal')"
        onpointercancel="modalBackdropPointerCancel(event, 'favoritesModal')">
     <div class="modalCard favoritesModalCard learningCollectionModal">
       <div class="modalHeader">
         <div>
-          <div class="modalTitle">我的收藏</div>
+          <div id="favoritesModalTitle" class="modalTitle">我的收藏</div>
           <div class="modalSub">值得继续复习的词和词组。</div>
         </div>
-        <button class="iconClose" aria-label="关闭我的收藏" onclick="closeModal('favoritesModal')">×</button>
+        <button class="iconClose" type="button" aria-label="关闭我的收藏" onclick="closeModal('favoritesModal')">×</button>
       </div>
 
       <div id="favoritesSummary" class="collectionSummary" aria-live="polite"></div>
@@ -742,221 +749,310 @@
   </div>
 
   <!-- 设置 -->
-  <div id="settingsModal" class="modalOverlay"
+  <div id="settingsModal" class="modalOverlay" role="dialog" aria-modal="true"
+       aria-labelledby="settingsModalTitle"
        onpointerdown="modalBackdropPointerDown(event, 'settingsModal')"
        onpointerup="modalBackdropPointerUp(event, 'settingsModal')"
        onpointercancel="modalBackdropPointerCancel(event, 'settingsModal')">
-    <div class="modalCard">
+    <div class="modalCard settingsModalCard">
       <div class="modalHeader">
         <div>
-          <div class="modalTitle">⚙️ 设置</div>
-          <div class="modalSub">管理发音、阅读显示、词库状态与数据备份。</div>
+          <div id="settingsModalTitle" class="modalTitle">设置</div>
+          <div class="modalSub">调整阅读体验，并管理账号、备份与可选离线资源。</div>
         </div>
-        <button class="iconClose" onclick="closeModal('settingsModal')">×</button>
+        <button class="iconClose" type="button" aria-label="关闭设置"
+                onclick="closeModal('settingsModal')">×</button>
       </div>
 
-      <div class="settingsGrid">
-        <div class="settingItem">
-          <div class="settingLabel">当前版本</div>
-          <div class="settingValue">V0.7</div>
+      <section class="settingsSection settingsPrimarySection" aria-labelledby="settingsReadingTitle">
+        <div class="settingsSectionHeading">
+          <div>
+            <h3 id="settingsReadingTitle">阅读与朗读</h3>
+            <p>这些设置会立即应用，并保存在当前设备。</p>
+          </div>
         </div>
 
-        <div class="settingItem">
-          <div class="settingLabel">作者</div>
-          <div class="settingValue">Timbo</div>
-          <div class="settingSubValue">English Reader 项目作者</div>
-        </div>
-
-        <div class="settingItem">
-          <div class="settingLabel">完整 ECDICT（可选）</div>
-          <div id="settingsDictStatus" class="settingValue">检查中…</div>
-          <div id="settingsDictSize" class="settingSubValue">大小：待统计</div>
-        </div>
-
-        <div class="settingItem">
-          <div class="settingLabel">Legacy Lemma（可选）</div>
-          <div id="settingsLemmaStatus" class="settingValue">检查中…</div>
-          <div id="settingsLemmaSize" class="settingSubValue">大小：待统计</div>
-        </div>
-
-        <div class="settingItem">
-          <div class="settingLabel">查询记录</div>
-          <div id="settingsVocabCount" class="settingValue">0</div>
-          <div id="settingsVocabSize" class="settingSubValue">大小：计算中…</div>
-        </div>
-
-        <div class="settingItem">
-          <div class="settingLabel">我的收藏</div>
-          <div id="settingsFavoriteCount" class="settingValue">0</div>
-          <div id="settingsFavoriteSize" class="settingSubValue">大小：计算中…</div>
-        </div>
-
-        <div class="settingItem">
-          <div class="settingLabel">浏览器当前站点存储</div>
-          <div id="settingsStorage" class="settingValue">检查中…</div>
-          <div class="settingSubValue">这是浏览器给当前本地页面分配/使用的总存储，不是内存。</div>
-        </div>
-
-        <div class="settingItem">
-          <div class="settingLabel">词库存储明细</div>
-          <div id="storageScanStatus" class="settingValue">尚未扫描</div>
-          <div id="settingsKnownTotal" class="settingSubValue">已知数据合计：待统计</div>
-          <div id="settingsStorageOverhead" class="settingSubValue">数据库开销 / 其他：待统计</div>
-          <button class="secondary compactButton" onclick="scanStorageBreakdown()">计算明细</button>
-        </div>
-      </div>
-
-      <div class="settingsSectionTitle">发音设置</div>
-      <div class="settingsGrid">
-        <div class="settingItem">
-          <label class="settingLabel" for="settingsVoiceSelect">默认英语声音</label>
-          <select id="settingsVoiceSelect" class="settingsSelect"
-                  onchange="handleSpeechVoiceChange(this.value)">
-            <option value="">自动选择</option>
-          </select>
-        </div>
-
-        <div class="settingItem">
-          <label class="settingLabel" for="settingsSpeechRate">默认语速</label>
-          <select id="settingsSpeechRate" class="settingsSelect"
-                  onchange="handleSpeechRateChange(this.value)">
-            <option value="0.7">慢</option>
-            <option value="0.85">稍慢</option>
-            <option value="1" selected>正常</option>
-            <option value="1.15">稍快</option>
-          </select>
-        </div>
-
-        <div class="settingItem">
-          <div class="settingLabel">试听</div>
-          <button class="secondary compactButton" onclick="previewSpeechSettings(this)">🔊 试听</button>
-          <div class="settingSubValue">Hello, welcome to LingoFlow.</div>
-        </div>
-      </div>
-
-      <div class="settingsSectionTitle">阅读显示</div>
-      <div class="settingsGrid">
-        <div class="settingItem">
-          <div class="settingLabel">字体大小</div>
-          <select id="readerFontSize" class="settingsSelect" onchange="saveReadingPreferences()">
-            <option value="18">18px</option>
-            <option value="20" selected>20px（默认）</option>
-            <option value="21">21px</option>
-            <option value="23">23px</option>
-            <option value="25">25px</option>
-          </select>
-        </div>
-
-        <div class="settingItem">
-          <div class="settingLabel">行距</div>
-          <select id="readerLineHeight" class="settingsSelect" onchange="saveReadingPreferences()">
-            <option value="1.65">紧凑</option>
-            <option value="1.85" selected>适中（默认）</option>
-            <option value="2">宽松</option>
-            <option value="2.2">更宽松</option>
-            <option value="2.4">很宽松</option>
-          </select>
-        </div>
-
-        <div class="settingItem">
-          <div class="settingLabel">外观</div>
-          <select id="appearanceMode" class="settingsSelect" onchange="saveReadingPreferences()">
-            <option value="system">跟随系统</option>
-            <option value="light">浅色</option>
-            <option value="dark">深色</option>
-          </select>
-        </div>
-
-        <div class="settingItem">
-          <div class="settingLabel">快捷键</div>
-          <div class="settingSubValue">Ctrl/⌘ + K：查词 · Ctrl/⌘ + F：原文找词 · Esc：关闭弹窗</div>
-          <button class="secondary compactButton" onclick="openHelp()">查看帮助</button>
-        </div>
-      </div>
-
-      <div class="settingsSectionTitle">旧版数据迁移与备份（Legacy）</div>
-      <div class="backupPanel backupPanelFinal">
-        <div class="backupGroup">
-          <div class="backupGroupTitle">兼容 · 旧版学习数据备份</div>
-          <div class="backupGroupHint">保留旧格式收藏、查询记录和阅读／发音设置的历史导入导出能力；不包含当前 Favorite Entity、Learning State、我的文章或文章阅读进度。</div>
-          <div class="backupButtonRow">
-            <button class="secondary" onclick="exportLearningBackup()">导出旧版学习备份</button>
-            <button class="secondary" onclick="document.getElementById('learningBackupFileInput').click()">导入旧版学习备份</button>
-
-            <select id="learningImportMode" class="settingsSelect compactSelect">
-              <option value="merge" selected>导入方式：智能合并（推荐）</option>
-              <option value="preview">导入方式：预览后合并</option>
-              <option value="overwrite">导入方式：完全覆盖</option>
+        <div class="settingsGrid settingsControlGrid">
+          <div class="settingItem">
+            <label class="settingLabel" for="readerFontSize">字体大小</label>
+            <select id="readerFontSize" class="settingsSelect" onchange="saveReadingPreferences()">
+              <option value="18">18px</option>
+              <option value="20" selected>20px（默认）</option>
+              <option value="21">21px</option>
+              <option value="23">23px</option>
+              <option value="25">25px</option>
             </select>
           </div>
 
-          <div class="backupGroupHint">
-            V0.5.2 起的新查询会按唯一事件 ID 精确去重；A→B→A 来回同步时，同一批查询不会重复累加。V0.5.1 及更早的既有历史首次升级时会作为一个历史基线保留。
+          <div class="settingItem">
+            <label class="settingLabel" for="readerLineHeight">行距</label>
+            <select id="readerLineHeight" class="settingsSelect" onchange="saveReadingPreferences()">
+              <option value="1.65">紧凑</option>
+              <option value="1.85" selected>适中（默认）</option>
+              <option value="2">宽松</option>
+              <option value="2.2">更宽松</option>
+              <option value="2.4">很宽松</option>
+            </select>
+          </div>
+
+          <div class="settingItem">
+            <label class="settingLabel" for="appearanceMode">外观</label>
+            <select id="appearanceMode" class="settingsSelect" onchange="saveReadingPreferences()">
+              <option value="system">跟随系统</option>
+              <option value="light">浅色</option>
+              <option value="dark">深色</option>
+            </select>
+          </div>
+
+          <div class="settingItem settingsVoiceItem">
+            <label class="settingLabel" for="settingsVoiceSelect">默认英语声音</label>
+            <select id="settingsVoiceSelect" class="settingsSelect"
+                    onchange="handleSpeechVoiceChange(this.value)">
+              <option value="">自动选择</option>
+            </select>
+          </div>
+
+          <div class="settingItem">
+            <label class="settingLabel" for="settingsSpeechRate">朗读语速</label>
+            <select id="settingsSpeechRate" class="settingsSelect"
+                    onchange="handleSpeechRateChange(this.value)">
+              <option value="0.7">慢</option>
+              <option value="0.85">稍慢</option>
+              <option value="1" selected>正常</option>
+              <option value="1.15">稍快</option>
+            </select>
+          </div>
+
+          <div class="settingItem settingsPreviewItem">
+            <span class="settingLabel">声音试听</span>
+            <button class="secondary compactButton" type="button"
+                    onclick="previewSpeechSettings(this)">🔊 试听</button>
+            <span class="settingSubValue">Hello, welcome to LingoFlow.</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="settingsSection" aria-labelledby="settingsAccountTitle">
+        <div class="settingsSectionHeading">
+          <div>
+            <h3 id="settingsAccountTitle">账户与同步</h3>
+            <p>查看当前登录状态和已支持的同步范围。</p>
+          </div>
+        </div>
+        <div class="settingsAccountCard">
+          <div class="settingsAccountCopy">
+            <span class="settingLabel">当前账号</span>
+            <strong id="settingsAccountValue">未登录</strong>
+            <span id="settingsSyncValue" class="settingSubValue">收藏与学习状态仅保存在当前设备</span>
+            <span class="settingsScopeNote">目前云同步仅包含收藏与学习状态；文章、阅读进度、查询记录和偏好不会自动同步。</span>
+          </div>
+          <button id="settingsAccountButton" class="secondary" type="button"
+                  onclick="openAccountFromSettings()">登录 / 管理账号</button>
+        </div>
+      </section>
+
+      <section class="settingsSection" aria-labelledby="settingsBackupTitle">
+        <div class="settingsSectionHeading">
+          <div>
+            <h3 id="settingsBackupTitle">数据与备份</h3>
+            <p>完整备份保护当前 LingoFlow 用户数据，不包含可重新下载的词典资源。</p>
           </div>
         </div>
 
-        <div class="backupGroup">
-          <div class="backupGroupTitle">Legacy · 旧版完整备份</div>
-          <div class="backupGroupHint">同时包含本地词典、查询记录、阅读／发音设置和旧格式收藏，文件较大。导入会覆盖这些 legacy 数据，但不会迁移或覆盖当前 Favorite Entity 与 Learning State。</div>
-          <div class="backupButtonRow">
-            <button class="secondary" onclick="exportFullBackup()">导出旧版完整备份</button>
-            <button class="secondary" onclick="document.getElementById('fullBackupFileInput').click()">导入旧版完整备份</button>
+        <div class="backupGroup backupPrimaryGroup">
+          <div class="backupGroupTitle">完整数据备份</div>
+          <div class="backupGroupHint">包含文章与阅读进度、收藏、学习状态、查询记录，以及阅读和朗读偏好。导入采用安全合并；遇到冲突会保留本地数据，不会静默覆盖。</div>
+          <div class="backupButtonRow backupPrimaryActions">
+            <button id="currentBackupExportButton" type="button"
+                    onclick="exportCurrentBackup(this)">导出备份</button>
+            <button id="currentBackupImportButton" class="secondary" type="button"
+                    onclick="document.getElementById('currentBackupFileInput').click()">导入备份</button>
+          </div>
+          <input id="currentBackupFileInput" type="file"
+                 accept=".json,application/json" hidden>
+          <div id="currentBackupStatus" class="backupStatus" role="status" aria-live="polite">
+            导入会按稳定记录 ID 合并；不会删除备份之外的本地数据。
           </div>
         </div>
 
-        <input id="learningBackupFileInput" type="file" accept=".json,application/json" hidden>
-        <input id="fullBackupFileInput" type="file" accept=".erbackup,.txt" hidden>
+        <details id="settingsCompatibilityDisclosure" class="settingsDisclosure">
+          <summary>
+            <span>旧版兼容与迁移</span>
+            <span>仅在导入旧版本数据时使用</span>
+          </summary>
+          <div class="settingsDisclosureBody backupPanel backupPanelFinal">
+            <div class="backupGroup">
+              <div class="backupGroupTitle">旧版学习数据</div>
+              <div class="backupGroupHint">只用于迁移旧格式收藏、查询记录和偏好；不包含当前收藏实体、学习状态、文章或阅读进度。</div>
+              <div class="legacyImportLayout">
+                <div>
+                  <label class="settingLabel" for="learningImportMode">导入方式</label>
+                  <select id="learningImportMode" class="settingsSelect compactSelect"
+                          onchange="updateLegacyImportModePresentation()">
+                    <option value="merge" selected>智能合并（推荐）</option>
+                    <option value="preview">预览后合并</option>
+                    <option value="overwrite">完全覆盖旧版数据</option>
+                  </select>
+                </div>
+                <div class="backupButtonRow">
+                  <button class="secondary" type="button" onclick="exportLearningBackup()">导出旧版数据</button>
+                  <button class="secondary" type="button"
+                          onclick="document.getElementById('learningBackupFileInput').click()">导入旧版数据</button>
+                </div>
+              </div>
+              <div id="learningImportModeHint" class="backupGroupHint" data-mode="merge">
+                智能合并会按事件 ID 去重，并保留当前 Favorite Entity 与 Learning State。
+              </div>
+            </div>
 
-        <div id="backupStatus" class="backupStatus">
-          这里保留的是旧版兼容备份，不保护当前 Favorite Entity、Learning State、“我的文章”或文章阅读进度。请勿将其视为当前完整个人数据备份。
+            <div class="backupGroup legacyDangerGroup">
+              <div class="backupGroupTitle">旧版整套恢复（覆盖）</div>
+              <div class="backupGroupHint">此格式包含本地 ECDICT、Lemma、旧查询记录、偏好和旧格式收藏。导入会覆盖这些旧版数据；当前 Favorite Entity 与 Learning State 不受影响。</div>
+              <div class="backupButtonRow">
+                <button class="secondary" type="button" onclick="exportFullBackup()">导出旧版整套备份</button>
+                <button class="dangerButton" type="button"
+                        onclick="document.getElementById('fullBackupFileInput').click()">导入并覆盖旧版数据</button>
+              </div>
+            </div>
+
+            <input id="learningBackupFileInput" type="file" accept=".json,application/json" hidden>
+            <input id="fullBackupFileInput" type="file" accept=".erbackup,.txt" hidden>
+
+            <div id="backupStatus" class="backupStatus" role="status" aria-live="polite">
+              以上格式只用于旧版兼容迁移，请勿将其视为当前完整个人数据备份。
+            </div>
+            <div class="backupStatus">
+              “我的收藏”和“查询记录”中的 CSV 仅用于表格查看或整理，也不是完整备份。
+            </div>
+          </div>
+        </details>
+      </section>
+
+      <details id="settingsAdvancedDisclosure" class="settingsDisclosure settingsTopDisclosure">
+        <summary>
+          <span>高级</span>
+          <span>完整离线词典与本地存储诊断</span>
+        </summary>
+        <div class="settingsDisclosureBody">
+          <section class="settingsNestedSection" aria-labelledby="settingsOfflineTitle">
+            <h3 id="settingsOfflineTitle">完整离线词典</h3>
+            <p>在线查词默认可直接使用。如需要完全离线使用，可安装完整词典。</p>
+            <div id="settingsOfflineSummary" class="settingsInlineStatus">正在检查安装状态…</div>
+            <div class="settingsButtons settingsNormalActions">
+              <button class="secondary" type="button"
+                      onclick="openOfflineDictionaryFromSettings()">安装或更新</button>
+            </div>
+
+            <details id="offlineTechnicalDisclosure" class="settingsDisclosure settingsNestedDisclosure">
+              <summary>
+                <span>手动导入与技术信息</span>
+                <span>适合已有旧版词库文件的用户</span>
+              </summary>
+              <div class="settingsDisclosureBody">
+                <div class="settingsGrid settingsDiagnosticGrid">
+                  <div class="settingItem">
+                    <div class="settingLabel">ECDICT 数据</div>
+                    <div id="settingsDictStatus" class="settingValue">检查中…</div>
+                    <div id="settingsDictSize" class="settingSubValue">大小：待统计</div>
+                  </div>
+
+                  <div class="settingItem">
+                    <div class="settingLabel">Legacy Lemma 数据</div>
+                    <div id="settingsLemmaStatus" class="settingValue">检查中…</div>
+                    <div id="settingsLemmaSize" class="settingSubValue">大小：待统计</div>
+                  </div>
+
+                  <div class="settingItem">
+                    <div class="settingLabel">查询记录</div>
+                    <div id="settingsVocabCount" class="settingValue">0</div>
+                    <div id="settingsVocabSize" class="settingSubValue">大小：计算中…</div>
+                  </div>
+
+                  <div class="settingItem">
+                    <div class="settingLabel">我的收藏</div>
+                    <div id="settingsFavoriteCount" class="settingValue">0</div>
+                    <div id="settingsFavoriteSize" class="settingSubValue">大小：计算中…</div>
+                  </div>
+
+                  <div class="settingItem">
+                    <div class="settingLabel">当前站点存储</div>
+                    <div id="settingsStorage" class="settingValue">检查中…</div>
+                    <div class="settingSubValue">浏览器为当前站点估算的存储使用量与配额。</div>
+                  </div>
+
+                  <div class="settingItem">
+                    <div class="settingLabel">词库存储明细</div>
+                    <div id="storageScanStatus" class="settingValue">尚未扫描</div>
+                    <div id="settingsKnownTotal" class="settingSubValue">已知数据合计：待统计</div>
+                    <div id="settingsStorageOverhead" class="settingSubValue">数据库开销 / 其他：待统计</div>
+                    <button class="secondary compactButton" type="button"
+                            onclick="scanStorageBreakdown()">计算明细</button>
+                  </div>
+                </div>
+
+                <div class="settingsButtons settingsNormalActions">
+                  <button class="secondary" type="button"
+                          onclick="requestManualDictionaryFile('ecdict', true)">重新导入 ECDICT</button>
+                  <button class="secondary" type="button"
+                          onclick="requestManualDictionaryFile('lemma', true)">重新导入 Lemma</button>
+                </div>
+              </div>
+            </details>
+
+            <div class="settingsDangerZone">
+              <div>
+                <strong>删除本地离线资源</strong>
+                <p>只影响可重新安装的离线词典，不会删除文章、收藏、学习状态或查询记录。</p>
+              </div>
+              <div class="settingsButtons">
+                <button class="dangerButton dangerButtonSecondary" type="button" onclick="deleteECDICTOnly()">删除 ECDICT</button>
+                <button class="dangerButton dangerButtonSecondary" type="button" onclick="deleteLemmaOnly()">删除 Lemma</button>
+                <button class="dangerButton" type="button" onclick="deleteAllLocalDictionary()">删除全部离线资源</button>
+              </div>
+            </div>
+          </section>
         </div>
-      </div>
+      </details>
 
-      <div class="settingsSectionTitle">完整离线词典（可选）</div>
-      <div class="settingsButtons">
-        <button class="secondary"
-                onclick="closeModal('settingsModal'); openDictionaryGuide();">
-          下载完整离线词典
-        </button>
-
-        <button class="secondary"
-                onclick="requestManualDictionaryFile('ecdict', true)">
-          重新导入 ECDICT
-        </button>
-
-        <button class="secondary"
-                onclick="requestManualDictionaryFile('lemma', true)">
-          重新导入 Lemma
-        </button>
-
-        <button class="dangerButton" onclick="deleteECDICTOnly()">删除 ECDICT</button>
-        <button class="dangerButton" onclick="deleteLemmaOnly()">删除 Lemma</button>
-        <button class="dangerButton" onclick="deleteAllLocalDictionary()">删除全部本地词库</button>
-      </div>
-
-      <div class="settingsNote">
-        约 68 MB，下载后断网也可查询更多词汇。ECDICT、Lemma 和 CSV 等技术选项仅用于高级管理，不影响收藏、词组和查询记录。
-      </div>
+      <details id="settingsAboutDisclosure" class="settingsDisclosure settingsTopDisclosure">
+        <summary>
+          <span>关于</span>
+          <span>版本、帮助与更新记录</span>
+        </summary>
+        <div class="settingsDisclosureBody settingsAboutBody">
+          <div class="settingItem settingsAboutVersion">
+            <span class="settingLabel">当前版本</span>
+            <strong class="settingValue">V0.7</strong>
+            <span class="settingSubValue">Designed &amp; Developed by Timbo.</span>
+          </div>
+          <div class="settingsButtons">
+            <button class="secondary" type="button" onclick="openHelp()">一分钟上手</button>
+            <button class="secondary" type="button" onclick="openChangelog()">更新日志</button>
+          </div>
+        </div>
+      </details>
     </div>
   </div>
 
   <!-- 阅读显示 -->
-  <div id="readingSettingsModal" class="modalOverlay"
+  <div id="readingSettingsModal" class="modalOverlay" role="dialog" aria-modal="true"
+       aria-labelledby="readingSettingsModalTitle"
        onpointerdown="modalBackdropPointerDown(event, 'readingSettingsModal')"
        onpointerup="modalBackdropPointerUp(event, 'readingSettingsModal')"
        onpointercancel="modalBackdropPointerCancel(event, 'readingSettingsModal')">
     <div class="modalCard smallModalCard">
       <div class="modalHeader">
         <div>
-          <div class="modalTitle">Aa 阅读显示</div>
+          <div id="readingSettingsModalTitle" class="modalTitle">Aa 阅读显示</div>
           <div class="modalSub">这里只改变阅读体验，不影响你的词库和学习数据。</div>
         </div>
-        <button class="iconClose" onclick="closeModal('readingSettingsModal')">×</button>
+        <button class="iconClose" type="button" aria-label="关闭阅读显示设置"
+                onclick="closeModal('readingSettingsModal')">×</button>
       </div>
 
       <div class="settingsGrid">
         <div class="settingItem">
-          <div class="settingLabel">字体大小</div>
+          <label class="settingLabel" for="readerFontSizeQuick">字体大小</label>
           <select id="readerFontSizeQuick" class="settingsSelect" onchange="syncQuickReadingSetting('font', this.value)">
             <option value="18">18px</option><option value="20">20px（默认）</option>
             <option value="21">21px</option><option value="23">23px</option><option value="25">25px</option>
@@ -964,7 +1060,7 @@
         </div>
 
         <div class="settingItem">
-          <div class="settingLabel">行距</div>
+          <label class="settingLabel" for="readerLineHeightQuick">行距</label>
           <select id="readerLineHeightQuick" class="settingsSelect" onchange="syncQuickReadingSetting('line', this.value)">
             <option value="1.65">紧凑</option><option value="1.85">适中（默认）</option>
             <option value="2">宽松</option><option value="2.2">更宽松</option><option value="2.4">很宽松</option>
@@ -972,7 +1068,7 @@
         </div>
 
         <div class="settingItem">
-          <div class="settingLabel">外观</div>
+          <label class="settingLabel" for="appearanceModeQuick">外观</label>
           <select id="appearanceModeQuick" class="settingsSelect" onchange="syncQuickReadingSetting('appearance', this.value)">
             <option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option>
           </select>
@@ -982,17 +1078,19 @@
   </div>
 
   <!-- 帮助中心 -->
-  <div id="helpModal" class="modalOverlay"
+  <div id="helpModal" class="modalOverlay" role="dialog" aria-modal="true"
+       aria-labelledby="helpModalTitle"
        onpointerdown="modalBackdropPointerDown(event, 'helpModal')"
        onpointerup="modalBackdropPointerUp(event, 'helpModal')"
        onpointercancel="modalBackdropPointerCancel(event, 'helpModal')">
     <div class="modalCard">
       <div class="modalHeader">
         <div>
-          <div class="modalTitle">❓ 一分钟上手</div>
+          <div id="helpModalTitle" class="modalTitle">❓ 一分钟上手</div>
           <div class="modalSub">LingoFlow V0.7</div>
         </div>
-        <button class="iconClose" onclick="closeModal('helpModal')">×</button>
+        <button class="iconClose" type="button" aria-label="关闭帮助"
+                onclick="closeModal('helpModal')">×</button>
       </div>
 
       <div class="helpSteps">
@@ -1000,7 +1098,7 @@
         <div class="helpStep"><b>2. 开始阅读</b><span>粘贴英文或导入 TXT，点击“开始阅读”；文章会自动保存到“我的文章”。</span></div>
         <div class="helpStep"><b>3. 我的文章与继续阅读</b><span>阅读进度会自动保存，再次打开可恢复位置；“继续阅读”可快速回到最近阅读中的文章。</span></div>
         <div class="helpStep"><b>4. 管理文章</b><span>可查看阅读状态、按状态筛选、搜索标题或来源文件名，并从“最近删除”恢复文章。</span></div>
-        <div class="helpStep"><b>5. 阅读与学习</b><span>点词查词、朗读并收藏单词或词组；设置中的旧版兼容备份不包含当前收藏、学习状态、“我的文章”或文章阅读进度。</span></div>
+        <div class="helpStep"><b>5. 阅读与学习</b><span>点词查词、朗读并收藏单词或词组；设置中的“完整数据备份”可保存文章与进度、收藏、学习状态、查询记录和偏好。</span></div>
         <div class="helpStep"><b>6. 可选云同步</b><span>无需登录也能使用；登录后可选择同步收藏与学习状态。本地已有收藏首次关联账号前会先征求你的确认。</span></div>
       </div>
 
@@ -1015,17 +1113,19 @@
   </div>
 
   <!-- 更新日志 -->
-  <div id="changelogModal" class="modalOverlay"
+  <div id="changelogModal" class="modalOverlay" role="dialog" aria-modal="true"
+       aria-labelledby="changelogModalTitle"
        onpointerdown="modalBackdropPointerDown(event, 'changelogModal')"
        onpointerup="modalBackdropPointerUp(event, 'changelogModal')"
        onpointercancel="modalBackdropPointerCancel(event, 'changelogModal')">
     <div class="modalCard changelogCard">
       <div class="modalHeader">
         <div>
-          <div class="modalTitle">📝 更新日志</div>
+          <div id="changelogModalTitle" class="modalTitle">📝 更新日志</div>
           <div class="modalSub">记录每个版本真正改了什么，方便以后继续迭代。</div>
         </div>
-        <button class="iconClose" onclick="closeModal('changelogModal')">×</button>
+        <button class="iconClose" type="button" aria-label="关闭更新日志"
+                onclick="closeModal('changelogModal')">×</button>
       </div>
 
       <div class="changeVersion">

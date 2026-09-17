@@ -41,14 +41,42 @@
     return `${local.slice(0, 4)}****${local.slice(-3)}${domain}`;
   }
 
-  function openModal() {
-    element("authModal")?.classList.add("show");
+  function showModal(trigger = null, initialFocus = null) {
+    const modalSystem = window.LingoFlowModalSystem;
+    if (modalSystem?.open) {
+      modalSystem.open("authModal", { trigger, initialFocus });
+      return;
+    }
+    const modal = element("authModal");
+    modal?.classList.add("show");
+    requestAnimationFrame(() => {
+      const target = initialFocus ? modal?.querySelector(initialFocus) : null;
+      (target || element("authModalClose"))?.focus({ preventScroll: true });
+    });
+  }
+
+  function authInitialFocus() {
+    const authState = auth?.getState?.() || {};
+    if (authState.status === "password-recovery") return "#authNewPassword";
+    if (["otp-required", "verifying"].includes(authState.status)) return "#authOtpCode";
+    if (["reset-request", "reset-requesting", "reset-email-sent", "recovery-invalid"]
+      .includes(authState.status)) return "#authResetEmail";
+    if (authState.status === "authenticated") return "#authSyncNowButton";
+    return "#authEmail";
+  }
+
+  function openModal(trigger = null) {
     render();
+    showModal(trigger?.currentTarget || trigger, authInitialFocus());
   }
 
   function closeModal() {
     authBackdropPointerIds.clear();
-    element("authModal")?.classList.remove("show");
+    if (window.LingoFlowModalSystem?.close) {
+      window.LingoFlowModalSystem.close("authModal");
+    } else {
+      element("authModal")?.classList.remove("show");
+    }
   }
 
   function handleBackdropPointerDown(event) {
@@ -328,8 +356,9 @@
       authState.reason !== "password-updated" || passwordUpdateAcknowledged
     );
 
-    if (recoveryActive || recoveryInvalid) {
-      element("authModal")?.classList.add("show");
+    if ((recoveryActive || recoveryInvalid) &&
+        !element("authModal")?.classList.contains("show")) {
+      showModal(null, recoveryActive ? "#authNewPassword" : "#authResetEmail");
     }
 
     const resetEmail = element("authResetEmail");

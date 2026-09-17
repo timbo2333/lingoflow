@@ -4732,3 +4732,516 @@
       min-height: 46px;
     }
   }
+
+  /* =========================
+     UI Refresh Phase 5
+     Account, settings and modal system
+     ========================= */
+
+  body.modalOpen {
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
+
+  .modalOverlay {
+    overflow: hidden;
+  }
+
+  .modalCard {
+    display: flex;
+    flex-direction: column;
+    max-height: min(88dvh, 900px);
+    overflow: hidden;
+  }
+
+  .modalHeader {
+    position: relative;
+    top: auto;
+    z-index: 5;
+    flex: 0 0 auto;
+    margin-bottom: 14px;
+    padding: 2px 0 10px;
+    border-bottom: 1px solid color-mix(in srgb, var(--color-border) 58%, transparent);
+    background: var(--color-surface);
+  }
+
+  .modalBody {
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    padding: 2px 12px 3px 0;
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
+  }
+
+  .iconClose {
+    flex: 0 0 44px;
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .iconClose:focus-visible,
+  .authPasswordVisibility:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
+  }
+
+  .authModalCard {
+    width: min(560px, 100%);
+  }
+
+  .authModalCard .modalTitle {
+    letter-spacing: -.02em;
+  }
+
+  .authModalCard .settingItem,
+  .authModalCard .workspaceActivationPanel,
+  .authModalCard .workspaceBlockedPanel,
+  .authModalCard .authOtpPanel,
+  .authModalCard .authResetPanel,
+  .authModalCard .authPasswordUpdatedNotice {
+    border-radius: 14px;
+  }
+
+  .authAccountSummary {
+    border: 1px solid color-mix(in srgb, var(--color-border) 68%, transparent);
+    background: var(--color-surface-subtle);
+  }
+
+  .authPasswordVisibility {
+    right: 2px;
+    width: 40px;
+    height: 40px;
+    border-radius: 9px;
+  }
+
+  .authPasswordField input {
+    padding-right: 52px;
+  }
+
+  .settingsModalCard {
+    width: min(820px, 100%);
+  }
+
+  .settingsModalCard > .modalHeader {
+    position: sticky;
+    top: 0;
+    background: var(--color-surface);
+  }
+
+  .settingsSection {
+    padding: 6px 0 24px;
+  }
+
+  .settingsSection + .settingsSection,
+  .settingsTopDisclosure {
+    border-top: 1px solid color-mix(in srgb, var(--color-border) 62%, transparent);
+  }
+
+  .settingsSectionHeading {
+    display: flex;
+    align-items: start;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 12px;
+  }
+
+  .settingsSectionHeading h3,
+  .settingsNestedSection h3 {
+    margin: 0;
+    color: var(--color-text);
+    font-size: 17px;
+    line-height: 1.35;
+  }
+
+  .settingsSectionHeading p,
+  .settingsNestedSection > p,
+  .settingsDangerZone p {
+    margin: 4px 0 0;
+    color: var(--color-text-secondary);
+    font-size: 13px;
+    line-height: 1.55;
+  }
+
+  .settingsControlGrid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .settingsControlGrid .settingItem,
+  .settingsDiagnosticGrid .settingItem {
+    min-width: 0;
+    border: 1px solid color-mix(in srgb, var(--color-border) 58%, transparent);
+    background: var(--color-surface-subtle);
+  }
+
+  .settingsVoiceItem {
+    grid-column: span 2;
+  }
+
+  .settingsPreviewItem {
+    display: grid;
+    align-content: start;
+    justify-items: start;
+    gap: 7px;
+  }
+
+  .settingsPreviewItem .settingSubValue {
+    margin-top: 0;
+  }
+
+  .settingsAccountCard {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 16px;
+    padding: 16px;
+    border: 1px solid color-mix(in srgb, var(--color-border) 72%, transparent);
+    border-radius: 14px;
+    background: var(--color-surface-subtle);
+  }
+
+  .settingsAccountCopy {
+    display: grid;
+    min-width: 0;
+    gap: 4px;
+  }
+
+  .settingsAccountCopy strong {
+    overflow-wrap: anywhere;
+    color: var(--color-text);
+    font-size: 16px;
+  }
+
+  .settingsAccountCopy .settingSubValue {
+    margin-top: 0;
+  }
+
+  .settingsScopeNote {
+    margin-top: 4px;
+    color: var(--color-text-secondary);
+    font-size: 12px;
+    line-height: 1.55;
+  }
+
+  .backupPrimaryGroup {
+    border-color: color-mix(in srgb, var(--color-accent) 26%, var(--color-border));
+    background: color-mix(in srgb, var(--color-accent) 5%, var(--color-surface));
+  }
+
+  .backupPrimaryActions button {
+    min-width: 132px;
+  }
+
+  .backupStatus[data-state="working"] {
+    color: var(--color-accent);
+  }
+
+  .backupStatus[data-state="success"] {
+    color: #26753a;
+  }
+
+  .backupStatus[data-state="error"] {
+    color: var(--color-danger);
+  }
+
+  .settingsDisclosure {
+    margin-top: 14px;
+  }
+
+  .settingsDisclosure > summary {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    column-gap: 12px;
+    min-height: 52px;
+    padding: 8px 6px 8px 4px;
+    color: var(--color-text);
+    cursor: pointer;
+    list-style: none;
+  }
+
+  .settingsDisclosure > summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .settingsDisclosure > summary > span:first-child {
+    flex: 1 1 0;
+    min-width: 0;
+    font-size: 15px;
+    font-weight: 750;
+  }
+
+  .settingsDisclosure > summary > span:nth-child(2) {
+    flex: 1 0 100%;
+    order: 3;
+    color: var(--color-text-secondary);
+    font-size: 12px;
+    line-height: 1.45;
+  }
+
+  .settingsDisclosure > summary::after {
+    flex: 0 0 auto;
+    margin-left: auto;
+    content: "＋";
+    color: var(--color-text-secondary);
+    font-size: 18px;
+  }
+
+  .settingsDisclosure[open] > summary::after {
+    content: "−";
+  }
+
+  .settingsDisclosure > summary:focus-visible {
+    border-radius: 10px;
+    outline: none;
+    box-shadow: var(--focus-ring);
+  }
+
+  .settingsDisclosureBody {
+    padding: 4px 0 8px;
+  }
+
+  .settingsTopDisclosure {
+    margin-top: 0;
+  }
+
+  .settingsTopDisclosure > summary {
+    min-height: 64px;
+  }
+
+  .settingsNestedSection {
+    padding: 4px 0 12px;
+  }
+
+  .settingsNestedDisclosure {
+    margin-top: 16px;
+    border-top: 1px solid color-mix(in srgb, var(--color-border) 55%, transparent);
+  }
+
+  .settingsInlineStatus {
+    margin-top: 12px;
+    padding: 10px 12px;
+    border-radius: 10px;
+    background: var(--color-surface-subtle);
+    color: var(--color-text-secondary);
+    font-size: 13px;
+    line-height: 1.5;
+  }
+
+  .settingsInlineStatus[data-state="ready"] {
+    color: #26753a;
+  }
+
+  .settingsNormalActions {
+    margin-top: 12px;
+  }
+
+  .settingsDiagnosticGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .legacyImportLayout {
+    display: grid;
+    grid-template-columns: minmax(220px, .75fr) minmax(0, 1.25fr);
+    align-items: end;
+    gap: 12px;
+    margin-top: 10px;
+  }
+
+  .legacyImportLayout .backupButtonRow {
+    margin-top: 0;
+  }
+
+  #learningImportModeHint[data-mode="overwrite"] {
+    padding: 9px 10px;
+    border-radius: 9px;
+    background: color-mix(in srgb, var(--color-danger) 8%, transparent);
+    color: var(--color-danger);
+  }
+
+  .legacyDangerGroup {
+    border-color: color-mix(in srgb, var(--color-danger) 28%, var(--color-border));
+  }
+
+  .settingsDangerZone {
+    display: grid;
+    gap: 10px;
+    margin-top: 18px;
+    padding: 16px;
+    border: 1px solid color-mix(in srgb, var(--color-danger) 34%, var(--color-border));
+    border-radius: 14px;
+    background: color-mix(in srgb, var(--color-danger) 4%, var(--color-surface));
+  }
+
+  .settingsDangerZone .settingsButtons {
+    margin-top: 0;
+  }
+
+  .settingsDangerZone .dangerButtonSecondary {
+    border: 1px solid color-mix(in srgb, var(--color-danger) 62%, var(--color-border));
+    background: transparent;
+    color: var(--color-danger);
+  }
+
+  .settingsAboutBody {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+  }
+
+  .settingsAboutBody > div:first-child {
+    display: grid;
+    gap: 4px;
+    color: var(--color-text-secondary);
+    font-size: 12px;
+  }
+
+  .settingsAboutBody > div:first-child strong {
+    color: var(--color-text);
+    font-size: 15px;
+  }
+
+  .settingsAboutBody .settingsButtons {
+    margin-top: 0;
+  }
+
+  body.darkMode .authAccountSummary,
+  body.darkMode .settingsControlGrid .settingItem,
+  body.darkMode .settingsDiagnosticGrid .settingItem,
+  body.darkMode .settingsAccountCard,
+  body.darkMode .settingsInlineStatus {
+    border-color: var(--color-border);
+    background: var(--color-surface-subtle);
+  }
+
+  body.darkMode .backupPrimaryGroup,
+  body.darkMode .settingsDangerZone {
+    background: var(--color-surface);
+  }
+
+  body.darkMode .backupStatus[data-state="success"],
+  body.darkMode .settingsInlineStatus[data-state="ready"] {
+    color: #9ee0ad;
+  }
+
+  @media (max-width: 900px) {
+    .settingsControlGrid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .settingsVoiceItem {
+      grid-column: 1 / -1;
+    }
+  }
+
+  @media (max-width: 680px) {
+    .modalOverlay {
+      align-items: flex-end;
+      padding: 6px;
+    }
+
+    .modalCard {
+      width: 100%;
+      max-height: calc(100dvh - 6px);
+      padding: 16px 14px 12px;
+      border-radius: 18px 18px 8px 8px;
+    }
+
+    .settingsModalCard,
+    .authModalCard {
+      height: calc(100dvh - 6px);
+    }
+
+    .modalHeader {
+      margin-bottom: 10px;
+      padding-bottom: 9px;
+    }
+
+    .modalTitle {
+      font-size: 22px;
+    }
+
+    .modalBody {
+      padding-inline-end: 12px;
+      scrollbar-gutter: stable;
+    }
+
+    .topActions #accountButton,
+    .topActions .topSettingsButton,
+    .authPasswordVisibility,
+    .authModalCard button,
+    .settingsModalCard button,
+    .settingsModalCard select,
+    .settingsDisclosure > summary {
+      min-height: 44px;
+    }
+
+    .authPasswordVisibility {
+      width: 44px;
+      height: 44px;
+      right: 0;
+    }
+
+    .authPasswordField input {
+      min-height: 48px;
+      padding-right: 56px;
+    }
+
+    .settingsSection {
+      padding-bottom: 20px;
+    }
+
+    .settingsControlGrid,
+    .settingsDiagnosticGrid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .settingsVoiceItem {
+      grid-column: 1 / -1;
+    }
+
+    .settingsAccountCard,
+    .legacyImportLayout {
+      grid-template-columns: 1fr;
+      align-items: stretch;
+    }
+
+    .settingsAccountCard button,
+    .backupPrimaryActions button,
+    .legacyImportLayout .backupButtonRow button {
+      width: 100%;
+    }
+
+    .backupPrimaryActions,
+    .legacyImportLayout .backupButtonRow,
+    .settingsDangerZone .settingsButtons {
+      display: grid;
+      grid-template-columns: 1fr;
+    }
+
+    .settingsAboutBody {
+      align-items: stretch;
+      flex-direction: column;
+    }
+
+    .settingsAboutBody .settingsButtons {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+    }
+  }
+
+  @media (max-width: 359px) {
+    .settingsControlGrid,
+    .settingsDiagnosticGrid,
+    .settingsAboutBody .settingsButtons {
+      grid-template-columns: 1fr;
+    }
+
+    .settingsPreviewItem,
+    .settingsVoiceItem {
+      grid-column: 1;
+    }
+  }
