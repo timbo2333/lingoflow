@@ -263,6 +263,19 @@ test("非字符串 key 被拒绝且不会触发隐式 property-key conversion", 
   expect(result.conversionCalls).toBe(0);
 });
 
+test("fontFamily 仅接受 sans / serif，供阅读偏好备份安全往返", async ({ page }) => {
+  const results = await page.evaluate(values => values.map(value => (
+    window.LingoFlowPreferencesBackupSchema.validatePreference({
+      key: "fontFamily",
+      value
+    })
+  )), ["sans", "serif", "invalid", " Serif ", null]);
+
+  expect(results.map(item => item.status)).toEqual([
+    "valid", "valid", "rejected", "rejected", "rejected"
+  ]);
+});
+
 test("fontSize 接受全部精确 string enum", async ({ page }) => {
   const result = await page.evaluate(values => {
     const schema = window.LingoFlowPreferencesBackupSchema;

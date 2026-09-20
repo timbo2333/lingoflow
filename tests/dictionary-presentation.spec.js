@@ -274,8 +274,8 @@ test("1440 rail、1024 overlay 与 390 bottom sheet 保持 Reader 阅读轴", as
     };
   });
   expect(desktop.articleLeft).toBe(articleLeftBefore);
-  expect(desktop.articleWidth).toBeGreaterThanOrEqual(755);
-  expect(desktop.articleWidth).toBeLessThanOrEqual(765);
+  expect(desktop.articleWidth).toBeGreaterThanOrEqual(735);
+  expect(desktop.articleWidth).toBeLessThanOrEqual(745);
   expect(desktop.cardLeft).toBeGreaterThan(desktop.articleLeft + desktop.articleWidth);
   expect(desktop.cardPosition).toBe("static");
 

@@ -4,6 +4,7 @@
   const ITEM_FIELDS = new Set(["key", "value"]);
   const KEY_PATTERN = /^[A-Za-z][A-Za-z0-9._-]*$/;
   const KNOWN_VALUE_ENUMS = Object.freeze({
+    fontFamily: new Set(["sans", "serif"]),
     fontSize: new Set(["18", "20", "21", "23", "25"]),
     lineHeight: new Set(["1.65", "1.85", "2", "2.2", "2.4"]),
     appearance: new Set(["system", "light", "dark"]),

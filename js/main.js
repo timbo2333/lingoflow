@@ -3998,6 +3998,7 @@ function applyAppearance(mode) {
 
 function applyReadingPreferences() {
   const prefs = {
+    fontFamily: "serif",
     fontSize: "20",
     lineHeight: "1.85",
     appearance: "system",
@@ -4006,9 +4007,16 @@ function applyReadingPreferences() {
     ...getReadingPreferences()
   };
 
+  const fontFamily = prefs.fontFamily === "sans" ? "sans" : "serif";
+  document.body.dataset.readingFont = fontFamily;
   document.documentElement.style.setProperty("--reader-font-size", `${prefs.fontSize}px`);
   document.documentElement.style.setProperty("--reader-line-height", prefs.lineHeight);
   applyAppearance(prefs.appearance);
+
+  ["readerFontFamily", "readerFontFamilyQuick"].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.value = fontFamily;
+  });
 
   ["readerFontSize", "readerFontSizeQuick"].forEach(id => {
     const el = document.getElementById(id);
@@ -4031,6 +4039,7 @@ function applyReadingPreferences() {
 function saveReadingPreferences() {
   const old = getReadingPreferences();
   window.LingoFlowLocalData.PreferenceData.patch({
+    fontFamily: document.getElementById("readerFontFamily")?.value === "sans" ? "sans" : "serif",
     fontSize: document.getElementById("readerFontSize")?.value || old.fontSize || "20",
     lineHeight: document.getElementById("readerLineHeight")?.value || old.lineHeight || "1.85",
     appearance: document.getElementById("appearanceMode")?.value || old.appearance || "system"
@@ -4042,6 +4051,7 @@ function syncQuickReadingSetting(type, value) {
   const patch = {};
 
   if (type === "font") patch.fontSize = value;
+  if (type === "fontFamily") patch.fontFamily = value === "sans" ? "sans" : "serif";
   if (type === "line") patch.lineHeight = value;
   if (type === "appearance") patch.appearance = value;
 
@@ -4104,7 +4114,7 @@ function handleReaderHeaderScroll() {
     return;
   }
 
-  if (document.body.classList.contains("readerWordCardOpen") || Math.abs(delta) < 0.5) {
+  if (Math.abs(delta) < 0.5) {
     readerHeaderScrollIntent = 0;
     return;
   }

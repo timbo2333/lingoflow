@@ -25,9 +25,9 @@ test.afterEach(async ({ page }) => {
   expect(projectErrors.get(page), "Reader 页面不应产生项目自身错误").toEqual([]);
 });
 
-async function startReading(page, title = "A calm reader shell") {
+async function startReading(page, title = "A calm reader shell", repeatCount = 18) {
   const article = `${title}\n\nPeople develop useful reading habits through patient daily practice. ` +
-    "A clear page helps readers stay focused on meaning instead of controls. ".repeat(18);
+    "A clear page helps readers stay focused on meaning instead of controls. ".repeat(repeatCount);
   await page.locator("#inputText").fill(article);
   await page.getByRole("button", { name: "开始阅读", exact: true }).click();
   await expect(page.locator("#readerLayout")).toHaveClass(/show/);
@@ -94,8 +94,8 @@ test("桌面与中等宽度保持舒适正文宽度，Word Card 按断点切换"
     layoutDisplay: getComputedStyle(document.getElementById("readerLayout")).display,
     asidePosition: getComputedStyle(document.querySelector("#readerLayout > aside")).position
   }));
-  expect(desktop.articleWidth).toBeGreaterThanOrEqual(755);
-  expect(desktop.articleWidth).toBeLessThanOrEqual(765);
+  expect(desktop.articleWidth).toBeGreaterThanOrEqual(735);
+  expect(desktop.articleWidth).toBeLessThanOrEqual(745);
   expect(desktop.layoutDisplay).toBe("grid");
   expect(desktop.asidePosition).toBe("sticky");
 
@@ -206,15 +206,103 @@ test("已有 ReadingPrefs 继续优先，默认值只作用于未保存偏好的
   await startReading(page, "Saved reading preferences");
 
   const saved = await page.evaluate(() => ({
+    articleFont: getComputedStyle(document.getElementById("article")).fontFamily,
     fontSize: getComputedStyle(document.getElementById("article")).fontSize,
     lineHeight: getComputedStyle(document.getElementById("article")).lineHeight,
     dark: document.body.classList.contains("darkMode"),
     background: getComputedStyle(document.querySelector(".readerHeaderRow")).backgroundColor
   }));
+  expect(saved.articleFont).toContain("Charter");
   expect(saved.fontSize).toBe("25px");
   expect(Number.parseFloat(saved.lineHeight)).toBeCloseTo(60, 0);
   expect(saved.dark).toBe(true);
   expect(saved.background).not.toBe("rgb(255, 255, 255)");
+});
+
+test("阅读字体默认 Serif，Aa 切换 Sans/Serif 后保存并恢复，不改变字号与行距", async ({ page }) => {
+  await startReading(page, "Typography preference");
+  const before = await page.evaluate(() => ({
+    bodyFont: getComputedStyle(document.body).fontFamily,
+    articleFont: getComputedStyle(document.getElementById("article")).fontFamily,
+    articleTitleFont: getComputedStyle(document.querySelector("#article .word")).fontFamily,
+    headerTitleFont: getComputedStyle(document.getElementById("readerArticleTitle")).fontFamily,
+    weight: getComputedStyle(document.getElementById("article")).fontWeight,
+    fontSize: getComputedStyle(document.getElementById("article")).fontSize,
+    lineHeight: getComputedStyle(document.getElementById("article")).lineHeight
+  }));
+  expect(before.articleFont).toContain("Charter");
+  expect(before.articleTitleFont).toBe(before.articleFont);
+  expect(before.articleFont).not.toBe(before.bodyFont);
+  expect(before.headerTitleFont).toBe(before.bodyFont);
+  expect(before.weight).toBe("400");
+  expect(Number.parseFloat(before.lineHeight)).toBeCloseTo(37, 0);
+  expect(await page.locator("body").getAttribute("data-reading-font")).toBe("serif");
+
+  await page.getByRole("button", { name: "打开阅读显示设置" }).click();
+  await page.locator("#readerFontFamilyQuick").selectOption("sans");
+  await expect(page.locator("#readerFontFamilyQuick")).toHaveValue("sans");
+  await expect(page.locator("#readerFontFamily")).toHaveValue("sans");
+  const switched = await page.evaluate(() => ({
+    bodyFont: getComputedStyle(document.body).fontFamily,
+    articleFont: getComputedStyle(document.getElementById("article")).fontFamily,
+    fontSize: getComputedStyle(document.getElementById("article")).fontSize,
+    lineHeight: getComputedStyle(document.getElementById("article")).lineHeight,
+    stored: JSON.parse(localStorage.getItem("EnglishReaderV052ReadingPrefs"))
+  }));
+  expect(switched.bodyFont).toBe(before.bodyFont);
+  expect(switched.articleFont).toBe(before.bodyFont);
+  expect(switched.fontSize).toBe(before.fontSize);
+  expect(switched.lineHeight).toBe(before.lineHeight);
+  expect(switched.stored.fontFamily).toBe("sans");
+
+  await page.reload();
+  await expect(page.locator("#readerLayout")).toHaveClass(/show/);
+  await expect(page.locator("body")).toHaveAttribute("data-reading-font", "sans");
+  await expect(page.locator("#readerFontFamilyQuick")).toHaveValue("sans");
+
+  await page.getByRole("button", { name: "打开阅读显示设置" }).click();
+  await page.locator("#readerFontFamilyQuick").selectOption("serif");
+  await page.reload();
+  await expect(page.locator("body")).toHaveAttribute("data-reading-font", "serif");
+  await expect(page.locator("#readerFontFamilyQuick")).toHaveValue("serif");
+});
+
+test("无效阅读字体回退 Serif，旧字号与行距偏好保持优先", async ({ page }) => {
+  await page.evaluate(() => {
+    localStorage.setItem("EnglishReaderV052ReadingPrefs", JSON.stringify({
+      fontFamily: "invalid",
+      fontSize: "23",
+      lineHeight: "2.2"
+    }));
+  });
+  await page.reload();
+  await startReading(page, "Invalid font preference");
+
+  const applied = await page.evaluate(() => ({
+    font: getComputedStyle(document.getElementById("article")).fontFamily,
+    bodyFont: getComputedStyle(document.body).fontFamily,
+    size: getComputedStyle(document.getElementById("article")).fontSize,
+    lineHeight: getComputedStyle(document.getElementById("article")).lineHeight
+  }));
+  expect(applied.font).toContain("Charter");
+  expect(applied.font).not.toBe(applied.bodyFont);
+  expect(applied.size).toBe("23px");
+  expect(Number.parseFloat(applied.lineHeight)).toBeCloseTo(50.6, 0);
+  await expect(page.locator("#readerFontFamilyQuick")).toHaveValue("serif");
+});
+
+test("正式 740px 正文宽度仅影响宽屏，Word Card 保持原 rail 限制", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await startReading(page, "Final reading measure");
+  const wide = await page.evaluate(() => ({
+    article: document.getElementById("article").getBoundingClientRect().width,
+    rail: document.querySelector("#readerLayout > aside").getBoundingClientRect().width
+  }));
+  expect(wide.article).toBeCloseTo(740, 0);
+  expect(wide.rail).toBeLessThanOrEqual(360);
+  await page.setViewportSize({ width: 1024, height: 820 });
+  expect(await page.locator("#article").evaluate(el => el.getBoundingClientRect().width))
+    .toBeCloseTo(760, 0);
 });
 
 test("动态 Header 使用方向阈值隐藏和显示，并跟随正文标题可见性", async ({ page }) => {
@@ -339,6 +427,90 @@ test("宽屏 Word Card 避开 Header，打开关闭时正文阅读轴保持稳�
     element => element.getBoundingClientRect().top
   );
   expect(Math.abs(hiddenHeaderCardTop - visibleHeader.cardTop)).toBeLessThan(1);
+});
+
+test("Word Card 打开时 Header 仍按原阈值隐藏和出现，sticky 卡片位置不跳动", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await startReading(page, "A steady reading companion", 70);
+  await installReaderLookupStub(page);
+  const toolbar = page.locator("#readingToolbar");
+
+  await page.waitForTimeout(380);
+  await page.evaluate(() => window.scrollTo(0, 520));
+  await expect(toolbar).toHaveClass(/readerHeaderHidden/);
+  await page.evaluate(() => window.scrollBy(0, -30));
+  await expect(toolbar).not.toHaveClass(/readerHeaderHidden/);
+
+  await page.evaluate(() => showWordCard("developer", "A developer reads.", "article"));
+  await expect(page.locator("#wordCard")).toHaveClass(/show/);
+  const cardTop = await page.locator("#wordCard").evaluate(el => el.getBoundingClientRect().top);
+
+  await page.evaluate(() => window.scrollBy(0, 20));
+  await expect(toolbar).not.toHaveClass(/readerHeaderHidden/);
+  await page.evaluate(() => window.scrollBy(0, 25));
+  await expect(toolbar).toHaveClass(/readerHeaderHidden/);
+  const cardTopHidden = await page.locator("#wordCard").evaluate(el => el.getBoundingClientRect().top);
+  expect(Math.abs(cardTopHidden - cardTop)).toBeLessThan(1);
+
+  await page.evaluate(() => window.scrollBy(0, -12));
+  await expect(toolbar).toHaveClass(/readerHeaderHidden/);
+  await page.evaluate(() => window.scrollBy(0, -15));
+  await expect(toolbar).not.toHaveClass(/readerHeaderHidden/);
+  const cardTopShown = await page.locator("#wordCard").evaluate(el => el.getBoundingClientRect().top);
+  expect(Math.abs(cardTopShown - cardTop)).toBeLessThan(1);
+
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await expect(toolbar).not.toHaveClass(/readerHeaderHidden/);
+});
+
+test("Desktop 标题默认居中且长标题避开两侧操作，移动端保持紧凑布局", async ({ page }) => {
+  const title = "A careful reader's guide to a long and deliberately descriptive article title for layout testing";
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await startReading(page, title);
+  const toolbar = page.locator("#readingToolbar");
+  await page.evaluate(() => window.scrollTo(0, 520));
+  await expect(toolbar).toHaveClass(/readerTitleVisible/);
+  await page.evaluate(() => window.scrollBy(0, -30));
+  await expect(toolbar).not.toHaveClass(/readerHeaderHidden/);
+
+  for (const width of [1440, 1024]) {
+    await page.setViewportSize({ width, height: 900 });
+    const layout = await page.evaluate(() => {
+      const row = document.querySelector(".readerHeaderRow").getBoundingClientRect();
+      const back = document.querySelector(".readerBackButton").getBoundingClientRect();
+      const title = document.querySelector(".readerTitleGroup").getBoundingClientRect();
+      const titleText = document.getElementById("readerArticleTitle");
+      const actions = document.querySelector(".readerPrimaryActions").getBoundingClientRect();
+      return {
+        rowCenter: row.left + row.width / 2,
+        titleCenter: title.left + title.width / 2,
+        backRight: back.right,
+        titleLeft: title.left,
+        titleRight: title.right,
+        titleOverflows: titleText.scrollWidth > titleText.clientWidth,
+        titleWhiteSpace: getComputedStyle(titleText).whiteSpace,
+        titleOverflowStyle: getComputedStyle(titleText).textOverflow,
+        titleWeight: getComputedStyle(titleText).fontWeight,
+        actionsLeft: actions.left,
+        overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth
+      };
+    });
+    expect(Math.abs(layout.titleCenter - layout.rowCenter)).toBeLessThan(1);
+    expect(layout.titleLeft).toBeGreaterThanOrEqual(layout.backRight);
+    expect(layout.titleRight).toBeLessThanOrEqual(layout.actionsLeft);
+    expect(layout.titleOverflows).toBe(true);
+    expect(layout.titleWhiteSpace).toBe("nowrap");
+    expect(layout.titleOverflowStyle).toBe("ellipsis");
+    expect(layout.titleWeight).toBe("600");
+    expect(layout.overflow).toBe(false);
+  }
+
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await expect(toolbar).not.toHaveClass(/readerTitleVisible/);
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await page.locator(".readerTitleGroup").evaluate(el => getComputedStyle(el).textAlign))
+    .not.toBe("center");
 });
 
 test("查找、Aa 和更多面板打开时锁定 Header", async ({ page }) => {
