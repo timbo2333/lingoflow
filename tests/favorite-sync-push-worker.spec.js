@@ -1097,7 +1097,7 @@ test("malformed syncIssues 明确 failed，不退化为空集合", async ({ page
   expect(result).toMatchObject({ status: "failed", reason: "sync-issue-list-failed" });
 });
 
-test("v1 → v3 保留 binding、sidecar、prepared/ready request 并补齐 runtime metadata", async ({ page }) => {
+test("v1 → v4 保留 binding、sidecar、prepared/ready request 并补齐 runtime metadata", async ({ page }) => {
   await page.goto("/");
   await page.addScriptTag({ url: "/js/sync-canonical.js" });
   await page.addScriptTag({ url: "/js/cloud-sync-protocol.js" });
@@ -1197,8 +1197,10 @@ test("v1 → v3 保留 binding、sidecar、prepared/ready request 并补齐 runt
     };
   }, OWNER);
 
-  expect(upgraded.version).toBe(3);
+  expect(upgraded.version).toBe(4);
   expect(upgraded.stores).toEqual([
+    "articleOutbox",
+    "articleSidecars",
     "control",
     "entitySidecars",
     "inbox",
@@ -1222,7 +1224,7 @@ test("v1 → v3 保留 binding、sidecar、prepared/ready request 并补齐 runt
   }
 });
 
-test("v1 ready mutation 升级至 v3 后以原 identity 完成真实 push settlement", async ({ page }) => {
+test("v1 ready mutation 升级至 v4 后以原 identity 完成真实 push settlement", async ({ page }) => {
   await page.goto("/");
   await page.addScriptTag({ url: "/js/sync-canonical.js" });
   await page.addScriptTag({ url: "/js/cloud-sync-protocol.js" });
@@ -1337,8 +1339,10 @@ test("v1 ready mutation 升级至 v3 后以原 identity 完成真实 push settle
     };
   }, OWNER);
 
-  expect(result.version).toBe(3);
+  expect(result.version).toBe(4);
   expect(result.stores).toEqual([
+    "articleOutbox",
+    "articleSidecars",
     "control",
     "entitySidecars",
     "inbox",

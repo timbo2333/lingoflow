@@ -239,13 +239,13 @@ test("LingoFlowLibraryDB 使用预期的 version、store 和索引", async ({ pa
   });
 
   expect(schema.name).toBe("LingoFlowLibraryDB");
-  expect(schema.version).toBe(1);
+  expect(schema.version).toBe(2);
   expect(schema.storeName).toBe("articles");
   expect(schema.keyPath).toBe("id");
   expect(schema.indexes).toEqual([
     { name: "byDeletedAt", keyPath: "deletedAt", unique: false },
     { name: "byLastReadAt", keyPath: "lastReadAt", unique: false },
-    { name: "bySource", keyPath: ["sourceType", "sourceId"], unique: true }
+    { name: "bySource", keyPath: ["sourceType", "sourceId"], unique: false }
   ]);
 });
 
@@ -453,7 +453,7 @@ test("Article 恢复拒绝无效输入且不写入数据", async ({ page }) => {
   expect(result.articles).toEqual([]);
 });
 
-test("Article 恢复将相同内置来源的不同 ID 识别为来源冲突", async ({ page }) => {
+test("Article 恢复允许相同内置来源的不同 ID 共存", async ({ page }) => {
   const local = makeRestoreArticle({
     id: "article:library-local",
     sourceType: "library",
@@ -470,16 +470,9 @@ test("Article 恢复将相同内置来源的不同 ID 识别为来源冲突", as
     return { assessment, restored, articles };
   }, { localArticle: local, candidate: incoming });
 
-  for (const restoreResult of [result.assessment, result.restored]) {
-    expect(restoreResult).toMatchObject({
-      status: "conflict",
-      articleId: incoming.id,
-      written: false,
-      conflicts: ["source"],
-      conflictingArticleId: local.id
-    });
-  }
-  expect(result.articles).toEqual([local]);
+  expect(result.assessment).toMatchObject({ status: "restored", written: false });
+  expect(result.restored).toMatchObject({ status: "restored", written: true });
+  expect(result.articles).toEqual([incoming, local]);
 });
 
 test("草稿输入时不落库，点击生成后才创建文章", async ({ page }) => {

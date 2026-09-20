@@ -334,7 +334,7 @@ test("validateArticles 拒绝批内重复 Article ID", async ({ page }) => {
   }));
 });
 
-test("validateArticles 拒绝批内相同来源的不同 Article ID", async ({ page }) => {
+test("validateArticles 允许批内相同来源的不同 Article ID", async ({ page }) => {
   const articles = [
     makeArticle("article:schema-source-first", {
       sourceType: "library",
@@ -349,14 +349,7 @@ test("validateArticles 拒绝批内相同来源的不同 Article ID", async ({ p
     window.LingoFlowBackupV2Schema.validateArticles(incoming)
   ), articles);
 
-  expect(result.status).toBe("rejected");
-  expect(result.errors).toContainEqual(expect.objectContaining({
-    code: "duplicate-article-source",
-    path: "sourceId",
-    index: 1,
-    articleId: articles[1].id,
-    conflictingArticleId: articles[0].id
-  }));
+  expect(result.status).toBe("valid");
 });
 
 test("Schema 保留合法未知字段且不修改输入", async ({ page }) => {

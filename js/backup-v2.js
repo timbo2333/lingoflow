@@ -183,7 +183,6 @@
   function validateArticleBatch(articles) {
     const errors = [];
     const ids = new Map();
-    const sources = new Map();
 
     articles.forEach((article, index) => {
       const articleId = typeof article?.id === "string" ? article.id : null;
@@ -197,25 +196,6 @@
         } else {
           ids.set(articleId, index);
         }
-      }
-
-      if (article?.sourceType !== "library" ||
-          typeof article.sourceId !== "string" ||
-          !article.sourceId.trim() ||
-          !articleId) {
-        return;
-      }
-
-      const sourceKey = article.sourceId.trim();
-      const existing = sources.get(sourceKey);
-      if (existing && existing.articleId !== articleId) {
-        errors.push(createError("duplicate-article-source", {
-          index,
-          articleId,
-          conflictingArticleId: existing.articleId
-        }));
-      } else if (!existing) {
-        sources.set(sourceKey, { articleId, index });
       }
     });
 

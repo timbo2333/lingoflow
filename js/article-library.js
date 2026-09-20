@@ -2,7 +2,7 @@
   "use strict";
 
   const DB_NAME = "LingoFlowLibraryDB";
-  const DB_VERSION = 1;
+  const DB_VERSION = 2;
   const ARTICLE_STORE = "articles";
   const SOURCE_TYPES = new Set(["paste", "txt", "library"]);
   let databasePromise = null;
@@ -245,14 +245,6 @@
     });
   }
 
-  function createSourceConflictResult(incoming, current) {
-    return createRestoreResult("conflict", incoming.id, {
-      conflicts: ["source"],
-      conflictFields: ["sourceType", "sourceId"],
-      conflictingArticleId: current.id
-    });
-  }
-
   function openDatabase() {
     ensureIndexedDB();
     if (databasePromise) return databasePromise;
@@ -273,8 +265,11 @@
         if (!store.indexNames.contains("byDeletedAt")) {
           store.createIndex("byDeletedAt", "deletedAt", { unique: false });
         }
+        if (store.indexNames.contains("bySource") && store.index("bySource").unique) {
+          store.deleteIndex("bySource");
+        }
         if (!store.indexNames.contains("bySource")) {
-          store.createIndex("bySource", ["sourceType", "sourceId"], { unique: true });
+          store.createIndex("bySource", ["sourceType", "sourceId"], { unique: false });
         }
       };
 
@@ -376,49 +371,94 @@
     });
   }
 
+  function planUpdatedArticle(current, changes = {}) {
+    const next = { ...current };
+
+    if (Object.prototype.hasOwnProperty.call(changes, "title")) {
+      next.title = String(changes.title || "").trim() || current.title || "未命名文章";
+    }
+    if (Object.prototype.hasOwnProperty.call(changes, "content")) {
+      const content = String(changes.content || "");
+      if (!content.trim()) throw new Error("文章正文不能为空。");
+      next.content = content;
+    }
+    if (Object.prototype.hasOwnProperty.call(changes, "lastReadAt")) {
+      next.lastReadAt = changes.lastReadAt || current.lastReadAt;
+    }
+    if (Object.prototype.hasOwnProperty.call(changes, "deletedAt")) {
+      next.deletedAt = changes.deletedAt || null;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(changes, "sourceType")) {
+      next.sourceType = normalizeSourceType(changes.sourceType);
+    }
+
+    if (next.sourceType === "library") {
+      const sourceId = Object.prototype.hasOwnProperty.call(changes, "sourceId")
+        ? String(changes.sourceId || "").trim()
+        : String(next.sourceId || "").trim();
+      if (!sourceId) throw new Error("内置文章来源缺少 sourceId。");
+      next.sourceId = sourceId;
+    } else {
+      delete next.sourceId;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(changes, "sourceTitle")) {
+      applyOptionalText(next, "sourceTitle", changes.sourceTitle);
+    }
+    if (Object.prototype.hasOwnProperty.call(changes, "sourceAttribution")) {
+      applyOptionalText(next, "sourceAttribution", changes.sourceAttribution);
+    }
+
+    next.reading = normalizeReading(current.reading);
+    next.updatedAt = new Date().toISOString();
+    return next;
+  }
+
   async function updateArticle(id, changes = {}) {
-    return await updateRecord(id, current => {
-      const next = { ...current };
+    return await updateRecord(id, current => planUpdatedArticle(current, changes));
+  }
 
-      if (Object.prototype.hasOwnProperty.call(changes, "title")) {
-        next.title = String(changes.title || "").trim() || current.title || "未命名文章";
-      }
-      if (Object.prototype.hasOwnProperty.call(changes, "content")) {
-        const content = String(changes.content || "");
-        if (!content.trim()) throw new Error("文章正文不能为空。");
-        next.content = content;
-      }
-      if (Object.prototype.hasOwnProperty.call(changes, "lastReadAt")) {
-        next.lastReadAt = changes.lastReadAt || current.lastReadAt;
-      }
-      if (Object.prototype.hasOwnProperty.call(changes, "deletedAt")) {
-        next.deletedAt = changes.deletedAt || null;
-      }
-
-      if (Object.prototype.hasOwnProperty.call(changes, "sourceType")) {
-        next.sourceType = normalizeSourceType(changes.sourceType);
-      }
-
-      if (next.sourceType === "library") {
-        const sourceId = Object.prototype.hasOwnProperty.call(changes, "sourceId")
-          ? String(changes.sourceId || "").trim()
-          : String(next.sourceId || "").trim();
-        if (!sourceId) throw new Error("内置文章来源缺少 sourceId。");
-        next.sourceId = sourceId;
-      } else {
-        delete next.sourceId;
-      }
-
-      if (Object.prototype.hasOwnProperty.call(changes, "sourceTitle")) {
-        applyOptionalText(next, "sourceTitle", changes.sourceTitle);
-      }
-      if (Object.prototype.hasOwnProperty.call(changes, "sourceAttribution")) {
-        applyOptionalText(next, "sourceAttribution", changes.sourceAttribution);
-      }
-
-      next.reading = normalizeReading(current.reading);
-      next.updatedAt = new Date().toISOString();
-      return next;
+  // Projection CAS runs inside the Article transaction. A reading-only write may
+  // happen between inspection and commit; merge against the record read here.
+  async function commitArticleSyncProjection(articleId, expectedProjection, candidateProjection) {
+    assertWritesAllowed();
+    const projection = window.LingoFlowArticleSyncProjection;
+    const candidate = projection.sanitizeArticleSyncProjection(candidateProjection);
+    if (candidate.id !== articleId ||
+        (expectedProjection && projection.sanitizeArticleSyncProjection(expectedProjection).id !== articleId)) {
+      throw new Error("Article sync projection ID 不匹配。");
+    }
+    const db = await openDatabase();
+    return await new Promise((resolve, reject) => {
+      const tx = db.transaction(ARTICLE_STORE, "readwrite");
+      const store = tx.objectStore(ARTICLE_STORE);
+      const request = store.get(articleId);
+      let result;
+      let workError;
+      request.onsuccess = () => {
+        try {
+          const current = request.result || null;
+          const matchesBefore = current === null
+            ? expectedProjection === null
+            : expectedProjection !== null &&
+              projection.compareArticleSyncProjection(current, expectedProjection);
+          if (!matchesBefore) {
+            result = { status: "stale-local-state", article: current };
+            return;
+          }
+          const merged = projection.mergeRemoteArticleProjection(current, candidate);
+          store.put(merged);
+          result = { status: "committed", article: merged };
+        } catch (error) {
+          workError = error;
+          tx.abort();
+        }
+      };
+      request.onerror = () => { workError = request.error; };
+      tx.oncomplete = () => resolve(result);
+      tx.onerror = () => reject(workError || tx.error);
+      tx.onabort = () => reject(workError || tx.error);
     });
   }
 
@@ -454,16 +494,20 @@
   }
 
   async function findArticleBySource(sourceType, sourceId) {
+    const matches = await findArticlesBySource(sourceType, sourceId);
+    return matches.find(article => !article.deletedAt) || matches[0] || null;
+  }
+
+  async function findArticlesBySource(sourceType, sourceId) {
     const type = normalizeSourceType(sourceType);
     const id = String(sourceId || "").trim();
-    if (!id) return null;
+    if (!id) return [];
 
     const db = await openDatabase();
     const tx = db.transaction(ARTICLE_STORE, "readonly");
-    const request = tx.objectStore(ARTICLE_STORE).index("bySource").get([type, id]);
-
+    const request = tx.objectStore(ARTICLE_STORE).index("bySource").getAll([type, id]);
     return await new Promise((resolve, reject) => {
-      request.onsuccess = () => resolve(request.result || null);
+      request.onsuccess = () => resolve(request.result || []);
       request.onerror = () => reject(request.error || new Error("文章来源查询失败。"));
     });
   }
@@ -475,15 +519,6 @@
     const incoming = validation.article;
     const current = await getArticle(incoming.id);
     if (current) return classifyArticleRestore(current, incoming);
-
-    if (incoming.sourceType === "library") {
-      const sourceMatch = await findArticleBySource(incoming.sourceType, incoming.sourceId);
-      if (sourceMatch) {
-        return sourceMatch.id === incoming.id
-          ? classifyArticleRestore(sourceMatch, incoming)
-          : createSourceConflictResult(incoming, sourceMatch);
-      }
-    }
 
     return createRestoreResult("restored", incoming.id);
   }
@@ -525,28 +560,8 @@
           return;
         }
 
-        if (incoming.sourceType !== "library") {
-          addIncomingArticle();
-          return;
-        }
-
-        const sourceRequest = store.index("bySource").get([
-          incoming.sourceType,
-          incoming.sourceId
-        ]);
-        sourceRequest.onsuccess = () => {
-          const sourceMatch = sourceRequest.result;
-          if (sourceMatch) {
-            result = sourceMatch.id === incoming.id
-              ? classifyArticleRestore(sourceMatch, incoming)
-              : createSourceConflictResult(incoming, sourceMatch);
-            return;
-          }
-          addIncomingArticle();
-        };
-        sourceRequest.onerror = () => {
-          restoreError = sourceRequest.error || new Error("文章来源查询失败。");
-        };
+        // Article identity is its stable ID. The source index is only a query hint.
+        addIncomingArticle();
       };
 
       request.onerror = () => {
@@ -621,11 +636,15 @@
     DB_VERSION,
     openDatabase,
     createArticle,
+    planCreateArticle: buildArticleRecord,
+    planUpdatedArticle,
     getArticle,
     updateArticle,
     updateArticleReading,
+    commitArticleSyncProjection,
     listArticles,
     findArticleBySource,
+    findArticlesBySource,
     assessArticleRestore,
     restoreArticle,
     replaceAllArticles,

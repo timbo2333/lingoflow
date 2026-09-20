@@ -2,12 +2,15 @@
   "use strict";
 
   const DB_NAME = "LingoFlowSyncDB";
-  const DB_VERSION = 3;
+  const DB_VERSION = 4;
   const CONTROL_STORE = "control";
   const SIDECAR_STORE = "entitySidecars";
   const OUTBOX_STORE = "outbox";
   const ISSUES_STORE = "syncIssues";
   const INBOX_STORE = "inbox";
+  // Article payloads live in a separate, inactive lane until cloud transport exists.
+  const ARTICLE_OUTBOX_STORE = "articleOutbox";
+  const ARTICLE_SIDECAR_STORE = "articleSidecars";
   const BINDING_KEY = "workspace-binding";
   const ACCOUNT_LABEL_KEY = "workspace-account-label";
   const FAVORITE_WRITER_KEY = "favorite-writer-lock";
@@ -811,6 +814,15 @@
             { unique: false }
           );
         }
+        if (!db.objectStoreNames.contains(ARTICLE_OUTBOX_STORE)) {
+          const articleOutbox = db.createObjectStore(ARTICLE_OUTBOX_STORE, {
+            keyPath: ["ownerId", "mutationId"]
+          });
+          articleOutbox.createIndex("byOwnerBinding", ["ownerId", "bindingId"]);
+        }
+        if (!db.objectStoreNames.contains(ARTICLE_SIDECAR_STORE)) {
+          db.createObjectStore(ARTICLE_SIDECAR_STORE, { keyPath: ["ownerId", "articleId"] });
+        }
       };
 
       request.onsuccess = () => {
@@ -883,6 +895,122 @@
     }
   }
 
+  async function prepareArticleMutation(value) {
+    try {
+      const projection = window.LingoFlowArticleSyncProjection
+        .sanitizeArticleSyncProjection(value.candidate);
+      if (!value.ownerId || !value.bindingId || !value.mutationId ||
+          !["put", "delete", "restore"].includes(value.operation) ||
+          value.articleId !== projection.id ||
+          !/^[a-f0-9]{64}$/.test(value.candidateFingerprint) ||
+          (value.beforeFingerprint !== null &&
+            !/^[a-f0-9]{64}$/.test(value.beforeFingerprint))) {
+        throw new Error("Article mutation 无效。");
+      }
+      return await runTransaction(
+        [CONTROL_STORE, ARTICLE_OUTBOX_STORE, ARTICLE_SIDECAR_STORE],
+        "readwrite",
+        async tx => {
+          const binding = await requireBinding(
+            tx.objectStore(CONTROL_STORE), value.ownerId, value.bindingId
+          );
+          if (binding.status !== "ready") return binding;
+          const outbox = tx.objectStore(ARTICLE_OUTBOX_STORE);
+          const existing = await requestResult(outbox.get([value.ownerId, value.mutationId]));
+          if (existing) return { status: "unchanged", mutation: existing };
+          const mutation = {
+            ownerId: value.ownerId,
+            bindingId: value.bindingId,
+            mutationId: value.mutationId,
+            articleId: value.articleId,
+            operation: value.operation,
+            status: "prepared",
+            createdAt: new Date().toISOString(),
+            beforeFingerprint: value.beforeFingerprint,
+            candidateFingerprint: value.candidateFingerprint,
+            baseRevision: value.baseRevision ?? null,
+            candidate: projection
+          };
+          const sidecars = tx.objectStore(ARTICLE_SIDECAR_STORE);
+          const sidecar = await requestResult(sidecars.get([value.ownerId, value.articleId]));
+          if (!sidecar) {
+            await requestResult(sidecars.add({
+              ownerId: value.ownerId,
+              bindingId: value.bindingId,
+              articleId: value.articleId,
+              knownRevision: null,
+              lastSyncedFingerprint: null
+            }));
+          } else if (sidecar.bindingId !== value.bindingId) {
+            return blocked("workspace-binding-mismatch");
+          }
+          await requestResult(outbox.add(mutation));
+          return { status: "prepared", mutation };
+        }
+      );
+    } catch (error) {
+      return failed("article-prepare-failed", error);
+    }
+  }
+
+  async function updateArticleMutationStatus(ownerId, bindingId, mutationId, status, reason = null) {
+    try {
+      if (!["ready", "issue"].includes(status)) throw new Error("Article status 无效。");
+      return await runTransaction([CONTROL_STORE, ARTICLE_OUTBOX_STORE], "readwrite", async tx => {
+        const binding = await requireBinding(tx.objectStore(CONTROL_STORE), ownerId, bindingId);
+        if (binding.status !== "ready") return binding;
+        const store = tx.objectStore(ARTICLE_OUTBOX_STORE);
+        const mutation = await requestResult(store.get([ownerId, mutationId]));
+        if (!mutation) return { status: "missing" };
+        if (mutation.bindingId !== bindingId) return blocked("workspace-binding-mismatch");
+        if (mutation.status === status) return { status: "unchanged", mutation };
+        if (mutation.status !== "prepared") return blocked("article-status-mismatch");
+        const next = { ...mutation, status, ...(status === "issue" ? { issueReason: reason } : {}) };
+        await requestResult(store.put(next));
+        return { status, mutation: next };
+      });
+    } catch (error) {
+      return failed("article-status-update-failed", error);
+    }
+  }
+
+  async function listArticleMutations(ownerId, bindingId, status = null) {
+    try {
+      return await runTransaction([CONTROL_STORE, ARTICLE_OUTBOX_STORE], "readonly", async tx => {
+        const binding = await requireBinding(tx.objectStore(CONTROL_STORE), ownerId, bindingId);
+        if (binding.status !== "ready") return binding;
+        const values = await requestResult(
+          tx.objectStore(ARTICLE_OUTBOX_STORE).index("byOwnerBinding")
+            .getAll([ownerId, bindingId])
+        );
+        return {
+          status: "ready",
+          items: values.filter(item => item.ownerId === ownerId &&
+            item.bindingId === bindingId && (!status || item.status === status))
+            .sort((a, b) => a.createdAt.localeCompare(b.createdAt) ||
+              a.mutationId.localeCompare(b.mutationId))
+        };
+      });
+    } catch (error) {
+      return failed("article-outbox-list-failed", error);
+    }
+  }
+
+  async function getArticleSidecar(ownerId, bindingId, articleId) {
+    try {
+      return await runTransaction([CONTROL_STORE, ARTICLE_SIDECAR_STORE], "readonly", async tx => {
+        const binding = await requireBinding(tx.objectStore(CONTROL_STORE), ownerId, bindingId);
+        if (binding.status !== "ready") return binding;
+        const sidecar = await requestResult(
+          tx.objectStore(ARTICLE_SIDECAR_STORE).get([ownerId, articleId])
+        );
+        return { status: sidecar ? "ready" : "missing", sidecar: sidecar || null };
+      });
+    } catch (error) {
+      return failed("article-sidecar-read-failed", error);
+    }
+  }
+
   async function setWorkspaceAccountLabel(value) {
     try {
       const metadata = validateAccountLabelInput(value);
@@ -939,7 +1067,9 @@
         SIDECAR_STORE,
         OUTBOX_STORE,
         ISSUES_STORE,
-        INBOX_STORE
+        INBOX_STORE,
+        ARTICLE_OUTBOX_STORE,
+        ARTICLE_SIDECAR_STORE
       ];
       return await runTransaction(storeNames, "readwrite", async tx => {
         const control = tx.objectStore(CONTROL_STORE);
@@ -2634,6 +2764,10 @@
     closeDatabase,
     bindWorkspace,
     getWorkspaceBinding,
+    prepareArticleMutation,
+    updateArticleMutationStatus,
+    listArticleMutations,
+    getArticleSidecar,
     setWorkspaceAccountLabel,
     getWorkspaceAccountLabel,
     replaceWorkspaceBinding,

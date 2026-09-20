@@ -284,7 +284,6 @@
       };
     });
     const ids = new Map();
-    const sources = new Map();
 
     articles.forEach((article, index) => {
       if (items[index].status !== "valid") return;
@@ -298,25 +297,6 @@
         } else {
           ids.set(articleId, index);
         }
-      }
-
-      if (!isPlainObject(article) ||
-          article.sourceType !== "library" ||
-          typeof article.sourceId !== "string" ||
-          !article.sourceId.trim() ||
-          !articleId) {
-        return;
-      }
-
-      const sourceKey = article.sourceId.trim();
-      const existing = sources.get(sourceKey);
-      if (existing && existing.articleId !== articleId) {
-        items[index].errors.push(createError("duplicate-article-source", "sourceId", {
-          articleId,
-          conflictingArticleId: existing.articleId
-        }));
-      } else if (!existing) {
-        sources.set(sourceKey, { articleId, index });
       }
     });
 

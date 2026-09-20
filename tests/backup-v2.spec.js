@@ -518,7 +518,7 @@ test("restoreArticles 让 Schema 与 Article Library 使用同一份未修改快
   expect(result.inputAfter).toBe(result.inputBefore);
 });
 
-test("Backup v2 在写入前拒绝批内相同来源的不同 Article ID", async ({ page }) => {
+test("Backup v2 允许批内相同来源的不同 Article ID", async ({ page }) => {
   const first = makeArticle("article:library-first", {
     sourceType: "library",
     sourceId: "library:shared-backup-source"
@@ -540,13 +540,8 @@ test("Backup v2 在写入前拒绝批内相同来源的不同 Article ID", async
     return { assessment, assessCalls };
   }, [first, second]);
 
-  expect(result.assessment.status).toBe("rejected");
-  expect(result.assessment.errors).toContainEqual(expect.objectContaining({
-    code: "duplicate-article-source",
-    articleId: second.id,
-    conflictingArticleId: first.id
-  }));
-  expect(result.assessCalls).toBe(0);
+  expect(result.assessment.status).not.toBe("rejected");
+  expect(result.assessCalls).toBe(2);
 });
 
 test("assessArticles 只调用只读评估并准确汇总结果", async ({ page }) => {

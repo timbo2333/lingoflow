@@ -1509,7 +1509,7 @@ test("local edit 与 remote apply 共享 writer lock，不发生 lost update", a
   if (result.remote.status === "conflict") expect(result.issues.issues).toHaveLength(1);
 });
 
-test("真实 v2 fixture 升级 v3 保留 binding/sidecar/attempted/successor/push issue", async ({ page }) => {
+test("真实 v2 fixture 升级 v4 保留 binding/sidecar/attempted/successor/push issue", async ({ page }) => {
   await page.goto("/");
   await page.addScriptTag({ url: "/js/sync-canonical.js" });
   await page.addScriptTag({ url: "/js/cloud-sync-protocol.js" });
@@ -1663,8 +1663,8 @@ test("真实 v2 fixture 升级 v3 保留 binding/sidecar/attempted/successor/pus
       issues: await state.listIssues({ ownerId: owner.ownerId, bindingId: owner.bindingId })
     };
   }, OWNER);
-  expect(upgraded.version).toBe(3);
-  expect(upgraded.stores).toEqual(["control", "entitySidecars", "inbox", "outbox", "syncIssues"]);
+  expect(upgraded.version).toBe(4);
+  expect(upgraded.stores).toEqual(["articleOutbox", "articleSidecars", "control", "entitySidecars", "inbox", "outbox", "syncIssues"]);
   expect(upgraded.binding.binding).toMatchObject(OWNER);
   expect(upgraded.sidecar.sidecar).toEqual(fixture.sidecar);
   expect(upgraded.outbox.items).toEqual([fixture.head, fixture.successor]);

@@ -104,7 +104,7 @@ test.afterEach(async ({ page }) => {
   expect(projectErrors.get(page), "页面不应出现项目自身的 JavaScript 错误").toEqual([]);
 });
 
-test("LingoFlowSyncDB v3 保留 push stores 并增加 inbox", async ({ page }) => {
+test("LingoFlowSyncDB v4 保留 Favorite stores 并隔离 Article stores", async ({ page }) => {
   const schema = await page.evaluate(async () => {
     const repository = window.LingoFlowSyncStateRepository;
     const db = await repository.openDatabase();
@@ -142,8 +142,8 @@ test("LingoFlowSyncDB v3 保留 push stores 并增加 inbox", async ({ page }) =
 
   expect(schema).toEqual({
     name: "LingoFlowSyncDB",
-    version: 3,
-    stores: ["control", "entitySidecars", "inbox", "outbox", "syncIssues"],
+    version: 4,
+    stores: ["articleOutbox", "articleSidecars", "control", "entitySidecars", "inbox", "outbox", "syncIssues"],
     sidecarKeyPath: ["ownerId", "entityType", "entityId", "scope"],
     sidecarIndexes: [{
       name: "byOwnerEntityType",
