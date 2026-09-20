@@ -8132,6 +8132,7 @@ function initializeFavoriteSync() {
 }
 
 initializeModalSystem();
+window.LingoFlowAnnouncements?.initialize();
 updateLegacyImportModePresentation();
 window.addEventListener("lingoflow:auth-state", updateSettingsAccountSummary);
 window.addEventListener("lingoflow:favorite-sync-status", updateSettingsAccountSummary);

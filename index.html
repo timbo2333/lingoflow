@@ -7,7 +7,7 @@
 <link rel="icon" type="image/svg+xml" href="./favicon.svg">
 
 
- <link rel="stylesheet" href="css/style.css">
+ <link rel="stylesheet" href="css/style.css?v=announcements-v1">
 
 
 </head>
@@ -21,6 +21,13 @@
   </div>
 
   <div class="topActions">
+    <button id="announcementsButton" class="announcementBell" type="button"
+            aria-label="公告，暂无未读" aria-haspopup="dialog" aria-controls="announcementsModal">
+      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/>
+      </svg>
+      <span id="announcementsBadge" class="announcementBadge" aria-hidden="true" hidden></span>
+    </button>
     <button id="accountButton" class="secondary compactButton" type="button">
       登录 / 注册
     </button>
@@ -28,6 +35,21 @@
             type="button" onclick="openSettings()">⚙ 设置</button>
     <span id="favoriteSyncStatusBadge" class="syncStatusBadge" data-state="local"
           role="status" aria-live="polite">收藏仅保存在当前设备</span>
+  </div>
+
+  <div id="announcementsModal" class="modalOverlay" role="dialog" aria-modal="true"
+       aria-labelledby="announcementsModalTitle"
+       onpointerdown="modalBackdropPointerDown(event, 'announcementsModal')"
+       onpointerup="modalBackdropPointerUp(event, 'announcementsModal')"
+       onpointercancel="modalBackdropPointerCancel(event, 'announcementsModal')">
+    <div class="modalCard announcementsModalCard">
+      <div class="modalHeader">
+        <div id="announcementsModalTitle" class="modalTitle">公告</div>
+        <button id="announcementsModalClose" class="iconClose" type="button"
+                aria-label="关闭公告">×</button>
+      </div>
+      <div id="announcementsList" class="announcementsList"></div>
+    </div>
   </div>
 
   <!-- 账号与 Favorite 云同步 -->
@@ -1305,7 +1327,8 @@
 <script src="js/cloud-lemma-resolver.js"></script>
 <script src="js/legacy-ecdict-provider.js"></script>
 <script src="js/core-lemma-pack.js"></script>
-<script src="js/main.js"></script>
+<script src="js/announcements.js"></script>
+<script src="js/main.js?v=announcements-v1"></script>
 
 </body>
 </html>

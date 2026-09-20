@@ -3507,6 +3507,101 @@
     opacity: 1;
   }
 
+  .topActions .announcementBell {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 44px;
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    border: 0;
+    border-radius: 12px;
+    background: transparent;
+    color: var(--color-text-secondary);
+  }
+
+  .announcementBell:hover,
+  .announcementBell:focus-visible {
+    background: var(--color-surface-subtle);
+    color: var(--color-text);
+    opacity: 1;
+  }
+
+  .announcementBell:focus-visible {
+    outline: 2px solid currentColor;
+    outline-offset: 2px;
+  }
+
+  .announcementBell svg {
+    width: 21px;
+    height: 21px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  .announcementBadge {
+    position: absolute;
+    top: 0;
+    right: 0;
+    display: grid;
+    place-items: center;
+    min-width: 17px;
+    height: 17px;
+    padding-inline: 3px;
+    border: 2px solid var(--color-page);
+    border-radius: 999px;
+    background: var(--color-text);
+    color: var(--color-surface);
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 1;
+  }
+
+  .announcementBadge[hidden] { display: none; }
+
+  .announcementsModalCard { width: min(620px, 100%); }
+  .announcementsList { min-height: 72px; }
+  .announcementItem { padding: 18px 0; }
+  .announcementItem + .announcementItem {
+    border-top: 1px solid var(--color-border);
+  }
+  .announcementHeading {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 9px;
+  }
+  .announcementTitle {
+    margin: 0;
+    font-size: 17px;
+    font-weight: 700;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+  }
+  .announcementImportant {
+    color: var(--color-text-secondary);
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .announcementDate,
+  .announcementEmpty {
+    color: var(--color-text-secondary);
+    font-size: 13px;
+  }
+  .announcementDate { display: block; margin-top: 5px; }
+  .announcementContent {
+    margin: 12px 0 0;
+    line-height: 1.7;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  .announcementEmpty { margin: 16px 0; }
+
   .homePrimary,
   .homeSecondary {
     display: grid;
@@ -4022,7 +4117,7 @@
     .topActions {
       min-height: 0;
       display: grid;
-      grid-template-columns: auto auto;
+      grid-template-columns: auto auto auto;
       justify-content: start;
       column-gap: 4px;
       row-gap: 2px;
