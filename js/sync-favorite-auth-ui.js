@@ -295,7 +295,7 @@
       return { state: "local", message: "收藏与学习状态仅保存在当前设备" };
     }
     if (syncState.status === "activation-required") {
-      return { state: "pending", message: "等待确认本地收藏" };
+      return { state: "pending", message: "等待确认本地数据归属" };
     }
     if (syncState.reason === "activation-deferred") {
       return { state: "local", message: "收藏与学习状态仅保存在当前设备" };
@@ -431,10 +431,21 @@
     }
     const activationMessage = element("workspaceActivationMessage");
     if (activationMessage && canActivate) {
-      const count = Number(syncState.localFavoriteCount || 0);
-      activationMessage.textContent = count > 0
-        ? `检测到当前浏览器已有 ${count} 条本地收藏。只有你明确同意后，这些收藏及其学习状态才会关联到此账号并上传。`
+      const favoriteCount = Number(syncState.localFavoriteCount || 0);
+      const learningCount = Number(syncState.localLearningCount || 0);
+      const articleCount = Number(syncState.localArticleCount || 0);
+      const assets = [
+        favoriteCount > 0 ? `${favoriteCount} 条本地收藏` : null,
+        learningCount > 0 ? `${learningCount} 条学习状态` : null,
+        articleCount > 0 ? `${articleCount} 篇本地文章（含已删除）` : null
+      ].filter(Boolean);
+      activationMessage.textContent = assets.length
+        ? `检测到当前浏览器已有${assets.join("、")}。只有你明确同意后，这些本地数据才会关联到此账号。${articleCount > 0 ? "文章目前仍只保存在本设备，不会在此阶段上传；收藏与学习状态按现有规则同步。" : "收藏与学习状态会按现有规则同步。"}`
         : "确认后会为当前账号开启收藏与学习状态同步。";
+      const activateButton = element("workspaceActivateButton");
+      if (activateButton) activateButton.textContent = articleCount > 0
+        ? "确认关联"
+        : "关联并同步";
     }
 
     const syncButton = element("authSyncNowButton");

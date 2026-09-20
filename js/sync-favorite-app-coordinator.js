@@ -91,6 +91,7 @@
     const dependencies = {
       favorites: window.LingoFlowFavoriteRepository,
       learning: window.LingoFlowFavoriteLearningRepository,
+      articles: window.LingoFlowArticleLibrary,
       capture: window.LingoFlowSyncFavoriteService,
       learningCapture: window.LingoFlowSyncFavoriteLearningService,
       syncState: window.LingoFlowSyncStateRepository,
@@ -99,7 +100,8 @@
       supabase: window.LingoFlowSupabaseSyncService
     };
     if (!dependencies.favorites ||
-        !dependencies.learning ||
+        typeof dependencies.learning?.list !== "function" ||
+        typeof dependencies.articles?.listArticles !== "function" ||
         !dependencies.capture ||
         !dependencies.learningCapture ||
         typeof dependencies.syncState?.getWorkspaceBinding !== "function" ||
@@ -246,6 +248,36 @@
     });
   }
 
+  async function inspectLocalUserAssets(dependencies) {
+    let localFavoriteCount;
+    let localLearningCount;
+    let localArticleCount;
+    try {
+      localFavoriteCount = dependencies.favorites.count({ includeDeleted: true });
+      if (!Number.isSafeInteger(localFavoriteCount) || localFavoriteCount < 0) {
+        throw new Error("本地收藏数量无效。");
+      }
+    } catch (error) {
+      return { status: "blocked", reason: "favorite-storage-read-failed", message: error.message };
+    }
+    try {
+      const learningStates = dependencies.learning.list({ includeDeleted: true });
+      if (!Array.isArray(learningStates)) throw new Error("本地学习状态列表无效。");
+      localLearningCount = learningStates.length;
+    } catch (error) {
+      return { status: "blocked", reason: "favorite-learning-storage-read-failed", message: error.message };
+    }
+    try {
+      // Soft-deleted articles are still user assets; failure must not mean "empty".
+      const articles = await dependencies.articles.listArticles({ includeDeleted: true });
+      if (!Array.isArray(articles)) throw new Error("本地文章列表无效。");
+      localArticleCount = articles.length;
+    } catch (error) {
+      return { status: "blocked", reason: "article-storage-read-failed", message: error.message };
+    }
+    return { status: "ready", localFavoriteCount, localLearningCount, localArticleCount };
+  }
+
   async function resolveWorkspace(dependencies, session, allowActivation) {
     const ownerId = session.ownerId;
     const current = await dependencies.syncState.getWorkspaceBinding();
@@ -269,22 +301,20 @@
     }
     if (current.status !== "missing") return current;
 
-    let localFavoriteCount;
-    try {
-      localFavoriteCount = dependencies.favorites.count({ includeDeleted: true });
-    } catch (error) {
-      return {
-        status: "blocked",
-        reason: "favorite-storage-read-failed",
-        message: error.message
-      };
-    }
-    if (localFavoriteCount > 0 && !allowActivation) {
+    const assets = await inspectLocalUserAssets(dependencies);
+    if (assets.status !== "ready") return assets;
+    if ((assets.localFavoriteCount > 0 ||
+         assets.localLearningCount > 0 ||
+         assets.localArticleCount > 0) && !allowActivation) {
       return {
         status: "activation-required",
-        reason: "anonymous-favorites-require-consent",
+        reason: assets.localFavoriteCount > 0
+          ? "anonymous-favorites-require-consent"
+          : "anonymous-user-assets-require-consent",
         ownerId,
-        localFavoriteCount
+        localFavoriteCount: assets.localFavoriteCount,
+        localLearningCount: assets.localLearningCount,
+        localArticleCount: assets.localArticleCount
       };
     }
 
@@ -440,7 +470,9 @@
     if (state.status !== "activation-required") return getState();
     return deactivate("activation-deferred", {
       ownerId: state.ownerId,
-      localFavoriteCount: state.localFavoriteCount
+      localFavoriteCount: state.localFavoriteCount,
+      localLearningCount: state.localLearningCount,
+      localArticleCount: state.localArticleCount
     });
   }
 

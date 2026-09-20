@@ -887,6 +887,122 @@ test("已有匿名 Favorite 登录后必须明确确认；暂不关联不会上�
   expect(result.pushes).toBe(0);
 });
 
+test("匿名设备只有 Article 时，首次登录必须确认归属；确认后文章仍不上传", async ({ page }) => {
+  await page.goto("/");
+  const ids = await page.evaluate(async () => {
+    const created = [];
+    for (let index = 0; index < 5; index += 1) {
+      created.push(await window.LingoFlowArticleLibrary.createArticle({
+        title: `Anonymous article ${index}`,
+        content: `This article stays local ${index}.`,
+        sourceType: "paste"
+      }));
+    }
+    return created.map(article => article.id);
+  });
+  await signIn(page);
+  await waitForSync(page, "activation-required", "anonymous-user-assets-require-consent");
+  await expect(page.locator("#workspaceActivationPanel")).toBeVisible();
+  await expect(page.locator("#workspaceActivationMessage"))
+    .toContainText("5 篇本地文章");
+  await expect(page.locator("#workspaceActivationMessage"))
+    .toContainText("文章目前仍只保存在本设备，不会在此阶段上传");
+  await expect(page.locator("#workspaceActivateButton")).toHaveText("确认关联");
+  const before = await page.evaluate(async () => ({
+    state: window.LingoFlowFavoriteAppSync.getState(),
+    binding: await window.LingoFlowSyncStateRepository.getWorkspaceBinding(),
+    pushes: Number(localStorage.getItem("__lingoflowTestPushCount") || 0)
+  }));
+  expect(before.state).toMatchObject({ localFavoriteCount: 0, localArticleCount: 5 });
+  expect(before.binding.status).toBe("missing");
+  expect(before.pushes).toBe(0);
+
+  await page.click("#workspaceDeferButton");
+  await waitForSync(page, "inactive", "activation-deferred");
+  const deferred = await page.evaluate(async () => ({
+    articles: await window.LingoFlowArticleLibrary.listArticles({ includeDeleted: true }),
+    binding: await window.LingoFlowSyncStateRepository.getWorkspaceBinding(),
+    pushes: Number(localStorage.getItem("__lingoflowTestPushCount") || 0)
+  }));
+  expect(deferred.articles.map(article => article.id).sort()).toEqual([...ids].sort());
+  expect(deferred.binding.status).toBe("missing");
+  expect(deferred.pushes).toBe(0);
+
+  await page.click("#workspaceActivateButton");
+  await waitForSync(page, "ready");
+  const after = await page.evaluate(async () => ({
+    articles: await window.LingoFlowArticleLibrary.listArticles({ includeDeleted: true }),
+    binding: await window.LingoFlowSyncStateRepository.getWorkspaceBinding(),
+    pushes: Number(localStorage.getItem("__lingoflowTestPushCount") || 0)
+  }));
+  expect(after.articles.map(article => article.id).sort()).toEqual(ids.sort());
+  expect(after.binding.binding.ownerId).toBe(OWNER_A);
+  expect(after.pushes).toBe(0);
+});
+
+test("只有软删除 Article 仍需首次 Workspace 归属确认", async ({ page }) => {
+  await page.goto("/");
+  const id = await page.evaluate(async () => {
+    const library = window.LingoFlowArticleLibrary;
+    const created = await library.createArticle({
+      title: "Deleted local article",
+      content: "The tombstone remains a user asset.",
+      sourceType: "paste"
+    });
+    await library.updateArticle(created.id, { deletedAt: new Date().toISOString() });
+    return created.id;
+  });
+  await signIn(page);
+  await waitForSync(page, "activation-required", "anonymous-user-assets-require-consent");
+  const result = await page.evaluate(async articleId => ({
+    visible: await window.LingoFlowArticleLibrary.listArticles(),
+    article: await window.LingoFlowArticleLibrary.getArticle(articleId),
+    binding: await window.LingoFlowSyncStateRepository.getWorkspaceBinding(),
+    count: window.LingoFlowFavoriteAppSync.getState().localArticleCount
+  }), id);
+  expect(result.visible).toEqual([]);
+  expect(result.article.deletedAt).not.toBeNull();
+  expect(result.binding.status).toBe("missing");
+  expect(result.count).toBe(1);
+});
+
+test("无法读取 Article 资产时禁止把空设备假设为安全并自动绑定", async ({ page }) => {
+  await page.goto("/");
+  await page.evaluate(() => {
+    window.LingoFlowArticleLibrary = Object.freeze({
+      ...window.LingoFlowArticleLibrary,
+      listArticles: async () => { throw new Error("simulated article storage failure"); }
+    });
+  });
+  await signIn(page);
+  await waitForSync(page, "blocked", "article-storage-read-failed");
+  const binding = await page.evaluate(async () => (
+    await window.LingoFlowSyncStateRepository.getWorkspaceBinding()
+  ));
+  expect(binding.status).toBe("missing");
+});
+
+test("仅有 FavoriteLearningState 也需首次 Workspace 归属确认", async ({ page }) => {
+  await page.goto("/");
+  await page.evaluate(() => {
+    window.LingoFlowFavoriteLearningRepository.setMastered("favorite:orphan-local", true);
+  });
+  await signIn(page);
+  await waitForSync(page, "activation-required", "anonymous-user-assets-require-consent");
+  expect(await page.evaluate(() => window.LingoFlowFavoriteAppSync.getState()))
+    .toMatchObject({ localFavoriteCount: 0, localLearningCount: 1, localArticleCount: 0 });
+});
+
+test("没有 Favorite、Learning 或 Article 时沿用自动建立 Workspace 行为", async ({ page }) => {
+  await page.goto("/");
+  await signIn(page);
+  await waitForSync(page, "ready");
+  const binding = await page.evaluate(async () => (
+    await window.LingoFlowSyncStateRepository.getWorkspaceBinding()
+  ));
+  expect(binding.binding.ownerId).toBe(OWNER_A);
+});
+
 test("账号失败只显示用户文案，不暴露服务端技术错误", async ({ page }) => {
   await page.goto("/");
   await openAccountModal(page);
