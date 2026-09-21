@@ -16,6 +16,7 @@
     const repository = deps.repository || window.LingoFlowArticleSyncRepository;
     const state = deps.state || window.LingoFlowSyncStateRepository;
     const projection = window.LingoFlowArticleSyncProjection;
+    const hooks = deps.hooks || {};
 
     async function mutate(operation, articleId, candidateRecord, owner) {
       const candidate = projection.projectArticleForSync(candidateRecord);
@@ -89,6 +90,46 @@
       return await editArticle(articleId, { deletedAt: null }, owner);
     }
 
+    async function captureBootstrapArticle(articleId, owner) {
+      const candidate = await repository.getProjection(articleId);
+      if (!candidate) return { status: "missing" };
+      const binding = await state.getWorkspaceBinding();
+      if (binding.status !== "ready" || binding.binding.ownerId !== owner?.ownerId ||
+          binding.binding.bindingId !== owner?.bindingId) {
+        return { status: "blocked", reason: "workspace-unbound-or-mismatch" };
+      }
+      const pending = await state.listArticleMutations(owner.ownerId, owner.bindingId);
+      if (pending.status !== "ready") return pending;
+      const existing = pending.items.find(item => item.articleId === articleId &&
+        ["prepared", "ready"].includes(item.status));
+      if (existing) return { status: "existing", mutation: existing };
+      const sidecar = await state.getArticleSidecar(owner.ownerId, owner.bindingId, articleId);
+      if (!["ready", "missing"].includes(sidecar.status)) return sidecar;
+      if (sidecar.sidecar?.knownRevision) {
+        return { status: "blocked", reason: "article-remote-state-ambiguous" };
+      }
+      const candidateFingerprint = await fingerprint(candidate);
+      const mutationId = `article:${crypto.randomUUID()}`;
+      const prepared = await state.prepareArticleMutation({
+        ownerId: owner.ownerId,
+        bindingId: owner.bindingId,
+        mutationId,
+        articleId,
+        operation: candidate.deletedAt === null ? "put" : "delete",
+        beforeFingerprint: candidateFingerprint,
+        candidateFingerprint,
+        baseRevision: null,
+        candidate
+      });
+      if (prepared.status !== "prepared") return prepared;
+      await hooks.afterBootstrapPrepared?.(prepared.mutation);
+      const ready = await state.updateArticleMutationStatus(
+        owner.ownerId, owner.bindingId, mutationId, "ready"
+      );
+      await hooks.afterBootstrapReady?.(ready.mutation);
+      return { ...ready, articleId, mutationId };
+    }
+
     async function recoverPrepared(owner) {
       const list = await state.listArticleMutations(owner?.ownerId, owner?.bindingId, "prepared");
       if (list.status !== "ready") return list;
@@ -124,6 +165,7 @@
       editArticle,
       deleteArticle,
       restoreArticle,
+      captureBootstrapArticle,
       updateReading: (id, changes) => library.updateArticleReading(id, changes),
       recoverPrepared
     });

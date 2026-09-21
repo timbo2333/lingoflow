@@ -11,6 +11,19 @@
   // Article payloads live in a separate, inactive lane until cloud transport exists.
   const ARTICLE_OUTBOX_STORE = "articleOutbox";
   const ARTICLE_SIDECAR_STORE = "articleSidecars";
+  const ARTICLE_BOOTSTRAP_STATE_PREFIX = "article-bootstrap-state:";
+  const ARTICLE_BOOTSTRAP_INVENTORY_PREFIX = "article-bootstrap-inventory:";
+  const ARTICLE_BOOTSTRAP_PENDING_PREFIX = "article-bootstrap-pending:";
+  const ARTICLE_BOOTSTRAP_ISSUE_PREFIX = "article-bootstrap-issue:";
+  const ARTICLE_BOOTSTRAP_PHASES = new Set([
+    "remote-inventory",
+    "reconciling",
+    "settling-outgoing",
+    "catching-up",
+    "finalizing",
+    "blocked",
+    "complete"
+  ]);
   const BINDING_KEY = "workspace-binding";
   const ACCOUNT_LABEL_KEY = "workspace-account-label";
   const FAVORITE_WRITER_KEY = "favorite-writer-lock";
@@ -1057,6 +1070,537 @@
       );
     } catch (error) {
       return failed("article-settlement-failed", error);
+    }
+  }
+
+  function articleBootstrapKey(prefix, ownerId, bindingId, suffix = "") {
+    return `${prefix}${getCanonical().serialize([ownerId, bindingId, suffix])}`;
+  }
+
+  function articleBootstrapStateKey(ownerId, bindingId) {
+    return articleBootstrapKey(ARTICLE_BOOTSTRAP_STATE_PREFIX, ownerId, bindingId);
+  }
+
+  function isArticleCursor(value, nullable = false) {
+    return (nullable && value === null) ||
+      (typeof value === "string" && /^cursor:(0|[1-9][0-9]*)$/.test(value));
+  }
+
+  function articleCursorNumber(value) {
+    return BigInt(value.slice(7));
+  }
+
+  function validateArticleBootstrapIdentity(ownerId, bindingId) {
+    if (!isOpaqueString(ownerId) || !isOpaqueString(bindingId)) {
+      throw new Error("Article bootstrap identity 无效。");
+    }
+  }
+
+  function validateArticleBootstrapState(value) {
+    if (!isPlainObject(value) || value.kind !== "article-bootstrap-state" ||
+        !isOpaqueString(value.ownerId) || !isOpaqueString(value.bindingId) ||
+        !["in_progress", "blocked", "complete"].includes(value.status) ||
+        !ARTICLE_BOOTSTRAP_PHASES.has(value.phase) ||
+        !isArticleCursor(value.inventoryCursor, true) ||
+        !isArticleCursor(value.remoteTailCursor, true) ||
+        !isArticleCursor(value.finalCursor, true) ||
+        !isArticleCursor(value.pendingCursor, true) ||
+        typeof value.pendingHasMore !== "boolean" ||
+        !Number.isInteger(value.issueCount) || value.issueCount < 0) {
+      throw new Error("Article bootstrap state 无效。");
+    }
+    return value;
+  }
+
+  async function beginArticleBootstrap(ownerId, bindingId) {
+    try {
+      validateArticleBootstrapIdentity(ownerId, bindingId);
+      return await runTransaction([CONTROL_STORE], "readwrite", async tx => {
+        const store = tx.objectStore(CONTROL_STORE);
+        const binding = await requireBinding(store, ownerId, bindingId);
+        if (binding.status !== "ready") return binding;
+        const key = articleBootstrapStateKey(ownerId, bindingId);
+        const current = await requestResult(store.get(key));
+        if (current) {
+          return { status: "ready", state: validateArticleBootstrapState(current) };
+        }
+        const now = new Date().toISOString();
+        const state = {
+          key,
+          kind: "article-bootstrap-state",
+          ownerId,
+          bindingId,
+          status: "in_progress",
+          phase: "remote-inventory",
+          inventoryCursor: null,
+          remoteTailCursor: null,
+          finalCursor: null,
+          pendingCursor: null,
+          pendingHasMore: false,
+          issueCount: 0,
+          lastError: null,
+          startedAt: now,
+          updatedAt: now,
+          completedAt: null
+        };
+        await requestResult(store.add(state));
+        return { status: "ready", state };
+      });
+    } catch (error) {
+      return failed("article-bootstrap-start-failed", error);
+    }
+  }
+
+  async function getArticleBootstrapState(ownerId, bindingId) {
+    try {
+      validateArticleBootstrapIdentity(ownerId, bindingId);
+      const value = await runTransaction([CONTROL_STORE], "readonly", tx => (
+        requestResult(tx.objectStore(CONTROL_STORE)
+          .get(articleBootstrapStateKey(ownerId, bindingId)))
+      ));
+      return value
+        ? { status: "ready", state: validateArticleBootstrapState(value) }
+        : { status: "not_started", state: null };
+    } catch (error) {
+      return failed("article-bootstrap-state-read-failed", error);
+    }
+  }
+
+  function validateArticleBootstrapPage(page) {
+    if (!isPlainObject(page) || page.status !== "ready" || !Array.isArray(page.changes) ||
+        !isArticleCursor(page.nextCursor) || typeof page.hasMore !== "boolean") {
+      throw new Error("Article bootstrap page 无效。");
+    }
+    return page.changes.map(change => {
+      if (!isPlainObject(change) || !isOpaqueString(change.articleId) ||
+          !["put", "delete", "restore"].includes(change.operation) ||
+          !isArticleCursor(change.cursor) ||
+          typeof change.revision !== "string" ||
+          !/^revision:[1-9][0-9]*$/.test(change.revision)) {
+        throw new Error("Article bootstrap change 无效。");
+      }
+      const projection = window.LingoFlowArticleSyncProjection
+        .sanitizeArticleSyncProjection(change.projection);
+      if (projection.id !== change.articleId) {
+        throw new Error("Article bootstrap change identity 无效。");
+      }
+      return { ...change, projection };
+    });
+  }
+
+  async function persistArticleBootstrapInventoryPage(
+    ownerId,
+    bindingId,
+    afterCursor,
+    page
+  ) {
+    try {
+      validateArticleBootstrapIdentity(ownerId, bindingId);
+      if (!isArticleCursor(afterCursor, true)) throw new Error("Inventory cursor 无效。");
+      const changes = validateArticleBootstrapPage(page);
+      return await runTransaction([CONTROL_STORE], "readwrite", async tx => {
+        const store = tx.objectStore(CONTROL_STORE);
+        const binding = await requireBinding(store, ownerId, bindingId);
+        if (binding.status !== "ready") return binding;
+        const key = articleBootstrapStateKey(ownerId, bindingId);
+        const state = validateArticleBootstrapState(await requestResult(store.get(key)));
+        if (state.status !== "in_progress" || state.phase !== "remote-inventory" ||
+            state.inventoryCursor !== afterCursor) {
+          return blocked("article-bootstrap-inventory-cursor-mismatch", { state });
+        }
+        for (const change of changes) {
+          const itemKey = articleBootstrapKey(
+            ARTICLE_BOOTSTRAP_INVENTORY_PREFIX,
+            ownerId,
+            bindingId,
+            change.articleId
+          );
+          const current = await requestResult(store.get(itemKey));
+          if (!current || articleCursorNumber(change.cursor) > articleCursorNumber(current.cursor)) {
+            await requestResult(store.put({
+              key: itemKey,
+              kind: "article-bootstrap-inventory",
+              ownerId,
+              bindingId,
+              ...change
+            }));
+          }
+        }
+        const now = new Date().toISOString();
+        const next = {
+          ...state,
+          inventoryCursor: page.nextCursor,
+          remoteTailCursor: page.hasMore ? state.remoteTailCursor : page.nextCursor,
+          phase: page.hasMore ? "remote-inventory" : "reconciling",
+          updatedAt: now,
+          lastError: null
+        };
+        await requestResult(store.put(next));
+        return { status: "persisted", state: next, count: changes.length };
+      });
+    } catch (error) {
+      return failed("article-bootstrap-inventory-write-failed", error);
+    }
+  }
+
+  async function listArticleBootstrapInventory(ownerId, bindingId) {
+    try {
+      validateArticleBootstrapIdentity(ownerId, bindingId);
+      const values = await runTransaction([CONTROL_STORE], "readonly", tx => (
+        requestResult(tx.objectStore(CONTROL_STORE).getAll())
+      ));
+      return {
+        status: "ready",
+        items: values.filter(item => item?.kind === "article-bootstrap-inventory" &&
+          item.ownerId === ownerId && item.bindingId === bindingId)
+          .sort((left, right) => left.articleId.localeCompare(right.articleId))
+      };
+    } catch (error) {
+      return failed("article-bootstrap-inventory-read-failed", error);
+    }
+  }
+
+  async function transitionArticleBootstrap(ownerId, bindingId, phase, lastError = null) {
+    try {
+      validateArticleBootstrapIdentity(ownerId, bindingId);
+      if (!ARTICLE_BOOTSTRAP_PHASES.has(phase) || ["blocked", "complete"].includes(phase)) {
+        throw new Error("Article bootstrap phase 无效。");
+      }
+      return await runTransaction([CONTROL_STORE], "readwrite", async tx => {
+        const store = tx.objectStore(CONTROL_STORE);
+        const binding = await requireBinding(store, ownerId, bindingId);
+        if (binding.status !== "ready") return binding;
+        const key = articleBootstrapStateKey(ownerId, bindingId);
+        const state = validateArticleBootstrapState(await requestResult(store.get(key)));
+        if (state.status !== "in_progress") return blocked("article-bootstrap-not-in-progress");
+        const next = {
+          ...state,
+          phase,
+          lastError: isOpaqueString(lastError) ? lastError : null,
+          updatedAt: new Date().toISOString(),
+          ...(phase === "catching-up" && state.finalCursor === null
+            ? { finalCursor: state.remoteTailCursor }
+            : {})
+        };
+        await requestResult(store.put(next));
+        return { status: "ready", state: next };
+      });
+    } catch (error) {
+      return failed("article-bootstrap-transition-failed", error);
+    }
+  }
+
+  async function pauseArticleBootstrap(ownerId, bindingId, reason) {
+    try {
+      validateArticleBootstrapIdentity(ownerId, bindingId);
+      if (!isOpaqueString(reason)) throw new Error("Article bootstrap pause reason 无效。");
+      return await runTransaction([CONTROL_STORE], "readwrite", async tx => {
+        const store = tx.objectStore(CONTROL_STORE);
+        const binding = await requireBinding(store, ownerId, bindingId);
+        if (binding.status !== "ready") return binding;
+        const key = articleBootstrapStateKey(ownerId, bindingId);
+        const state = validateArticleBootstrapState(await requestResult(store.get(key)));
+        const next = {
+          ...state,
+          status: "in_progress",
+          lastError: reason,
+          updatedAt: new Date().toISOString()
+        };
+        await requestResult(store.put(next));
+        return { status: "paused", state: next };
+      });
+    } catch (error) {
+      return failed("article-bootstrap-pause-failed", error);
+    }
+  }
+
+  async function captureArticleBootstrapIssue(value) {
+    try {
+      const issue = getCanonical().snapshot(value, "articleBootstrapIssue");
+      validateArticleBootstrapIdentity(issue.ownerId, issue.bindingId);
+      if (!isOpaqueString(issue.articleId) || !isOpaqueString(issue.reason) ||
+          (issue.remoteRevision !== null &&
+            (typeof issue.remoteRevision !== "string" ||
+              !/^revision:[1-9][0-9]*$/.test(issue.remoteRevision))) ||
+          !["active", "deleted", "missing"].includes(issue.remoteLifecycle)) {
+        throw new Error("Article bootstrap issue 无效。");
+      }
+      const localProjection = issue.localProjection === null ? null
+        : window.LingoFlowArticleSyncProjection
+          .sanitizeArticleSyncProjection(issue.localProjection);
+      const remoteProjection = issue.remoteProjection === null ? null
+        : window.LingoFlowArticleSyncProjection
+          .sanitizeArticleSyncProjection(issue.remoteProjection);
+      const now = new Date().toISOString();
+      return await runTransaction([CONTROL_STORE], "readwrite", async tx => {
+        const store = tx.objectStore(CONTROL_STORE);
+        const binding = await requireBinding(store, issue.ownerId, issue.bindingId);
+        if (binding.status !== "ready") return binding;
+        const stateKey = articleBootstrapStateKey(issue.ownerId, issue.bindingId);
+        const state = validateArticleBootstrapState(await requestResult(store.get(stateKey)));
+        const key = articleBootstrapKey(
+          ARTICLE_BOOTSTRAP_ISSUE_PREFIX,
+          issue.ownerId,
+          issue.bindingId,
+          issue.articleId
+        );
+        const existing = await requestResult(store.get(key));
+        await requestResult(store.put({
+          key,
+          kind: "article-bootstrap-issue",
+          ownerId: issue.ownerId,
+          bindingId: issue.bindingId,
+          articleId: issue.articleId,
+          reason: issue.reason,
+          localProjection,
+          remoteProjection,
+          remoteRevision: issue.remoteRevision,
+          remoteLifecycle: issue.remoteLifecycle,
+          createdAt: existing?.createdAt || now,
+          updatedAt: now
+        }));
+        const all = await requestResult(store.getAll());
+        const issueCount = all.filter(item => item?.kind === "article-bootstrap-issue" &&
+          item.ownerId === issue.ownerId && item.bindingId === issue.bindingId).length;
+        const next = {
+          ...state,
+          status: "blocked",
+          phase: "blocked",
+          issueCount,
+          lastError: issue.reason,
+          updatedAt: now
+        };
+        await requestResult(store.put(next));
+        return { status: "captured", issueCount, state: next };
+      });
+    } catch (error) {
+      return failed("article-bootstrap-issue-capture-failed", error);
+    }
+  }
+
+  async function listArticleBootstrapIssues(ownerId, bindingId) {
+    try {
+      validateArticleBootstrapIdentity(ownerId, bindingId);
+      const values = await runTransaction([CONTROL_STORE], "readonly", tx => (
+        requestResult(tx.objectStore(CONTROL_STORE).getAll())
+      ));
+      return {
+        status: "ready",
+        issues: values.filter(item => item?.kind === "article-bootstrap-issue" &&
+          item.ownerId === ownerId && item.bindingId === bindingId)
+          .sort((left, right) => left.articleId.localeCompare(right.articleId))
+      };
+    } catch (error) {
+      return failed("article-bootstrap-issue-read-failed", error);
+    }
+  }
+
+  async function bindArticleRemoteRevision(
+    ownerId,
+    bindingId,
+    articleId,
+    revision,
+    fingerprint
+  ) {
+    try {
+      validateArticleBootstrapIdentity(ownerId, bindingId);
+      if (!isOpaqueString(articleId) || !/^revision:[1-9][0-9]*$/.test(revision) ||
+          !/^[a-f0-9]{64}$/.test(fingerprint)) {
+        throw new Error("Article remote binding 无效。");
+      }
+      return await runTransaction(
+        [CONTROL_STORE, ARTICLE_OUTBOX_STORE, ARTICLE_SIDECAR_STORE],
+        "readwrite",
+        async tx => {
+          const binding = await requireBinding(
+            tx.objectStore(CONTROL_STORE), ownerId, bindingId
+          );
+          if (binding.status !== "ready") return binding;
+          const pending = await requestResult(
+            tx.objectStore(ARTICLE_OUTBOX_STORE).index("byOwnerBinding")
+              .getAll([ownerId, bindingId])
+          );
+          if (pending.some(item => item.articleId === articleId &&
+              ["prepared", "ready"].includes(item.status))) {
+            return blocked("article-pending-mutation");
+          }
+          const store = tx.objectStore(ARTICLE_SIDECAR_STORE);
+          const current = await requestResult(store.get([ownerId, articleId]));
+          if (current && current.bindingId !== bindingId) {
+            return blocked("workspace-binding-mismatch");
+          }
+          if (current?.knownRevision &&
+              BigInt(current.knownRevision.slice(9)) > BigInt(revision.slice(9))) {
+            return blocked("article-stale-remote-revision");
+          }
+          const sidecar = {
+            ownerId,
+            bindingId,
+            articleId,
+            knownRevision: revision,
+            lastSyncedFingerprint: fingerprint
+          };
+          await requestResult(store.put(sidecar));
+          return { status: "bound", sidecar };
+        }
+      );
+    } catch (error) {
+      return failed("article-remote-binding-failed", error);
+    }
+  }
+
+  async function persistArticleBootstrapCatchupPage(
+    ownerId,
+    bindingId,
+    afterCursor,
+    page
+  ) {
+    try {
+      validateArticleBootstrapIdentity(ownerId, bindingId);
+      if (!isArticleCursor(afterCursor, true)) throw new Error("Catch-up cursor 无效。");
+      const changes = validateArticleBootstrapPage(page);
+      return await runTransaction([CONTROL_STORE], "readwrite", async tx => {
+        const store = tx.objectStore(CONTROL_STORE);
+        const binding = await requireBinding(store, ownerId, bindingId);
+        if (binding.status !== "ready") return binding;
+        const stateKey = articleBootstrapStateKey(ownerId, bindingId);
+        const state = validateArticleBootstrapState(await requestResult(store.get(stateKey)));
+        if (state.status !== "in_progress" || state.phase !== "catching-up" ||
+            state.finalCursor !== afterCursor || state.pendingCursor !== null) {
+          return blocked("article-bootstrap-catchup-cursor-mismatch", { state });
+        }
+        for (const change of changes) {
+          const key = articleBootstrapKey(
+            ARTICLE_BOOTSTRAP_PENDING_PREFIX,
+            ownerId,
+            bindingId,
+            change.cursor
+          );
+          await requestResult(store.put({
+            key,
+            kind: "article-bootstrap-pending-change",
+            ownerId,
+            bindingId,
+            ...change
+          }));
+        }
+        const next = {
+          ...state,
+          pendingCursor: page.nextCursor,
+          pendingHasMore: page.hasMore,
+          updatedAt: new Date().toISOString()
+        };
+        await requestResult(store.put(next));
+        return { status: "persisted", state: next, count: changes.length };
+      });
+    } catch (error) {
+      return failed("article-bootstrap-catchup-write-failed", error);
+    }
+  }
+
+  async function listArticleBootstrapPendingChanges(ownerId, bindingId) {
+    try {
+      validateArticleBootstrapIdentity(ownerId, bindingId);
+      const values = await runTransaction([CONTROL_STORE], "readonly", tx => (
+        requestResult(tx.objectStore(CONTROL_STORE).getAll())
+      ));
+      return {
+        status: "ready",
+        changes: values.filter(item => item?.kind === "article-bootstrap-pending-change" &&
+          item.ownerId === ownerId && item.bindingId === bindingId)
+          .sort((left, right) => articleCursorNumber(left.cursor) < articleCursorNumber(right.cursor)
+            ? -1 : 1)
+      };
+    } catch (error) {
+      return failed("article-bootstrap-pending-read-failed", error);
+    }
+  }
+
+  async function commitArticleBootstrapCatchupPage(ownerId, bindingId) {
+    try {
+      validateArticleBootstrapIdentity(ownerId, bindingId);
+      return await runTransaction([CONTROL_STORE], "readwrite", async tx => {
+        const store = tx.objectStore(CONTROL_STORE);
+        const binding = await requireBinding(store, ownerId, bindingId);
+        if (binding.status !== "ready") return binding;
+        const stateKey = articleBootstrapStateKey(ownerId, bindingId);
+        const state = validateArticleBootstrapState(await requestResult(store.get(stateKey)));
+        if (state.status !== "in_progress" || state.phase !== "catching-up" ||
+            state.pendingCursor === null) {
+          return blocked("article-bootstrap-catchup-page-missing");
+        }
+        const values = await requestResult(store.getAll());
+        for (const item of values) {
+          if (item?.kind === "article-bootstrap-pending-change" &&
+              item.ownerId === ownerId && item.bindingId === bindingId) {
+            await requestResult(store.delete(item.key));
+          }
+        }
+        const next = {
+          ...state,
+          finalCursor: state.pendingCursor,
+          pendingCursor: null,
+          phase: state.pendingHasMore ? "catching-up" : "finalizing",
+          pendingHasMore: false,
+          updatedAt: new Date().toISOString()
+        };
+        await requestResult(store.put(next));
+        return { status: "committed", state: next };
+      });
+    } catch (error) {
+      return failed("article-bootstrap-catchup-commit-failed", error);
+    }
+  }
+
+  async function completeArticleBootstrap(ownerId, bindingId) {
+    try {
+      validateArticleBootstrapIdentity(ownerId, bindingId);
+      return await runTransaction(
+        [CONTROL_STORE, ARTICLE_OUTBOX_STORE],
+        "readwrite",
+        async tx => {
+          const control = tx.objectStore(CONTROL_STORE);
+          const binding = await requireBinding(control, ownerId, bindingId);
+          if (binding.status !== "ready") return binding;
+          const stateKey = articleBootstrapStateKey(ownerId, bindingId);
+          const state = validateArticleBootstrapState(await requestResult(control.get(stateKey)));
+          const pendingOutbox = await requestResult(
+            tx.objectStore(ARTICLE_OUTBOX_STORE).index("byOwnerBinding")
+              .getAll([ownerId, bindingId])
+          );
+          const values = await requestResult(control.getAll());
+          const issues = values.filter(item => item?.kind === "article-bootstrap-issue" &&
+            item.ownerId === ownerId && item.bindingId === bindingId);
+          const pendingChanges = values.filter(item =>
+            item?.kind === "article-bootstrap-pending-change" &&
+            item.ownerId === ownerId && item.bindingId === bindingId);
+          if (state.phase !== "finalizing" || pendingOutbox.some(item =>
+              ["prepared", "ready"].includes(item.status)) ||
+              issues.length > 0 || pendingChanges.length > 0) {
+            return blocked("article-bootstrap-not-clean");
+          }
+          for (const item of values) {
+            if (item?.kind === "article-bootstrap-inventory" &&
+                item.ownerId === ownerId && item.bindingId === bindingId) {
+              await requestResult(control.delete(item.key));
+            }
+          }
+          const now = new Date().toISOString();
+          const next = {
+            ...state,
+            status: "complete",
+            phase: "complete",
+            issueCount: 0,
+            lastError: null,
+            updatedAt: now,
+            completedAt: now
+          };
+          await requestResult(control.put(next));
+          return { status: "complete", state: next };
+        }
+      );
+    } catch (error) {
+      return failed("article-bootstrap-complete-failed", error);
     }
   }
 
@@ -2818,6 +3362,19 @@
     listArticleMutations,
     getArticleSidecar,
     settleArticleMutationSuccess,
+    beginArticleBootstrap,
+    getArticleBootstrapState,
+    persistArticleBootstrapInventoryPage,
+    listArticleBootstrapInventory,
+    transitionArticleBootstrap,
+    pauseArticleBootstrap,
+    captureArticleBootstrapIssue,
+    listArticleBootstrapIssues,
+    bindArticleRemoteRevision,
+    persistArticleBootstrapCatchupPage,
+    listArticleBootstrapPendingChanges,
+    commitArticleBootstrapCatchupPage,
+    completeArticleBootstrap,
     setWorkspaceAccountLabel,
     getWorkspaceAccountLabel,
     replaceWorkspaceBinding,
