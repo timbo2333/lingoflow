@@ -1011,6 +1011,55 @@
     }
   }
 
+  // Manual/dev settlement only in A3. Ordinary app runtime never invokes it.
+  async function settleArticleMutationSuccess(ownerId, bindingId, mutationId, result) {
+    try {
+      if (!["applied", "unchanged"].includes(result?.status) ||
+          result.mutationId !== mutationId ||
+          !/^revision:[1-9][0-9]*$/.test(result.revision) ||
+          !/^cursor:[1-9][0-9]*$/.test(result.cursor)) {
+        throw new Error("Article acknowledgement 无效。");
+      }
+      return await runTransaction(
+        [CONTROL_STORE, ARTICLE_OUTBOX_STORE, ARTICLE_SIDECAR_STORE],
+        "readwrite",
+        async tx => {
+          const binding = await requireBinding(
+            tx.objectStore(CONTROL_STORE), ownerId, bindingId
+          );
+          if (binding.status !== "ready") return binding;
+          const outbox = tx.objectStore(ARTICLE_OUTBOX_STORE);
+          const mutation = await requestResult(outbox.get([ownerId, mutationId]));
+          if (!mutation || mutation.status !== "ready") {
+            return blocked("article-ready-mutation-missing");
+          }
+          if (mutation.bindingId !== bindingId || mutation.articleId !== result.articleId ||
+              mutation.operation !== result.operation) {
+            return blocked("article-ack-identity-mismatch");
+          }
+          const sidecars = tx.objectStore(ARTICLE_SIDECAR_STORE);
+          const sidecar = await requestResult(sidecars.get([ownerId, mutation.articleId]));
+          if (!sidecar || sidecar.bindingId !== bindingId) {
+            return blocked("article-sidecar-missing");
+          }
+          if (sidecar.knownRevision &&
+              BigInt(sidecar.knownRevision.slice(9)) > BigInt(result.revision.slice(9))) {
+            return blocked("article-stale-acknowledgement");
+          }
+          await requestResult(sidecars.put({
+            ...sidecar,
+            knownRevision: result.revision,
+            lastSyncedFingerprint: mutation.candidateFingerprint
+          }));
+          await requestResult(outbox.delete([ownerId, mutationId]));
+          return { status: "settled", articleId: mutation.articleId, revision: result.revision };
+        }
+      );
+    } catch (error) {
+      return failed("article-settlement-failed", error);
+    }
+  }
+
   async function setWorkspaceAccountLabel(value) {
     try {
       const metadata = validateAccountLabelInput(value);
@@ -2768,6 +2817,7 @@
     updateArticleMutationStatus,
     listArticleMutations,
     getArticleSidecar,
+    settleArticleMutationSuccess,
     setWorkspaceAccountLabel,
     getWorkspaceAccountLabel,
     replaceWorkspaceBinding,
