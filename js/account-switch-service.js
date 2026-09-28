@@ -21,6 +21,7 @@
     const dependencies = {
       auth: window.LingoFlowSupabaseAuth,
       sync: window.LingoFlowFavoriteAppSync,
+      articleSync: window.LingoFlowArticleSyncApp,
       syncState: window.LingoFlowSyncStateRepository,
       articles: window.LingoFlowArticleLibrary,
       backup: window.LingoFlowBackupV2Export
@@ -28,6 +29,7 @@
     if (typeof dependencies.auth?.getSessionContext !== "function" ||
         typeof dependencies.sync?.prepareAccountSwitch !== "function" ||
         typeof dependencies.sync?.bootstrap !== "function" ||
+        typeof dependencies.articleSync?.prepareAccountSwitch !== "function" ||
         typeof dependencies.syncState?.getWorkspaceBinding !== "function" ||
         typeof dependencies.syncState?.replaceWorkspaceBinding !== "function" ||
         typeof dependencies.articles?.listArticles !== "function" ||
@@ -156,6 +158,7 @@
         const backup = await exportBackupDownload(dependencies.backup);
         if (backup.status !== "ready") return backup;
       }
+      await dependencies.articleSync.prepareAccountSwitch();
       await dependencies.sync.prepareAccountSwitch({
         ownerId: session.user.id,
         boundOwnerId: previousBinding.ownerId
@@ -208,6 +211,7 @@
       }
       dependencies.articles.setAccountSwitchWriteBlocked(false);
       await dependencies.sync.bootstrap().catch(() => {});
+      await dependencies.articleSync.start().catch(() => {});
       return {
         status: "failed",
         reason: rollbackStatus === "rollback-failed"

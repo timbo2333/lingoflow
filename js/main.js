@@ -7455,10 +7455,10 @@ async function saveMyArticleTitle(articleId, item) {
   if (!beginMyArticleOperation(articleId, item)) return;
 
   try {
-    const library = window.LingoFlowArticleLibrary;
-    if (!library) throw new Error("文章数据层未加载，请刷新页面后重试。");
+    const writer = window.LingoFlowArticleSyncWriteService;
+    if (!writer) throw new Error("文章数据层未加载，请刷新页面后重试。");
 
-    const updatedArticle = await library.updateArticle(articleId, { title });
+    const updatedArticle = await writer.updateArticle(articleId, { title });
     if (activeArticleId === updatedArticle.id && !updatedArticle.deletedAt) {
       currentArticle = updatedArticle;
       if (document.body.classList.contains("readerActive")) {
@@ -7484,12 +7484,10 @@ async function deleteMyArticle(articleId, item) {
   try {
     await flushReadingProgress();
 
-    const library = window.LingoFlowArticleLibrary;
-    if (!library) throw new Error("文章数据层未加载，请刷新页面后重试。");
+    const writer = window.LingoFlowArticleSyncWriteService;
+    if (!writer) throw new Error("文章数据层未加载，请刷新页面后重试。");
 
-    await library.updateArticle(articleId, {
-      deletedAt: new Date().toISOString()
-    });
+    await writer.deleteArticle(articleId);
 
     if (deletingCurrentArticle) {
       await startNewArticleDraft({ sourceType: "paste" }, { updateHistory: false });
@@ -7509,10 +7507,10 @@ async function restoreMyArticle(articleId, item) {
   if (!beginMyArticleOperation(articleId, item)) return false;
 
   try {
-    const library = window.LingoFlowArticleLibrary;
-    if (!library) throw new Error("文章数据层未加载，请刷新页面后重试。");
+    const writer = window.LingoFlowArticleSyncWriteService;
+    if (!writer) throw new Error("文章数据层未加载，请刷新页面后重试。");
 
-    await library.updateArticle(articleId, { deletedAt: null });
+    await writer.restoreArticle(articleId);
     await renderMyArticles();
     return true;
   } catch (error) {
@@ -7886,8 +7884,8 @@ function getDraftArticlePayload(text) {
 }
 
 async function persistArticleDraft(text) {
-  const library = window.LingoFlowArticleLibrary;
-  if (!library) throw new Error("文章数据层未加载，请刷新页面后重试。");
+  const writer = window.LingoFlowArticleSyncWriteService;
+  if (!writer) throw new Error("文章数据层未加载，请刷新页面后重试。");
 
   const now = new Date().toISOString();
   const editingCurrent = Boolean(
@@ -7909,10 +7907,10 @@ async function persistArticleDraft(text) {
       changes.sourceAttribution = "";
     }
 
-    return await library.updateArticle(activeArticleId, changes);
+    return await writer.updateArticle(activeArticleId, changes);
   }
 
-  return await library.createArticle(getDraftArticlePayload(text));
+  return await writer.createArticle(getDraftArticlePayload(text));
 }
 
 async function renderArticleText(text, options = {}) {
@@ -8141,6 +8139,14 @@ function initializeFavoriteSync() {
   });
 }
 
+function initializeArticleSync() {
+  const coordinator = window.LingoFlowArticleSyncApp;
+  if (!coordinator || typeof coordinator.start !== "function") return;
+  void coordinator.start().catch(error => {
+    console.warn("Article Sync startup unavailable:", error?.message || "unknown");
+  });
+}
+
 initializeModalSystem();
 window.LingoFlowAnnouncements?.initialize();
 updateLegacyImportModePresentation();
@@ -8148,6 +8154,7 @@ window.addEventListener("lingoflow:auth-state", updateSettingsAccountSummary);
 window.addEventListener("lingoflow:favorite-sync-status", updateSettingsAccountSummary);
 ensureHistoryMigration();
 initializeFavoriteSync();
+initializeArticleSync();
 initializeDictionaryOnStartup();
 updateVocabBadges();
 applyReadingPreferences();

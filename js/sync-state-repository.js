@@ -8,13 +8,16 @@
   const OUTBOX_STORE = "outbox";
   const ISSUES_STORE = "syncIssues";
   const INBOX_STORE = "inbox";
-  // Article payloads live in a separate, inactive lane until cloud transport exists.
+  // Article payloads live in a separate lane so runtime work cannot block Favorite sync.
   const ARTICLE_OUTBOX_STORE = "articleOutbox";
   const ARTICLE_SIDECAR_STORE = "articleSidecars";
   const ARTICLE_BOOTSTRAP_STATE_PREFIX = "article-bootstrap-state:";
   const ARTICLE_BOOTSTRAP_INVENTORY_PREFIX = "article-bootstrap-inventory:";
   const ARTICLE_BOOTSTRAP_PENDING_PREFIX = "article-bootstrap-pending:";
   const ARTICLE_BOOTSTRAP_ISSUE_PREFIX = "article-bootstrap-issue:";
+  const ARTICLE_RUNTIME_STATE_PREFIX = "article-runtime-state:";
+  const ARTICLE_RUNTIME_PENDING_PREFIX = "article-runtime-pending:";
+  const ARTICLE_RUNTIME_ISSUE_PREFIX = "article-runtime-issue:";
   const ARTICLE_BOOTSTRAP_PHASES = new Set([
     "remote-inventory",
     "reconciling",
@@ -942,7 +945,10 @@
             beforeFingerprint: value.beforeFingerprint,
             candidateFingerprint: value.candidateFingerprint,
             baseRevision: value.baseRevision ?? null,
-            candidate: projection
+            candidate: projection,
+            captureMode: value.captureMode === "desired" ? "desired" : "head",
+            attemptedAt: null,
+            attemptCount: 0
           };
           const sidecars = tx.objectStore(ARTICLE_SIDECAR_STORE);
           const sidecar = await requestResult(sidecars.get([value.ownerId, value.articleId]));
@@ -952,7 +958,8 @@
               bindingId: value.bindingId,
               articleId: value.articleId,
               knownRevision: null,
-              lastSyncedFingerprint: null
+              lastSyncedFingerprint: null,
+              lastSyncedLifecycle: null
             }));
           } else if (sidecar.bindingId !== value.bindingId) {
             return blocked("workspace-binding-mismatch");
@@ -968,7 +975,7 @@
 
   async function updateArticleMutationStatus(ownerId, bindingId, mutationId, status, reason = null) {
     try {
-      if (!["ready", "issue"].includes(status)) throw new Error("Article status 无效。");
+      if (!["desired", "ready", "issue"].includes(status)) throw new Error("Article status 无效。");
       return await runTransaction([CONTROL_STORE, ARTICLE_OUTBOX_STORE], "readwrite", async tx => {
         const binding = await requireBinding(tx.objectStore(CONTROL_STORE), ownerId, bindingId);
         if (binding.status !== "ready") return binding;
@@ -1024,7 +1031,145 @@
     }
   }
 
-  // Manual/dev settlement only in A3. Ordinary app runtime never invokes it.
+  async function commitArticleDesired(ownerId, bindingId, mutationId) {
+    try {
+      return await runTransaction(
+        [CONTROL_STORE, ARTICLE_OUTBOX_STORE, ARTICLE_SIDECAR_STORE],
+        "readwrite",
+        async tx => {
+          const binding = await requireBinding(
+            tx.objectStore(CONTROL_STORE), ownerId, bindingId
+          );
+          if (binding.status !== "ready") return binding;
+          const outbox = tx.objectStore(ARTICLE_OUTBOX_STORE);
+          const mutation = await requestResult(outbox.get([ownerId, mutationId]));
+          if (!mutation || mutation.bindingId !== bindingId || mutation.status !== "prepared" ||
+              mutation.captureMode !== "desired") {
+            return blocked("article-desired-mutation-missing");
+          }
+          const values = await requestResult(
+            outbox.index("byOwnerBinding").getAll([ownerId, bindingId])
+          );
+          for (const item of values) {
+            if (item.articleId === mutation.articleId && item.status === "desired" &&
+                item.mutationId !== mutationId) {
+              await requestResult(outbox.delete([ownerId, item.mutationId]));
+            }
+          }
+          const sidecar = await requestResult(
+            tx.objectStore(ARTICLE_SIDECAR_STORE).get([ownerId, mutation.articleId])
+          );
+          if (sidecar?.lastSyncedFingerprint === mutation.candidateFingerprint &&
+              !values.some(item => item.articleId === mutation.articleId &&
+                item.status === "ready")) {
+            await requestResult(outbox.delete([ownerId, mutationId]));
+            return { status: "unchanged", articleId: mutation.articleId };
+          }
+          const desired = {
+            ...mutation,
+            status: "desired",
+            desiredAt: new Date().toISOString()
+          };
+          await requestResult(outbox.put(desired));
+          return { status: "desired", mutation: desired };
+        }
+      );
+    } catch (error) {
+      return failed("article-desired-commit-failed", error);
+    }
+  }
+
+  async function promoteNextArticleDesired(ownerId, bindingId) {
+    try {
+      return await runTransaction(
+        [CONTROL_STORE, ARTICLE_OUTBOX_STORE, ARTICLE_SIDECAR_STORE],
+        "readwrite",
+        async tx => {
+          const control = tx.objectStore(CONTROL_STORE);
+          const binding = await requireBinding(control, ownerId, bindingId);
+          if (binding.status !== "ready") return binding;
+          const outbox = tx.objectStore(ARTICLE_OUTBOX_STORE);
+          const values = await requestResult(
+            outbox.index("byOwnerBinding").getAll([ownerId, bindingId])
+          );
+          const issueArticleIds = new Set((await requestResult(control.getAll()))
+            .filter(item => item?.kind === "article-runtime-issue" &&
+              item.ownerId === ownerId && item.bindingId === bindingId)
+            .map(item => item.articleId));
+          const desired = values.filter(item => item.status === "desired" &&
+            !issueArticleIds.has(item.articleId) &&
+            !values.some(other => other.articleId === item.articleId &&
+              ["prepared", "ready"].includes(other.status)))
+            .sort((left, right) => String(left.desiredAt || left.createdAt)
+              .localeCompare(String(right.desiredAt || right.createdAt)) ||
+              left.mutationId.localeCompare(right.mutationId))[0];
+          if (!desired) return { status: "idle" };
+          const sidecar = await requestResult(
+            tx.objectStore(ARTICLE_SIDECAR_STORE).get([ownerId, desired.articleId])
+          );
+          if (!sidecar || sidecar.bindingId !== bindingId) {
+            return blocked("article-sidecar-missing");
+          }
+          if (sidecar.lastSyncedFingerprint === desired.candidateFingerprint) {
+            await requestResult(outbox.delete([ownerId, desired.mutationId]));
+            return { status: "discarded", articleId: desired.articleId };
+          }
+          const remoteLifecycle = sidecar.knownRevision === null
+            ? "missing"
+            : sidecar.lastSyncedLifecycle;
+          if (!["missing", "active", "deleted"].includes(remoteLifecycle)) {
+            return blocked("article-remote-lifecycle-unknown", {
+              articleId: desired.articleId,
+              sidecar
+            });
+          }
+          const localLifecycle = desired.candidate.deletedAt === null ? "active" : "deleted";
+          const operation = localLifecycle === "deleted"
+            ? "delete"
+            : remoteLifecycle === "deleted" ? "restore" : "put";
+          const ready = {
+            ...desired,
+            status: "ready",
+            captureMode: "runtime-head",
+            operation,
+            baseRevision: sidecar.knownRevision,
+            promotedAt: new Date().toISOString()
+          };
+          await requestResult(outbox.put(ready));
+          return { status: "ready", mutation: ready };
+        }
+      );
+    } catch (error) {
+      return failed("article-desired-promotion-failed", error);
+    }
+  }
+
+  async function markArticleMutationAttempt(ownerId, bindingId, mutationId) {
+    try {
+      return await runTransaction([CONTROL_STORE, ARTICLE_OUTBOX_STORE], "readwrite", async tx => {
+        const binding = await requireBinding(tx.objectStore(CONTROL_STORE), ownerId, bindingId);
+        if (binding.status !== "ready") return binding;
+        const store = tx.objectStore(ARTICLE_OUTBOX_STORE);
+        const mutation = await requestResult(store.get([ownerId, mutationId]));
+        if (!mutation || mutation.bindingId !== bindingId || mutation.status !== "ready") {
+          return blocked("article-ready-mutation-missing");
+        }
+        const next = {
+          ...mutation,
+          attemptedAt: new Date().toISOString(),
+          attemptCount: Number.isSafeInteger(mutation.attemptCount)
+            ? mutation.attemptCount + 1
+            : 1
+        };
+        await requestResult(store.put(next));
+        return { status: "ready", mutation: next };
+      });
+    } catch (error) {
+      return failed("article-attempt-mark-failed", error);
+    }
+  }
+
+  // Bootstrap and gated runtime both settle through this idempotent boundary.
   async function settleArticleMutationSuccess(ownerId, bindingId, mutationId, result) {
     try {
       if (!["applied", "unchanged"].includes(result?.status) ||
@@ -1062,7 +1207,8 @@
           await requestResult(sidecars.put({
             ...sidecar,
             knownRevision: result.revision,
-            lastSyncedFingerprint: mutation.candidateFingerprint
+            lastSyncedFingerprint: mutation.candidateFingerprint,
+            lastSyncedLifecycle: mutation.candidate.deletedAt === null ? "active" : "deleted"
           }));
           await requestResult(outbox.delete([ownerId, mutationId]));
           return { status: "settled", articleId: mutation.articleId, revision: result.revision };
@@ -1400,12 +1546,14 @@
     bindingId,
     articleId,
     revision,
-    fingerprint
+    fingerprint,
+    lifecycle = null
   ) {
     try {
       validateArticleBootstrapIdentity(ownerId, bindingId);
       if (!isOpaqueString(articleId) || !/^revision:[1-9][0-9]*$/.test(revision) ||
-          !/^[a-f0-9]{64}$/.test(fingerprint)) {
+          !/^[a-f0-9]{64}$/.test(fingerprint) ||
+          (lifecycle !== null && !["active", "deleted"].includes(lifecycle))) {
         throw new Error("Article remote binding 无效。");
       }
       return await runTransaction(
@@ -1421,7 +1569,7 @@
               .getAll([ownerId, bindingId])
           );
           if (pending.some(item => item.articleId === articleId &&
-              ["prepared", "ready"].includes(item.status))) {
+              ["prepared", "desired", "ready"].includes(item.status))) {
             return blocked("article-pending-mutation");
           }
           const store = tx.objectStore(ARTICLE_SIDECAR_STORE);
@@ -1438,7 +1586,11 @@
             bindingId,
             articleId,
             knownRevision: revision,
-            lastSyncedFingerprint: fingerprint
+            lastSyncedFingerprint: fingerprint,
+            ...(lifecycle ? { lastSyncedLifecycle: lifecycle } :
+              current?.lastSyncedLifecycle ? {
+                lastSyncedLifecycle: current.lastSyncedLifecycle
+              } : {})
           };
           await requestResult(store.put(sidecar));
           return { status: "bound", sidecar };
@@ -1601,6 +1753,304 @@
       );
     } catch (error) {
       return failed("article-bootstrap-complete-failed", error);
+    }
+  }
+
+  function articleRuntimeStateKey(ownerId, bindingId) {
+    return articleBootstrapKey(ARTICLE_RUNTIME_STATE_PREFIX, ownerId, bindingId);
+  }
+
+  function validateArticleRuntimeState(value) {
+    if (!isPlainObject(value) || value.kind !== "article-runtime-state" ||
+        !isOpaqueString(value.ownerId) || !isOpaqueString(value.bindingId) ||
+        !["active", "paused"].includes(value.status) ||
+        !isArticleCursor(value.cursor) || !isArticleCursor(value.pendingCursor, true) ||
+        typeof value.pendingHasMore !== "boolean") {
+      throw new Error("Article runtime state 无效。");
+    }
+    return value;
+  }
+
+  async function beginArticleRuntime(ownerId, bindingId) {
+    try {
+      validateArticleBootstrapIdentity(ownerId, bindingId);
+      return await runTransaction([CONTROL_STORE], "readwrite", async tx => {
+        const store = tx.objectStore(CONTROL_STORE);
+        const binding = await requireBinding(store, ownerId, bindingId);
+        if (binding.status !== "ready") return binding;
+        const bootstrapValue = await requestResult(
+          store.get(articleBootstrapStateKey(ownerId, bindingId))
+        );
+        if (!bootstrapValue) return blocked("article-bootstrap-required");
+        const bootstrap = validateArticleBootstrapState(bootstrapValue);
+        if (bootstrap.status !== "complete" || bootstrap.phase !== "complete") {
+          return blocked(bootstrap.status === "blocked"
+            ? "article-bootstrap-blocked"
+            : "article-bootstrap-incomplete");
+        }
+        const key = articleRuntimeStateKey(ownerId, bindingId);
+        const current = await requestResult(store.get(key));
+        if (current) {
+          const runtimeState = validateArticleRuntimeState(current);
+          const resumed = {
+            ...runtimeState,
+            status: "active",
+            lastError: null,
+            updatedAt: new Date().toISOString()
+          };
+          await requestResult(store.put(resumed));
+          return { status: "ready", state: resumed };
+        }
+        const now = new Date().toISOString();
+        const runtimeState = {
+          key,
+          kind: "article-runtime-state",
+          ownerId,
+          bindingId,
+          status: "active",
+          cursor: bootstrap.finalCursor || "cursor:0",
+          pendingCursor: null,
+          pendingHasMore: false,
+          lastError: null,
+          startedAt: now,
+          updatedAt: now
+        };
+        await requestResult(store.add(runtimeState));
+        return { status: "ready", state: runtimeState };
+      });
+    } catch (error) {
+      return failed("article-runtime-start-failed", error);
+    }
+  }
+
+  async function getArticleRuntimeState(ownerId, bindingId) {
+    try {
+      validateArticleBootstrapIdentity(ownerId, bindingId);
+      const value = await runTransaction([CONTROL_STORE], "readonly", tx => (
+        requestResult(tx.objectStore(CONTROL_STORE).get(articleRuntimeStateKey(ownerId, bindingId)))
+      ));
+      return value
+        ? { status: "ready", state: validateArticleRuntimeState(value) }
+        : { status: "not_started", state: null };
+    } catch (error) {
+      return failed("article-runtime-state-read-failed", error);
+    }
+  }
+
+  async function pauseArticleRuntime(ownerId, bindingId, reason) {
+    try {
+      if (!isOpaqueString(reason)) throw new Error("Article runtime pause reason 无效。");
+      return await runTransaction([CONTROL_STORE], "readwrite", async tx => {
+        const store = tx.objectStore(CONTROL_STORE);
+        const binding = await requireBinding(store, ownerId, bindingId);
+        if (binding.status !== "ready") return binding;
+        const key = articleRuntimeStateKey(ownerId, bindingId);
+        const current = validateArticleRuntimeState(await requestResult(store.get(key)));
+        const next = {
+          ...current,
+          status: "paused",
+          lastError: reason,
+          updatedAt: new Date().toISOString()
+        };
+        await requestResult(store.put(next));
+        return { status: "paused", state: next };
+      });
+    } catch (error) {
+      return failed("article-runtime-pause-failed", error);
+    }
+  }
+
+  async function persistArticleRuntimePullPage(ownerId, bindingId, afterCursor, page) {
+    try {
+      validateArticleBootstrapIdentity(ownerId, bindingId);
+      if (!isArticleCursor(afterCursor)) throw new Error("Article runtime cursor 无效。");
+      const changes = validateArticleBootstrapPage(page);
+      return await runTransaction([CONTROL_STORE], "readwrite", async tx => {
+        const store = tx.objectStore(CONTROL_STORE);
+        const binding = await requireBinding(store, ownerId, bindingId);
+        if (binding.status !== "ready") return binding;
+        const key = articleRuntimeStateKey(ownerId, bindingId);
+        const current = validateArticleRuntimeState(await requestResult(store.get(key)));
+        if (current.cursor !== afterCursor || current.pendingCursor !== null) {
+          return blocked("article-runtime-cursor-mismatch", { state: current });
+        }
+        for (const change of changes) {
+          const pendingKey = articleBootstrapKey(
+            ARTICLE_RUNTIME_PENDING_PREFIX,
+            ownerId,
+            bindingId,
+            change.cursor
+          );
+          await requestResult(store.put({
+            key: pendingKey,
+            kind: "article-runtime-pending-change",
+            ownerId,
+            bindingId,
+            ...change
+          }));
+        }
+        const next = {
+          ...current,
+          status: "active",
+          pendingCursor: page.nextCursor,
+          pendingHasMore: page.hasMore,
+          lastError: null,
+          updatedAt: new Date().toISOString()
+        };
+        await requestResult(store.put(next));
+        return { status: "persisted", state: next, count: changes.length };
+      });
+    } catch (error) {
+      return failed("article-runtime-page-write-failed", error);
+    }
+  }
+
+  async function listArticleRuntimePendingChanges(ownerId, bindingId) {
+    try {
+      validateArticleBootstrapIdentity(ownerId, bindingId);
+      const values = await runTransaction([CONTROL_STORE], "readonly", tx => (
+        requestResult(tx.objectStore(CONTROL_STORE).getAll())
+      ));
+      return {
+        status: "ready",
+        changes: values.filter(item => item?.kind === "article-runtime-pending-change" &&
+          item.ownerId === ownerId && item.bindingId === bindingId)
+          .sort((left, right) => articleCursorNumber(left.cursor) < articleCursorNumber(right.cursor)
+            ? -1 : 1)
+      };
+    } catch (error) {
+      return failed("article-runtime-pending-read-failed", error);
+    }
+  }
+
+  async function commitArticleRuntimePullPage(ownerId, bindingId) {
+    try {
+      validateArticleBootstrapIdentity(ownerId, bindingId);
+      return await runTransaction([CONTROL_STORE], "readwrite", async tx => {
+        const store = tx.objectStore(CONTROL_STORE);
+        const binding = await requireBinding(store, ownerId, bindingId);
+        if (binding.status !== "ready") return binding;
+        const key = articleRuntimeStateKey(ownerId, bindingId);
+        const current = validateArticleRuntimeState(await requestResult(store.get(key)));
+        if (current.pendingCursor === null) {
+          return blocked("article-runtime-page-missing");
+        }
+        const values = await requestResult(store.getAll());
+        for (const item of values) {
+          if (item?.kind === "article-runtime-pending-change" &&
+              item.ownerId === ownerId && item.bindingId === bindingId) {
+            await requestResult(store.delete(item.key));
+          }
+        }
+        const next = {
+          ...current,
+          cursor: current.pendingCursor,
+          pendingCursor: null,
+          pendingHasMore: false,
+          updatedAt: new Date().toISOString()
+        };
+        await requestResult(store.put(next));
+        return { status: "committed", state: next, hadMore: current.pendingHasMore };
+      });
+    } catch (error) {
+      return failed("article-runtime-page-commit-failed", error);
+    }
+  }
+
+  async function captureArticleRuntimeIssue(value) {
+    try {
+      const issue = getCanonical().snapshot(value, "articleRuntimeIssue");
+      validateArticleBootstrapIdentity(issue.ownerId, issue.bindingId);
+      if (!isOpaqueString(issue.articleId) || !isOpaqueString(issue.reason) ||
+          !isArticleCursor(issue.remoteCursor, true) ||
+          (issue.remoteRevision !== null &&
+            !/^revision:[1-9][0-9]*$/.test(issue.remoteRevision))) {
+        throw new Error("Article runtime issue 无效。");
+      }
+      const localProjection = issue.localProjection === null ? null
+        : window.LingoFlowArticleSyncProjection
+          .sanitizeArticleSyncProjection(issue.localProjection);
+      const remoteProjection = issue.remoteProjection === null ? null
+        : window.LingoFlowArticleSyncProjection
+          .sanitizeArticleSyncProjection(issue.remoteProjection);
+      return await runTransaction([CONTROL_STORE], "readwrite", async tx => {
+        const store = tx.objectStore(CONTROL_STORE);
+        const binding = await requireBinding(store, issue.ownerId, issue.bindingId);
+        if (binding.status !== "ready") return binding;
+        const key = articleBootstrapKey(
+          ARTICLE_RUNTIME_ISSUE_PREFIX,
+          issue.ownerId,
+          issue.bindingId,
+          issue.articleId
+        );
+        const current = await requestResult(store.get(key));
+        const now = new Date().toISOString();
+        const stored = {
+          key,
+          kind: "article-runtime-issue",
+          ownerId: issue.ownerId,
+          bindingId: issue.bindingId,
+          articleId: issue.articleId,
+          reason: issue.reason,
+          localProjection,
+          remoteProjection,
+          remoteRevision: issue.remoteRevision,
+          remoteCursor: issue.remoteCursor,
+          mutationId: isOpaqueString(issue.mutationId) ? issue.mutationId : null,
+          createdAt: current?.createdAt || now,
+          updatedAt: now
+        };
+        await requestResult(store.put(stored));
+        return { status: "captured", issue: stored };
+      });
+    } catch (error) {
+      return failed("article-runtime-issue-capture-failed", error);
+    }
+  }
+
+  async function listArticleRuntimeIssues(ownerId, bindingId) {
+    try {
+      validateArticleBootstrapIdentity(ownerId, bindingId);
+      const values = await runTransaction([CONTROL_STORE], "readonly", tx => (
+        requestResult(tx.objectStore(CONTROL_STORE).getAll())
+      ));
+      return {
+        status: "ready",
+        issues: values.filter(item => item?.kind === "article-runtime-issue" &&
+          item.ownerId === ownerId && item.bindingId === bindingId)
+          .sort((left, right) => left.articleId.localeCompare(right.articleId))
+      };
+    } catch (error) {
+      return failed("article-runtime-issue-read-failed", error);
+    }
+  }
+
+  async function setArticleSidecarLifecycle(ownerId, bindingId, articleId, revision, lifecycle) {
+    try {
+      if (!isOpaqueString(articleId) || !/^revision:[1-9][0-9]*$/.test(revision) ||
+          !["active", "deleted"].includes(lifecycle)) {
+        throw new Error("Article sidecar lifecycle 无效。");
+      }
+      return await runTransaction(
+        [CONTROL_STORE, ARTICLE_SIDECAR_STORE],
+        "readwrite",
+        async tx => {
+          const binding = await requireBinding(
+            tx.objectStore(CONTROL_STORE), ownerId, bindingId
+          );
+          if (binding.status !== "ready") return binding;
+          const store = tx.objectStore(ARTICLE_SIDECAR_STORE);
+          const sidecar = await requestResult(store.get([ownerId, articleId]));
+          if (!sidecar || sidecar.bindingId !== bindingId || sidecar.knownRevision !== revision) {
+            return blocked("article-sidecar-revision-mismatch");
+          }
+          const next = { ...sidecar, lastSyncedLifecycle: lifecycle };
+          await requestResult(store.put(next));
+          return { status: "ready", sidecar: next };
+        }
+      );
+    } catch (error) {
+      return failed("article-sidecar-lifecycle-write-failed", error);
     }
   }
 
@@ -3361,6 +3811,9 @@
     updateArticleMutationStatus,
     listArticleMutations,
     getArticleSidecar,
+    commitArticleDesired,
+    promoteNextArticleDesired,
+    markArticleMutationAttempt,
     settleArticleMutationSuccess,
     beginArticleBootstrap,
     getArticleBootstrapState,
@@ -3375,6 +3828,15 @@
     listArticleBootstrapPendingChanges,
     commitArticleBootstrapCatchupPage,
     completeArticleBootstrap,
+    beginArticleRuntime,
+    getArticleRuntimeState,
+    pauseArticleRuntime,
+    persistArticleRuntimePullPage,
+    listArticleRuntimePendingChanges,
+    commitArticleRuntimePullPage,
+    captureArticleRuntimeIssue,
+    listArticleRuntimeIssues,
+    setArticleSidecarLifecycle,
     setWorkspaceAccountLabel,
     getWorkspaceAccountLabel,
     replaceWorkspaceBinding,

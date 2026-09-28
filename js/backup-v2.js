@@ -579,6 +579,15 @@
         if (!isArticleRestoreResult(result, article.id)) {
           throw new Error("Article Library 返回了无效的恢复结果。");
         }
+        if (result.written &&
+            typeof window.LingoFlowArticleSyncWriteService?.captureRestoredArticle === "function") {
+          const captured = await window.LingoFlowArticleSyncWriteService
+            .captureRestoredArticle(article.id);
+          if (!["local-only", "desired", "ready", "existing", "unchanged"]
+            .includes(captured?.status)) {
+            throw new Error(captured?.reason || "Article sync capture failed.");
+          }
+        }
         items.push({ ...result, index });
         if (result.status === "rejected") {
           errors.push(createError(result.reason || "article-rejected", {

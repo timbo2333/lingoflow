@@ -145,11 +145,53 @@ test("conflict gets owner-scoped snapshot without discarding the local candidate
     const output = await service.pushArticleMutation(owner, mutation);
     return { output, calls, localCandidate: mutation.candidate.content };
   }, { owner: OWNER, mutation, remote });
-  expect(result.output).toMatchObject({ status: "conflict", remoteProjection: remote });
+  expect(result.output).toMatchObject({
+    status: "conflict",
+    remoteProjection: remote,
+    remoteCursor: "cursor:2",
+    remoteLifecycle: "active"
+  });
   expect(result.localCandidate).toBe("Local candidate");
   expect(result.calls).toHaveLength(2);
   expect(result.calls[1].url).toContain("lingoflow_article_sync_snapshot");
   expect(result.calls[1].body.p_expected_owner_id).toBe(OWNER.ownerId);
+});
+
+test("conflict snapshot transport failure stays unavailable for an identical head retry", async ({ page }) => {
+  const mutation = readyMutation(projection("article:conflict-snapshot-retry", {
+    content: "Local candidate"
+  }));
+  const result = await page.evaluate(async ({ owner, mutation }) => {
+    let callCount = 0;
+    const service = window.LingoFlowArticleSyncCloudService.create({
+      projectUrl: "https://article-project.supabase.co",
+      publishableKey: "sb_publishable_article_test",
+      auth: { getSessionContext: async () => ({ status: "ready", user: { id: owner.ownerId } }),
+        getAccessToken: async () => "test-token" },
+      fetchImpl: async url => {
+        callCount += 1;
+        if (url.endsWith("_push")) {
+          return { ok: true, status: 200, json: async () => ({
+            status: "conflict", reason: "revision-mismatch",
+            mutationId: mutation.mutationId, articleId: mutation.articleId,
+            currentRevision: "revision:2", currentLifecycle: "active"
+          }) };
+        }
+        throw new TypeError("network unavailable");
+      }
+    });
+    return {
+      output: await service.pushArticleMutation(owner, mutation),
+      callCount,
+      mutation
+    };
+  }, { owner: OWNER, mutation });
+  expect(result.output).toEqual({
+    status: "unavailable",
+    reason: "conflict-snapshot-unavailable"
+  });
+  expect(result.callCount).toBe(2);
+  expect(result.mutation).toEqual(mutation);
 });
 
 test("bounded pull validates cursor continuity, limit, and historical snapshots", async ({ page }) => {

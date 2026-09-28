@@ -94,9 +94,19 @@
       if (!result) return { status: "unavailable", reason: "server-error" };
       if (result.status !== "conflict") return result;
       const current = await snapshot(owner, checked.mutation.articleId);
+      if (["unavailable", "rejected"].includes(current.status)) {
+        return {
+          status: "unavailable",
+          reason: "conflict-snapshot-unavailable"
+        };
+      }
       return {
         ...result,
-        ...(current.status === "found" ? { remoteProjection: current.projection }
+        ...(current.status === "found" ? {
+          remoteProjection: current.projection,
+          remoteCursor: current.cursor,
+          remoteLifecycle: current.lifecycle
+        }
           : { snapshotStatus: current.status })
       };
     }
