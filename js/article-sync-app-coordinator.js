@@ -2,9 +2,8 @@
   "use strict";
 
   const DEV_OVERRIDE_KEY = "lingoflow_article_sync_runtime_dev";
-  // A5.1 makes the runtime production-capable, but rollout remains deliberately off.
-  // A5.2 can change this single product decision without changing startup wiring.
-  const PRODUCTION_ROLLOUT_ENABLED = false;
+  // Keep the production rollout decision easy to reverse without changing sync state.
+  const PRODUCTION_ROLLOUT_ENABLED = true;
   const PAGE_SIZE = 10;
   const POLL_INTERVAL_MS = 60_000;
   const MAX_PUSHES_PER_RUN = 200;

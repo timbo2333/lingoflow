@@ -169,23 +169,23 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
-test("production rollout remains OFF and dev override is a separate capability", async ({ page }) => {
+test("production rollout is ON without a dev flag and keeps the dev override capability", async ({ page }) => {
   const result = await page.evaluate(() => ({
     state: window.LingoFlowArticleSyncApp.getState(),
     constants: window.LingoFlowArticleSyncApp.constants
   }));
   expect(result.state).toMatchObject({
     status: "inactive",
-    enablement: { enabled: false, source: "production-disabled" }
+    enablement: { enabled: true, source: "production" }
   });
-  expect(result.constants.PRODUCTION_ROLLOUT_ENABLED).toBe(false);
+  expect(result.constants.PRODUCTION_ROLLOUT_ENABLED).toBe(true);
   expect(result.constants.DEV_OVERRIDE_KEY).toBe("lingoflow_article_sync_runtime_dev");
 });
 
-test("Settings describes the exact sync scope and shows Article disabled", async ({ page }) => {
+test("Settings describes the exact sync scope and shows the signed-out Article state", async ({ page }) => {
   await page.getByRole("button", { name: /设置/ }).click();
   const account = page.locator("#settingsModal").getByRole("region", { name: "账户与同步" });
-  await expect(page.locator("#settingsArticleSyncStatus")).toHaveText("未启用");
+  await expect(page.locator("#settingsArticleSyncStatus")).toHaveText("登录后同步");
   await expect(page.locator(".settingsScopeNote")).toContainText("支持同步收藏、收藏学习状态与文章");
   await expect(page.locator(".settingsScopeNote")).toContainText("阅读进度、阅读位置、查询记录和阅读偏好暂不同步");
   expect(await account.count()).toBeGreaterThanOrEqual(0);

@@ -105,8 +105,12 @@ async function installHarness(page, initialChanges = []) {
     window.fetch = async (url, options = {}) => {
       const requestUrl = String(url);
       if (!requestUrl.startsWith(projectUrl)) return await nativeFetch(url, options);
-      cloud.activeRequests += 1;
-      cloud.maxActiveRequests = Math.max(cloud.maxActiveRequests, cloud.activeRequests);
+      const isFavoriteSyncRequest = requestUrl.endsWith("/lingoflow_favorite_sync_push") ||
+        requestUrl.endsWith("/lingoflow_favorite_sync_pull");
+      if (isFavoriteSyncRequest) {
+        cloud.activeRequests += 1;
+        cloud.maxActiveRequests = Math.max(cloud.maxActiveRequests, cloud.activeRequests);
+      }
       try {
         if (cloud.delayMs > 0) {
           await new Promise(resolve => setTimeout(resolve, cloud.delayMs));
@@ -153,7 +157,7 @@ async function installHarness(page, initialChanges = []) {
         }
         return new Response(JSON.stringify({ message: "not found" }), { status: 404 });
       } finally {
-        cloud.activeRequests -= 1;
+        if (isFavoriteSyncRequest) cloud.activeRequests -= 1;
       }
     };
   }, { projectUrl: PROJECT_URL, ownerId: OWNER_ID, changes: initialChanges });

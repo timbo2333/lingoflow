@@ -100,6 +100,15 @@
     if (!appState.enablement?.enabled || appState.reason === "feature-disabled") {
       return { state: "disabled", text: "未启用" };
     }
+    if (appState.status === "inactive") {
+      return appState.reason === "workspace-required"
+        ? { state: "waiting", text: "待关联" }
+        : { state: "waiting", text: "登录后同步" };
+    }
+    if (appState.status === "blocked") {
+      return { state: "attention", text: appState.reason === "workspace-owner-mismatch"
+        ? "账号待处理" : "同步受阻" };
+    }
     if (["starting", "bootstrapping"].includes(appState.status)) {
       return { state: "preparing", text: "正在准备" };
     }

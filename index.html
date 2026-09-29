@@ -59,7 +59,7 @@
       <div class="modalHeader">
         <div>
           <div id="authModalTitle" class="modalTitle">账号</div>
-          <div class="modalSub">无需登录也能使用；登录后可同步收藏与收藏学习状态。文章同步能力正在分阶段开放，阅读进度等其他数据仍保存在本机。</div>
+          <div class="modalSub">无需登录也能使用；登录并关联 Workspace 后，可同步收藏、收藏学习状态与文章。阅读进度等其他数据仍保存在本机。</div>
         </div>
         <button id="authModalClose" class="iconClose" type="button" aria-label="关闭账号">×</button>
       </div>
@@ -230,7 +230,7 @@
           <div id="workspaceSwitchConfirmation" hidden>
             <div class="workspaceConflictTitle">确认切换账号</div>
             <p>切换账号会清空此设备上原账号的本地用户数据，包括文章、阅读进度、收藏、学习状态、查询记录、阅读偏好和相关同步状态。</p>
-            <p>收藏和学习状态会从当前账号云端恢复。文章同步能力正在分阶段开放；阅读进度、查询记录和阅读偏好目前不会自动恢复。</p>
+            <p>收藏、学习状态与文章会从当前账号云端恢复；阅读进度、查询记录和阅读偏好目前不会自动恢复。</p>
             <div class="workspaceSwitchWarning">未备份的本地数据可能无法恢复。</div>
             <div class="workspaceSwitchActions">
               <button id="workspaceBackupAndSwitchButton" type="button">导出备份并切换</button>
@@ -248,7 +248,7 @@
 
       <div id="authFeedback" class="authFeedback" role="status" aria-live="polite"></div>
       <div id="authPrivacyNote" class="settingsNote">
-        未登录时，数据主要保存在本设备。登录后，收藏与收藏学习状态会保存到云端；文章同步能力正在分阶段开放。阅读进度、阅读位置、查询记录与阅读偏好目前仍保存在本机。退出登录不会删除本地数据。V0.7 暂不提供自助删除账号，如需删除账号及云端数据，请通过项目反馈渠道联系开发者处理。
+        未登录时，数据主要保存在本设备。登录并关联 Workspace 后，收藏、收藏学习状态与文章会同步到云端。阅读进度、阅读位置、查询记录与阅读偏好目前仍保存在本机。退出登录不会删除本地数据。V0.7 暂不提供自助删除账号，如需删除账号及云端数据，请通过项目反馈渠道联系开发者处理。
       </div>
     </div>
   </div>
@@ -888,7 +888,7 @@
                 查看需要处理的文章
               </button>
             </div>
-            <span class="settingsScopeNote">支持同步收藏、收藏学习状态与文章（文章同步目前尚未向普通用户启用）。阅读进度、阅读位置、查询记录和阅读偏好暂不同步。</span>
+            <span class="settingsScopeNote">支持同步收藏、收藏学习状态与文章。阅读进度、阅读位置、查询记录和阅读偏好暂不同步。</span>
           </div>
           <button id="settingsAccountButton" class="secondary" type="button"
                   onclick="openAccountFromSettings()">登录 / 管理账号</button>
@@ -1362,7 +1362,7 @@
 <script src="js/article-sync-cloud-protocol.js"></script>
 <script src="js/article-sync-cloud-service.js"></script>
 <script src="js/article-sync-bootstrap-coordinator.js"></script>
-<script src="js/article-sync-app-coordinator.js?v=article-runtime-a4-2"></script>
+<script src="js/article-sync-app-coordinator.js?v=article-runtime-a5-2"></script>
 <script src="js/article-sync-conflict-service.js?v=article-runtime-a5-1"></script>
 <script src="js/article-sync-write-service.js?v=article-runtime-a4-2"></script>
 <script src="js/sync-favorite-service.js"></script>
@@ -1389,7 +1389,7 @@
 <script src="js/legacy-ecdict-provider.js"></script>
 <script src="js/core-lemma-pack.js"></script>
 <script src="js/announcements.js"></script>
-<script src="js/article-sync-conflict-ui.js?v=article-runtime-a5-1"></script>
+<script src="js/article-sync-conflict-ui.js?v=article-runtime-a5-2"></script>
 <script src="js/main.js?v=reader-typography-v1"></script>
 
 </body>

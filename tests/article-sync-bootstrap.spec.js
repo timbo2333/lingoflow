@@ -767,7 +767,7 @@ test("workspace confirmation is mandatory and Account Switch clears bootstrap st
   expect(result.oldState.status).toBe("not_started");
 });
 
-test("normal production startup never constructs or runs Article bootstrap", async ({ page }) => {
+test("unauthenticated startup does not run Article bootstrap", async ({ page }) => {
   const result = await page.evaluate(async owner => {
     await window.LingoFlowSyncStateRepository.bindWorkspace(owner);
     await window.LingoFlowArticleLibrary.createArticle({ content: "Remain local" });

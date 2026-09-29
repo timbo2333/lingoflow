@@ -232,13 +232,12 @@ test("fresh two-announcement shell uses versioned styles/scripts, visible bell a
   ]);
   await expect(page.locator("#announcementsBadge")).toHaveText("2");
   await expect(page.locator("#announcementsBadge")).toBeVisible();
-  expect(await page.evaluate(() => ({
+  const assets = await page.evaluate(() => ({
     css: document.querySelector('link[rel="stylesheet"]').getAttribute("href"),
     main: [...document.scripts].find(script => script.src.includes("/js/main.js"))?.getAttribute("src")
-  }))).toEqual({
-    css: "css/style.css?v=announcements-v1",
-    main: "js/main.js?v=announcements-v1"
-  });
+  }));
+  expect(assets.css).toMatch(/^css\/style\.css\?v=[\w-]+$/);
+  expect(assets.main).toMatch(/^js\/main\.js\?v=[\w-]+$/);
 
   for (const { width, dark } of [
     { width: 1440, dark: false },

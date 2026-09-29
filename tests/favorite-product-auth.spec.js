@@ -384,7 +384,7 @@ test("未登录保持 local-only，session=null 的注册成功进入 OTP 状态
 
   await openAccountModal(page);
   await expect(page.locator("#authModal .modalSub")).toContainText("无需登录也能使用");
-  await expect(page.locator("#authPrivacyNote")).toContainText("收藏与收藏学习状态会保存到云端");
+  await expect(page.locator("#authPrivacyNote")).toContainText("收藏、收藏学习状态与文章会同步到云端");
   await expect(page.locator("#authPrivacyNote")).toContainText("暂不提供自助删除账号");
   await signUpAwaitingOtp(page);
 
@@ -887,7 +887,7 @@ test("已有匿名 Favorite 登录后必须明确确认；暂不关联不会上�
   expect(result.pushes).toBe(0);
 });
 
-test("匿名设备只有 Article 时，首次登录必须确认归属；确认后文章仍不上传", async ({ page }) => {
+test("匿名设备只有 Article 时，首次登录必须确认归属", async ({ page }) => {
   await page.goto("/");
   const ids = await page.evaluate(async () => {
     const created = [];
@@ -906,7 +906,7 @@ test("匿名设备只有 Article 时，首次登录必须确认归属；确认�
   await expect(page.locator("#workspaceActivationMessage"))
     .toContainText("5 篇本地文章");
   await expect(page.locator("#workspaceActivationMessage"))
-    .toContainText("文章同步能力尚未向普通用户启用，因此文章目前仍只保存在本设备");
+    .toContainText("文章会在 Workspace 确认后通过独立 Article Sync 安全同步");
   await expect(page.locator("#workspaceActivateButton")).toHaveText("确认关联");
   const before = await page.evaluate(async () => ({
     state: window.LingoFlowFavoriteAppSync.getState(),
@@ -1143,9 +1143,9 @@ test("切换当前账号必须二次确认，取消不会修改任何本地数�
   await page.click("#workspaceChooseCurrentAccountButton");
   await expect(page.locator("#workspaceSwitchConfirmation")).toBeVisible();
   await expect(page.locator("#workspaceSwitchConfirmation"))
-    .toContainText("收藏和学习状态会从当前账号云端恢复");
+    .toContainText("收藏、学习状态与文章会从当前账号云端恢复");
   await expect(page.locator("#workspaceSwitchConfirmation"))
-    .toContainText("文章同步能力正在分阶段开放；阅读进度、查询记录和阅读偏好目前不会自动恢复");
+    .toContainText("文章会从当前账号云端恢复；阅读进度、查询记录和阅读偏好目前不会自动恢复");
   await expect(page.locator("#workspaceBackupAndSwitchButton")).toBeVisible();
   await expect(page.locator("#workspaceDirectSwitchButton")).toBeVisible();
   await page.click("#workspaceCancelSwitchButton");

@@ -282,7 +282,7 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
-test("production default is OFF and normal writes never create Article outbox", async ({ page }) => {
+test("unauthenticated local writes never create Article outbox", async ({ page }) => {
   const result = await page.evaluate(async owner => {
     localStorage.removeItem("lingoflow_article_sync_runtime_dev");
     const article = await window.LingoFlowArticleSyncWriteService.createArticle({ content: "Local only" });
