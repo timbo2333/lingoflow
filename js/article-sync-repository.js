@@ -48,11 +48,34 @@
     return await library.commitArticleSyncProjection(remote.id, expected, remote);
   }
 
+  // Conflict resolution has already been explicitly authorized by the user.
+  // The sync-state resolver owns pending-mutation cleanup, while this boundary
+  // preserves reading/lastReadAt through the same projection CAS as normal pulls.
+  async function applyResolvedRemoteProjection({
+    ownerId,
+    bindingId,
+    remoteProjection,
+    expectedProjection
+  }) {
+    const { library, projection, state } = dependencies();
+    const remote = projection.sanitizeArticleSyncProjection(remoteProjection);
+    const binding = await state.getWorkspaceBinding();
+    if (binding.status !== "ready" || binding.binding.ownerId !== ownerId ||
+        binding.binding.bindingId !== bindingId) {
+      return { status: "blocked", reason: "workspace-binding-mismatch" };
+    }
+    const expected = expectedProjection === undefined
+      ? await getProjection(remote.id)
+      : expectedProjection;
+    return await library.commitArticleSyncProjection(remote.id, expected, remote);
+  }
+
   window.LingoFlowArticleSyncRepository = Object.freeze({
     getArticle,
     getProjection,
     listArticleProjections,
     inspectLocalProjection,
-    applyRemoteProjection
+    applyRemoteProjection,
+    applyResolvedRemoteProjection
   });
 })();

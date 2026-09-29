@@ -439,8 +439,16 @@
         learningCount > 0 ? `${learningCount} 条学习状态` : null,
         articleCount > 0 ? `${articleCount} 篇本地文章（含已删除）` : null
       ].filter(Boolean);
+      const articleSyncEnabled = Boolean(
+        window.LingoFlowArticleSyncApp?.getState?.().enablement?.enabled
+      );
+      const articleMessage = articleCount > 0
+        ? articleSyncEnabled
+          ? "文章会在 Workspace 确认后通过独立 Article Sync 安全同步；阅读进度与阅读位置仍只保存在本机。"
+          : "文章同步能力尚未向普通用户启用，因此文章目前仍只保存在本设备。"
+        : "";
       activationMessage.textContent = assets.length
-        ? `检测到当前浏览器已有${assets.join("、")}。只有你明确同意后，这些本地数据才会关联到此账号。${articleCount > 0 ? "文章目前仍只保存在本设备，不会在此阶段上传；收藏与学习状态按现有规则同步。" : "收藏与学习状态会按现有规则同步。"}`
+        ? `检测到当前浏览器已有${assets.join("、")}。只有你明确同意后，这些本地数据才会关联到此账号。收藏与学习状态按现有规则同步。${articleMessage}`
         : "确认后会为当前账号开启收藏与学习状态同步。";
       const activateButton = element("workspaceActivateButton");
       if (activateButton) activateButton.textContent = articleCount > 0

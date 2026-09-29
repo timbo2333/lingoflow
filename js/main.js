@@ -5554,6 +5554,7 @@ function updateSettingsAccountSummary() {
   if (accountButton) {
     accountButton.textContent = authenticated ? "管理账号" : "登录 / 注册";
   }
+  void window.LingoFlowArticleSyncConflictUI?.refresh?.();
 }
 
 function openAccountFromSettings() {
@@ -8152,6 +8153,7 @@ window.LingoFlowAnnouncements?.initialize();
 updateLegacyImportModePresentation();
 window.addEventListener("lingoflow:auth-state", updateSettingsAccountSummary);
 window.addEventListener("lingoflow:favorite-sync-status", updateSettingsAccountSummary);
+window.addEventListener("lingoflow:article-sync-status", updateSettingsAccountSummary);
 ensureHistoryMigration();
 initializeFavoriteSync();
 initializeArticleSync();

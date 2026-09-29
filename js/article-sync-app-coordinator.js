@@ -1,22 +1,36 @@
 (function() {
   "use strict";
 
-  const FEATURE_KEY = "lingoflow_article_sync_runtime_dev";
+  const DEV_OVERRIDE_KEY = "lingoflow_article_sync_runtime_dev";
+  // A5.1 makes the runtime production-capable, but rollout remains deliberately off.
+  // A5.2 can change this single product decision without changing startup wiring.
+  const PRODUCTION_ROLLOUT_ENABLED = false;
   const PAGE_SIZE = 10;
   const POLL_INTERVAL_MS = 60_000;
   const MAX_PUSHES_PER_RUN = 200;
   const MAX_PULL_PAGES_PER_RUN = 200;
 
-  function isFeatureEnabled() {
+  function isDevOverrideEnabled() {
     try {
-      return localStorage.getItem(FEATURE_KEY) === "1";
+      return localStorage.getItem(DEV_OVERRIDE_KEY) === "1";
     } catch {
       return false;
     }
   }
 
+  function getDefaultEnablement() {
+    if (PRODUCTION_ROLLOUT_ENABLED) return { enabled: true, source: "production" };
+    if (isDevOverrideEnabled()) return { enabled: true, source: "dev-override" };
+    return { enabled: false, source: "production-disabled" };
+  }
+
   function create(options = {}) {
-    const gateEnabled = options.gateEnabled || isFeatureEnabled;
+    const getEnablement = typeof options.enablement === "function"
+      ? options.enablement
+      : typeof options.gateEnabled === "function"
+        ? () => ({ enabled: Boolean(options.gateEnabled()), source: "injected" })
+        : getDefaultEnablement;
+    const gateEnabled = () => Boolean(getEnablement()?.enabled);
     let runtime = null;
     let generation = 0;
     let startPromise = null;
@@ -35,7 +49,24 @@
     }
 
     function getState() {
-      return { ...state };
+      return { ...state, enablement: { ...getEnablement() } };
+    }
+
+    function getResolutionContext() {
+      if (!gateEnabled() || !state.ownerId || !state.bindingId) {
+        return { status: "inactive", generation, enablement: { ...getEnablement() } };
+      }
+      return {
+        status: "ready",
+        owner: { ownerId: state.ownerId, bindingId: state.bindingId },
+        generation
+      };
+    }
+
+    function isResolutionContextCurrent(context) {
+      return Boolean(context && context.generation === generation &&
+        context.owner?.ownerId === state.ownerId &&
+        context.owner?.bindingId === state.bindingId);
     }
 
     function clearPolling() {
@@ -266,6 +297,16 @@
     }
 
     async function capturePushIssue(active, mutation, result) {
+      if (mutation.resolutionKind === "keep-local" &&
+          typeof active.state.refreshArticleConflictIssue === "function") {
+        return await active.state.refreshArticleConflictIssue({
+          ...active.owner,
+          articleId: mutation.articleId,
+          remoteProjection: result.remoteProjection || null,
+          remoteRevision: result.currentRevision || null,
+          remoteCursor: result.remoteCursor || null
+        });
+      }
       return await active.state.captureArticleRuntimeIssue({
         ...active.owner,
         articleId: mutation.articleId,
@@ -292,7 +333,9 @@
         if (items.status !== "ready" || issues.status !== "ready") {
           return { status: "failed", reason: "article-runtime-state-unavailable", outcomes };
         }
-        const blockedIds = new Set(issues.issues.map(issue => issue.articleId));
+        const blockedIds = new Set(issues.issues
+          .filter(issue => issue.resolutionStatus !== "resolving")
+          .map(issue => issue.articleId));
         let mutation = items.items.find(item => item.status === "ready" &&
           !blockedIds.has(item.articleId));
         if (!mutation) {
@@ -332,7 +375,9 @@
         }
         if (["conflict", "rejected"].includes(result.status)) {
           const captured = await capturePushIssue(active, attempted.mutation, result);
-          if (captured.status !== "captured") return { ...captured, outcomes };
+          if (!["captured", "refreshed"].includes(captured.status)) {
+            return { ...captured, outcomes };
+          }
           continue;
         }
         return { ...result, outcomes };
@@ -598,9 +643,16 @@
       syncNow,
       requestSync,
       getWriteContext,
+      getResolutionContext,
+      isResolutionContextCurrent,
       getState,
       installLifecycle,
-      constants: Object.freeze({ FEATURE_KEY, PAGE_SIZE, POLL_INTERVAL_MS })
+      constants: Object.freeze({
+        DEV_OVERRIDE_KEY,
+        PRODUCTION_ROLLOUT_ENABLED,
+        PAGE_SIZE,
+        POLL_INTERVAL_MS
+      })
     });
   }
 

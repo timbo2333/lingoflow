@@ -1182,8 +1182,9 @@
         [CONTROL_STORE, ARTICLE_OUTBOX_STORE, ARTICLE_SIDECAR_STORE],
         "readwrite",
         async tx => {
+          const control = tx.objectStore(CONTROL_STORE);
           const binding = await requireBinding(
-            tx.objectStore(CONTROL_STORE), ownerId, bindingId
+            control, ownerId, bindingId
           );
           if (binding.status !== "ready") return binding;
           const outbox = tx.objectStore(ARTICLE_OUTBOX_STORE);
@@ -1211,6 +1212,39 @@
             lastSyncedLifecycle: mutation.candidate.deletedAt === null ? "active" : "deleted"
           }));
           await requestResult(outbox.delete([ownerId, mutationId]));
+          if (mutation.resolutionKind === "keep-local") {
+            for (const key of articleConflictKeys(
+              ownerId, bindingId, mutation.articleId
+            )) {
+              await requestResult(control.delete(key));
+            }
+            const stateValue = await requestResult(
+              control.get(articleBootstrapStateKey(ownerId, bindingId))
+            );
+            if (stateValue) {
+              const bootstrap = validateArticleBootstrapState(stateValue);
+              const all = await requestResult(control.getAll());
+              const remaining = all.filter(item =>
+                item?.kind === "article-bootstrap-issue" &&
+                item.ownerId === ownerId && item.bindingId === bindingId);
+              if (bootstrap.status === "blocked" && remaining.length === 0) {
+                await requestResult(control.put({
+                  ...bootstrap,
+                  status: "in_progress",
+                  phase: bootstrap.blockedFromPhase || "reconciling",
+                  issueCount: 0,
+                  lastError: null,
+                  updatedAt: new Date().toISOString()
+                }));
+              } else if (bootstrap.status === "blocked") {
+                await requestResult(control.put({
+                  ...bootstrap,
+                  issueCount: remaining.length,
+                  updatedAt: new Date().toISOString()
+                }));
+              }
+            }
+          }
           return { status: "settled", articleId: mutation.articleId, revision: result.revision };
         }
       );
@@ -1502,6 +1536,9 @@
           remoteProjection,
           remoteRevision: issue.remoteRevision,
           remoteLifecycle: issue.remoteLifecycle,
+          resolutionStatus: "pending",
+          resolutionAction: null,
+          resolutionMutationId: null,
           createdAt: existing?.createdAt || now,
           updatedAt: now
         }));
@@ -1512,6 +1549,9 @@
           ...state,
           status: "blocked",
           phase: "blocked",
+          blockedFromPhase: state.phase === "blocked"
+            ? (state.blockedFromPhase || "reconciling")
+            : state.phase,
           issueCount,
           lastError: issue.reason,
           updatedAt: now
@@ -1997,6 +2037,9 @@
           remoteRevision: issue.remoteRevision,
           remoteCursor: issue.remoteCursor,
           mutationId: isOpaqueString(issue.mutationId) ? issue.mutationId : null,
+          resolutionStatus: "pending",
+          resolutionAction: null,
+          resolutionMutationId: null,
           createdAt: current?.createdAt || now,
           updatedAt: now
         };
@@ -2022,6 +2065,329 @@
       };
     } catch (error) {
       return failed("article-runtime-issue-read-failed", error);
+    }
+  }
+
+  function articleConflictKeys(ownerId, bindingId, articleId) {
+    return [
+      articleBootstrapKey(ARTICLE_BOOTSTRAP_ISSUE_PREFIX, ownerId, bindingId, articleId),
+      articleBootstrapKey(ARTICLE_RUNTIME_ISSUE_PREFIX, ownerId, bindingId, articleId)
+    ];
+  }
+
+  async function readArticleConflictEntries(store, ownerId, bindingId, articleId) {
+    const entries = [];
+    for (const key of articleConflictKeys(ownerId, bindingId, articleId)) {
+      const value = await requestResult(store.get(key));
+      if (value) entries.push(value);
+    }
+    return entries;
+  }
+
+  function conflictRevisionMatches(entries, expectedRevision) {
+    return entries.length > 0 && entries.every(issue => issue.remoteRevision === expectedRevision);
+  }
+
+  async function prepareArticleKeepLocalResolution(value) {
+    try {
+      const input = getCanonical().snapshot(value, "articleKeepLocalResolution");
+      validateArticleBootstrapIdentity(input.ownerId, input.bindingId);
+      const candidate = window.LingoFlowArticleSyncProjection
+        .sanitizeArticleSyncProjection(input.candidate);
+      const remoteProjection = input.remoteProjection === null ? null
+        : window.LingoFlowArticleSyncProjection
+          .sanitizeArticleSyncProjection(input.remoteProjection);
+      if (!isOpaqueString(input.articleId) || candidate.id !== input.articleId ||
+          !isOpaqueString(input.mutationId) ||
+          !["put", "delete", "restore"].includes(input.operation) ||
+          (input.expectedRevision !== null &&
+            !/^revision:[1-9][0-9]*$/.test(input.expectedRevision)) ||
+          !/^[a-f0-9]{64}$/.test(input.candidateFingerprint) ||
+          (input.remoteFingerprint !== null &&
+            !/^[a-f0-9]{64}$/.test(input.remoteFingerprint))) {
+        throw new Error("Article keep-local resolution 无效。");
+      }
+      return await runTransaction(
+        [CONTROL_STORE, ARTICLE_OUTBOX_STORE, ARTICLE_SIDECAR_STORE],
+        "readwrite",
+        async tx => {
+          const control = tx.objectStore(CONTROL_STORE);
+          const binding = await requireBinding(control, input.ownerId, input.bindingId);
+          if (binding.status !== "ready") return binding;
+          const issues = await readArticleConflictEntries(
+            control, input.ownerId, input.bindingId, input.articleId
+          );
+          if (!conflictRevisionMatches(issues, input.expectedRevision)) {
+            return blocked("article-conflict-revision-changed");
+          }
+          const outbox = tx.objectStore(ARTICLE_OUTBOX_STORE);
+          const mutations = await requestResult(
+            outbox.index("byOwnerBinding").getAll([input.ownerId, input.bindingId])
+          );
+          for (const mutation of mutations) {
+            if (mutation.articleId === input.articleId) {
+              await requestResult(outbox.delete([input.ownerId, mutation.mutationId]));
+            }
+          }
+          const now = new Date().toISOString();
+          const resolutionMutation = {
+            ownerId: input.ownerId,
+            bindingId: input.bindingId,
+            mutationId: input.mutationId,
+            articleId: input.articleId,
+            operation: input.operation,
+            status: "ready",
+            createdAt: now,
+            beforeFingerprint: input.candidateFingerprint,
+            candidateFingerprint: input.candidateFingerprint,
+            baseRevision: input.expectedRevision,
+            candidate,
+            captureMode: "conflict-resolution",
+            resolutionKind: "keep-local",
+            attemptedAt: null,
+            attemptCount: 0,
+            promotedAt: now
+          };
+          await requestResult(outbox.add(resolutionMutation));
+          const sidecars = tx.objectStore(ARTICLE_SIDECAR_STORE);
+          await requestResult(sidecars.put({
+            ownerId: input.ownerId,
+            bindingId: input.bindingId,
+            articleId: input.articleId,
+            knownRevision: input.expectedRevision,
+            lastSyncedFingerprint: input.remoteFingerprint,
+            lastSyncedLifecycle: remoteProjection
+              ? (remoteProjection.deletedAt === null ? "active" : "deleted")
+              : null
+          }));
+          for (const issue of issues) {
+            await requestResult(control.put({
+              ...issue,
+              resolutionStatus: "resolving",
+              resolutionAction: "keep-local",
+              resolutionMutationId: input.mutationId,
+              updatedAt: now
+            }));
+          }
+          const bootstrapIssue = issues.find(issue => issue.kind === "article-bootstrap-issue");
+          if (bootstrapIssue) {
+            const stateKey = articleBootstrapStateKey(input.ownerId, input.bindingId);
+            const stateValue = await requestResult(control.get(stateKey));
+            if (stateValue) {
+              const state = validateArticleBootstrapState(stateValue);
+              await requestResult(control.put({
+                ...state,
+                status: "in_progress",
+                phase: "settling-outgoing",
+                lastError: null,
+                updatedAt: now
+              }));
+            }
+          }
+          return { status: "ready", mutation: resolutionMutation };
+        }
+      );
+    } catch (error) {
+      return failed("article-keep-local-resolution-failed", error);
+    }
+  }
+
+  async function beginArticleUseRemoteResolution(value) {
+    try {
+      const input = getCanonical().snapshot(value, "articleUseRemoteResolution");
+      validateArticleBootstrapIdentity(input.ownerId, input.bindingId);
+      if (!isOpaqueString(input.articleId) ||
+          (input.expectedRevision !== null &&
+            !/^revision:[1-9][0-9]*$/.test(input.expectedRevision))) {
+        throw new Error("Article use-remote resolution 无效。");
+      }
+      return await runTransaction([CONTROL_STORE], "readwrite", async tx => {
+        const store = tx.objectStore(CONTROL_STORE);
+        const binding = await requireBinding(store, input.ownerId, input.bindingId);
+        if (binding.status !== "ready") return binding;
+        const issues = await readArticleConflictEntries(
+          store, input.ownerId, input.bindingId, input.articleId
+        );
+        if (!conflictRevisionMatches(issues, input.expectedRevision)) {
+          return blocked("article-conflict-revision-changed");
+        }
+        const now = new Date().toISOString();
+        for (const issue of issues) {
+          await requestResult(store.put({
+            ...issue,
+            resolutionStatus: "resolving",
+            resolutionAction: "use-remote",
+            resolutionMutationId: null,
+            updatedAt: now
+          }));
+        }
+        return { status: "ready" };
+      });
+    } catch (error) {
+      return failed("article-use-remote-resolution-start-failed", error);
+    }
+  }
+
+  async function resetArticleConflictResolution(ownerId, bindingId, articleId) {
+    try {
+      validateArticleBootstrapIdentity(ownerId, bindingId);
+      if (!isOpaqueString(articleId)) throw new Error("Article conflict identity 无效。");
+      return await runTransaction([CONTROL_STORE], "readwrite", async tx => {
+        const store = tx.objectStore(CONTROL_STORE);
+        const binding = await requireBinding(store, ownerId, bindingId);
+        if (binding.status !== "ready") return binding;
+        const issues = await readArticleConflictEntries(store, ownerId, bindingId, articleId);
+        const now = new Date().toISOString();
+        for (const issue of issues) {
+          await requestResult(store.put({
+            ...issue,
+            resolutionStatus: "pending",
+            resolutionAction: null,
+            resolutionMutationId: null,
+            updatedAt: now
+          }));
+        }
+        return { status: issues.length ? "ready" : "missing" };
+      });
+    } catch (error) {
+      return failed("article-conflict-resolution-reset-failed", error);
+    }
+  }
+
+  async function refreshArticleConflictIssue(value) {
+    try {
+      const input = getCanonical().snapshot(value, "articleConflictRefresh");
+      validateArticleBootstrapIdentity(input.ownerId, input.bindingId);
+      const remoteProjection = input.remoteProjection === null ? null
+        : window.LingoFlowArticleSyncProjection
+          .sanitizeArticleSyncProjection(input.remoteProjection);
+      if (!isOpaqueString(input.articleId) ||
+          (input.remoteRevision !== null &&
+            !/^revision:[1-9][0-9]*$/.test(input.remoteRevision)) ||
+          !isArticleCursor(input.remoteCursor, true)) {
+        throw new Error("Article conflict refresh 无效。");
+      }
+      return await runTransaction(
+        [CONTROL_STORE, ARTICLE_OUTBOX_STORE],
+        "readwrite",
+        async tx => {
+          const store = tx.objectStore(CONTROL_STORE);
+          const binding = await requireBinding(store, input.ownerId, input.bindingId);
+          if (binding.status !== "ready") return binding;
+          const issues = await readArticleConflictEntries(
+            store, input.ownerId, input.bindingId, input.articleId
+          );
+          if (!issues.length) return { status: "missing" };
+          const outbox = tx.objectStore(ARTICLE_OUTBOX_STORE);
+          const mutations = await requestResult(
+            outbox.index("byOwnerBinding").getAll([input.ownerId, input.bindingId])
+          );
+          for (const mutation of mutations) {
+            if (mutation.articleId === input.articleId &&
+                mutation.resolutionKind === "keep-local") {
+              await requestResult(outbox.delete([input.ownerId, mutation.mutationId]));
+            }
+          }
+          const now = new Date().toISOString();
+          for (const issue of issues) {
+            await requestResult(store.put({
+              ...issue,
+              reason: "remote-changed-during-resolution",
+              remoteProjection,
+              remoteRevision: input.remoteRevision,
+              remoteCursor: input.remoteCursor,
+              remoteLifecycle: remoteProjection
+                ? (remoteProjection.deletedAt === null ? "active" : "deleted")
+                : "missing",
+              resolutionStatus: "pending",
+              resolutionAction: null,
+              resolutionMutationId: null,
+              updatedAt: now
+            }));
+          }
+          return { status: "refreshed" };
+        }
+      );
+    } catch (error) {
+      return failed("article-conflict-refresh-failed", error);
+    }
+  }
+
+  async function finalizeArticleUseRemoteResolution(value) {
+    try {
+      const input = getCanonical().snapshot(value, "articleUseRemoteFinalization");
+      validateArticleBootstrapIdentity(input.ownerId, input.bindingId);
+      const remoteProjection = window.LingoFlowArticleSyncProjection
+        .sanitizeArticleSyncProjection(input.remoteProjection);
+      if (!isOpaqueString(input.articleId) || remoteProjection.id !== input.articleId ||
+          !/^revision:[1-9][0-9]*$/.test(input.remoteRevision) ||
+          !/^[a-f0-9]{64}$/.test(input.remoteFingerprint)) {
+        throw new Error("Article use-remote finalization 无效。");
+      }
+      return await runTransaction(
+        [CONTROL_STORE, ARTICLE_OUTBOX_STORE, ARTICLE_SIDECAR_STORE],
+        "readwrite",
+        async tx => {
+          const control = tx.objectStore(CONTROL_STORE);
+          const binding = await requireBinding(control, input.ownerId, input.bindingId);
+          if (binding.status !== "ready") return binding;
+          const issues = await readArticleConflictEntries(
+            control, input.ownerId, input.bindingId, input.articleId
+          );
+          if (!issues.length || issues.some(issue =>
+            issue.remoteRevision !== input.remoteRevision ||
+            issue.resolutionStatus !== "resolving" ||
+            issue.resolutionAction !== "use-remote")) {
+            return blocked("article-conflict-resolution-mismatch");
+          }
+          const outbox = tx.objectStore(ARTICLE_OUTBOX_STORE);
+          const mutations = await requestResult(
+            outbox.index("byOwnerBinding").getAll([input.ownerId, input.bindingId])
+          );
+          for (const mutation of mutations) {
+            if (mutation.articleId === input.articleId) {
+              await requestResult(outbox.delete([input.ownerId, mutation.mutationId]));
+            }
+          }
+          await requestResult(tx.objectStore(ARTICLE_SIDECAR_STORE).put({
+            ownerId: input.ownerId,
+            bindingId: input.bindingId,
+            articleId: input.articleId,
+            knownRevision: input.remoteRevision,
+            lastSyncedFingerprint: input.remoteFingerprint,
+            lastSyncedLifecycle: remoteProjection.deletedAt === null ? "active" : "deleted"
+          }));
+          for (const issue of issues) await requestResult(control.delete(issue.key));
+          const all = await requestResult(control.getAll());
+          const remainingBootstrap = all.filter(item =>
+            item?.kind === "article-bootstrap-issue" &&
+            item.ownerId === input.ownerId && item.bindingId === input.bindingId);
+          const stateKey = articleBootstrapStateKey(input.ownerId, input.bindingId);
+          const stateValue = await requestResult(control.get(stateKey));
+          if (stateValue) {
+            const state = validateArticleBootstrapState(stateValue);
+            if (remainingBootstrap.length === 0 && state.status === "blocked") {
+              await requestResult(control.put({
+                ...state,
+                status: "in_progress",
+                phase: state.blockedFromPhase || "reconciling",
+                issueCount: 0,
+                lastError: null,
+                updatedAt: new Date().toISOString()
+              }));
+            } else if (state.status === "blocked") {
+              await requestResult(control.put({
+                ...state,
+                issueCount: remainingBootstrap.length,
+                updatedAt: new Date().toISOString()
+              }));
+            }
+          }
+          return { status: "resolved", articleId: input.articleId };
+        }
+      );
+    } catch (error) {
+      return failed("article-use-remote-finalization-failed", error);
     }
   }
 
@@ -3836,6 +4202,11 @@
     commitArticleRuntimePullPage,
     captureArticleRuntimeIssue,
     listArticleRuntimeIssues,
+    prepareArticleKeepLocalResolution,
+    beginArticleUseRemoteResolution,
+    resetArticleConflictResolution,
+    refreshArticleConflictIssue,
+    finalizeArticleUseRemoteResolution,
     setArticleSidecarLifecycle,
     setWorkspaceAccountLabel,
     getWorkspaceAccountLabel,

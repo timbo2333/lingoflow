@@ -5039,6 +5039,143 @@
     line-height: 1.55;
   }
 
+  .articleSyncStatusRow {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 10px;
+    margin-top: 8px;
+    padding-top: 9px;
+    border-top: 1px solid color-mix(in srgb, var(--color-border) 58%, transparent);
+  }
+
+  .articleSyncStatus {
+    color: var(--color-text-secondary);
+    font-size: 13px;
+  }
+
+  .articleSyncStatus[data-state="synced"] {
+    color: #26753a;
+  }
+
+  .articleSyncStatus[data-state="attention"] {
+    color: var(--color-danger);
+  }
+
+  .quietTextButton {
+    min-height: 32px;
+    margin-left: auto;
+    padding: 4px 8px;
+    border-color: transparent;
+    background: transparent;
+    color: var(--color-accent);
+    font-size: 13px;
+  }
+
+  .quietTextButton:hover {
+    border-color: color-mix(in srgb, var(--color-accent) 24%, transparent);
+    background: color-mix(in srgb, var(--color-accent) 6%, transparent);
+  }
+
+  .articleSyncConflictModalCard {
+    width: min(760px, calc(100vw - 32px));
+    max-height: min(780px, calc(100dvh - 32px));
+  }
+
+  .articleSyncConflictFeedback {
+    min-height: 20px;
+    margin: -2px 0 10px;
+    color: var(--color-text-secondary);
+    font-size: 13px;
+  }
+
+  .articleSyncConflictFeedback[data-state="success"] {
+    color: #26753a;
+  }
+
+  .articleSyncConflictFeedback[data-state="error"] {
+    color: var(--color-danger);
+  }
+
+  .articleSyncConflictList {
+    display: grid;
+    flex: 1 1 auto;
+    gap: 14px;
+    min-height: 0;
+    overflow-y: auto;
+    padding-right: 8px;
+    scrollbar-gutter: stable;
+  }
+
+  .articleSyncConflictItem {
+    padding: 16px;
+    border: 1px solid color-mix(in srgb, var(--color-border) 72%, transparent);
+    border-radius: 14px;
+    background: var(--color-surface-subtle);
+  }
+
+  .articleSyncConflictItem h3 {
+    margin: 0;
+    color: var(--color-text);
+    font-size: 17px;
+    line-height: 1.4;
+  }
+
+  .articleSyncConflictReason {
+    margin: 5px 0 12px;
+    color: var(--color-text-secondary);
+    font-size: 13px;
+    line-height: 1.55;
+  }
+
+  .articleConflictVersions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .articleConflictVersion {
+    display: grid;
+    gap: 4px;
+    min-width: 0;
+    padding: 11px 12px;
+    border: 1px solid color-mix(in srgb, var(--color-border) 58%, transparent);
+    border-radius: 11px;
+    background: var(--color-surface);
+  }
+
+  .articleConflictVersion strong,
+  .articleConflictVersion span {
+    color: var(--color-text);
+    font-size: 13px;
+  }
+
+  .articleConflictVersion p {
+    display: -webkit-box;
+    overflow: hidden;
+    margin: 0;
+    color: var(--color-text-secondary);
+    font-size: 12px;
+    line-height: 1.5;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
+  }
+
+  .articleSyncConflictActions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 12px;
+  }
+
+  .articleSyncBackupHint,
+  .articleSyncConflictEmpty {
+    margin: 12px 0 0;
+    color: var(--color-text-secondary);
+    font-size: 12px;
+    line-height: 1.55;
+  }
+
   .backupPrimaryGroup {
     border-color: color-mix(in srgb, var(--color-accent) 26%, var(--color-border));
     background: color-mix(in srgb, var(--color-accent) 5%, var(--color-surface));
@@ -5242,7 +5379,9 @@
   }
 
   body.darkMode .backupStatus[data-state="success"],
-  body.darkMode .settingsInlineStatus[data-state="ready"] {
+  body.darkMode .settingsInlineStatus[data-state="ready"],
+  body.darkMode .articleSyncStatus[data-state="synced"],
+  body.darkMode .articleSyncConflictFeedback[data-state="success"] {
     color: #9ee0ad;
   }
 
@@ -5332,6 +5471,31 @@
     .backupPrimaryActions button,
     .legacyImportLayout .backupButtonRow button {
       width: 100%;
+    }
+
+    .articleSyncStatusRow .quietTextButton {
+      width: auto;
+      min-height: 44px;
+      margin-left: 0;
+    }
+
+    .articleSyncConflictModalCard {
+      height: auto;
+      max-height: calc(100dvh - 6px);
+    }
+
+    .articleConflictVersions {
+      grid-template-columns: 1fr;
+    }
+
+    .articleSyncConflictActions {
+      display: grid;
+      grid-template-columns: 1fr;
+    }
+
+    .articleSyncConflictActions button {
+      width: 100%;
+      min-height: 44px;
     }
 
     .backupPrimaryActions,

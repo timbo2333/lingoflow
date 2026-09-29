@@ -59,7 +59,7 @@
       <div class="modalHeader">
         <div>
           <div id="authModalTitle" class="modalTitle">账号</div>
-          <div class="modalSub">无需登录也能使用；登录后可在自己的设备之间同步收藏与学习状态，其他数据仍保存在本机。</div>
+          <div class="modalSub">无需登录也能使用；登录后可同步收藏与收藏学习状态。文章同步能力正在分阶段开放，阅读进度等其他数据仍保存在本机。</div>
         </div>
         <button id="authModalClose" class="iconClose" type="button" aria-label="关闭账号">×</button>
       </div>
@@ -188,6 +188,13 @@
           <div class="settingLabel">当前账号</div>
           <div id="authUserEmail" class="settingValue">已登录</div>
           <div id="authSyncSummary" class="settingSubValue">正在检查收藏同步状态…</div>
+          <div class="articleSyncStatusRow">
+            <span class="settingLabel">文章同步</span>
+            <span id="authArticleSyncStatus" class="articleSyncStatus" data-state="disabled">未启用</span>
+            <button id="authArticleSyncIssuesButton" class="quietTextButton" type="button" hidden>
+              查看需要处理的文章
+            </button>
+          </div>
         </div>
 
         <div id="workspaceActivationPanel" class="workspaceActivationPanel" hidden>
@@ -223,7 +230,7 @@
           <div id="workspaceSwitchConfirmation" hidden>
             <div class="workspaceConflictTitle">确认切换账号</div>
             <p>切换账号会清空此设备上原账号的本地用户数据，包括文章、阅读进度、收藏、学习状态、查询记录、阅读偏好和相关同步状态。</p>
-            <p>目前只有收藏和学习状态支持从当前账号云端恢复。文章、阅读进度、查询记录和阅读偏好不会自动从云端恢复。</p>
+            <p>收藏和学习状态会从当前账号云端恢复。文章同步能力正在分阶段开放；阅读进度、查询记录和阅读偏好目前不会自动恢复。</p>
             <div class="workspaceSwitchWarning">未备份的本地数据可能无法恢复。</div>
             <div class="workspaceSwitchActions">
               <button id="workspaceBackupAndSwitchButton" type="button">导出备份并切换</button>
@@ -241,7 +248,7 @@
 
       <div id="authFeedback" class="authFeedback" role="status" aria-live="polite"></div>
       <div id="authPrivacyNote" class="settingsNote">
-        未登录时，数据主要保存在本设备。登录并开启云同步后，收藏与学习状态会保存到云端；退出登录不会删除本地数据。V0.7 暂不提供自助删除账号，如需删除账号及云端数据，请通过项目反馈渠道联系开发者处理。
+        未登录时，数据主要保存在本设备。登录后，收藏与收藏学习状态会保存到云端；文章同步能力正在分阶段开放。阅读进度、阅读位置、查询记录与阅读偏好目前仍保存在本机。退出登录不会删除本地数据。V0.7 暂不提供自助删除账号，如需删除账号及云端数据，请通过项目反馈渠道联系开发者处理。
       </div>
     </div>
   </div>
@@ -874,7 +881,14 @@
             <span class="settingLabel">当前账号</span>
             <strong id="settingsAccountValue">未登录</strong>
             <span id="settingsSyncValue" class="settingSubValue">收藏与学习状态仅保存在当前设备</span>
-            <span class="settingsScopeNote">目前云同步仅包含收藏与学习状态；文章、阅读进度、查询记录和偏好不会自动同步。</span>
+            <div class="articleSyncStatusRow">
+              <span class="settingLabel">文章同步</span>
+              <span id="settingsArticleSyncStatus" class="articleSyncStatus" data-state="disabled">未启用</span>
+              <button id="settingsArticleSyncIssuesButton" class="quietTextButton" type="button" hidden>
+                查看需要处理的文章
+              </button>
+            </div>
+            <span class="settingsScopeNote">支持同步收藏、收藏学习状态与文章（文章同步目前尚未向普通用户启用）。阅读进度、阅读位置、查询记录和阅读偏好暂不同步。</span>
           </div>
           <button id="settingsAccountButton" class="secondary" type="button"
                   onclick="openAccountFromSettings()">登录 / 管理账号</button>
@@ -1064,6 +1078,28 @@
           </div>
         </div>
       </details>
+    </div>
+  </div>
+
+  <!-- Article 同步冲突 -->
+  <div id="articleSyncConflictModal" class="modalOverlay" role="dialog" aria-modal="true"
+       aria-labelledby="articleSyncConflictModalTitle"
+       onpointerdown="modalBackdropPointerDown(event, 'articleSyncConflictModal')"
+       onpointerup="modalBackdropPointerUp(event, 'articleSyncConflictModal')"
+       onpointercancel="modalBackdropPointerCancel(event, 'articleSyncConflictModal')">
+    <div class="modalCard articleSyncConflictModalCard">
+      <div class="modalHeader">
+        <div>
+          <div id="articleSyncConflictModalTitle" class="modalTitle">处理文章同步</div>
+          <div class="modalSub">你的本机内容已经保留。请选择每篇文章要保留的版本。</div>
+        </div>
+        <button id="articleSyncConflictModalClose" class="iconClose" type="button"
+                aria-label="关闭文章同步处理">×</button>
+      </div>
+      <div id="articleSyncConflictFeedback" class="articleSyncConflictFeedback"
+           role="status" aria-live="polite"></div>
+      <div id="articleSyncConflictList" class="articleSyncConflictList"></div>
+      <p class="articleSyncBackupHint">如需额外保险，可先在“设置 → 数据与备份”中导出备份。</p>
     </div>
   </div>
 
@@ -1327,6 +1363,7 @@
 <script src="js/article-sync-cloud-service.js"></script>
 <script src="js/article-sync-bootstrap-coordinator.js"></script>
 <script src="js/article-sync-app-coordinator.js?v=article-runtime-a4-2"></script>
+<script src="js/article-sync-conflict-service.js?v=article-runtime-a5-1"></script>
 <script src="js/article-sync-write-service.js?v=article-runtime-a4-2"></script>
 <script src="js/sync-favorite-service.js"></script>
 <script src="js/sync-favorite-learning-service.js"></script>
@@ -1352,6 +1389,7 @@
 <script src="js/legacy-ecdict-provider.js"></script>
 <script src="js/core-lemma-pack.js"></script>
 <script src="js/announcements.js"></script>
+<script src="js/article-sync-conflict-ui.js?v=article-runtime-a5-1"></script>
 <script src="js/main.js?v=reader-typography-v1"></script>
 
 </body>
