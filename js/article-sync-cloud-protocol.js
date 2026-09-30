@@ -43,6 +43,10 @@
         (value.operation === "delete") !== (projection.deletedAt !== null)) {
       return { status: "invalid", reason: "invalid-payload" };
     }
+    if (window.LingoFlowArticleSyncSize.validateArticleCloudSyncSize(projection)
+        .status !== "valid") {
+      return { status: "invalid", reason: "article-too-large" };
+    }
     return {
       status: "valid",
       mutation: {

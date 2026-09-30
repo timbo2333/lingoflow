@@ -45,6 +45,10 @@
     const expected = expectedProjection === undefined
       ? await getProjection(remote.id)
       : expectedProjection;
+    if (expected && window.LingoFlowArticleSyncSize
+      .validateArticleCloudSyncSize(expected).status !== "valid") {
+      return { status: "blocked", reason: "article-too-large" };
+    }
     return await library.commitArticleSyncProjection(remote.id, expected, remote);
   }
 

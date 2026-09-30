@@ -16,6 +16,9 @@
   }
 
   function issueMessage(issue) {
+    if (issue.reason === "article-too-large") {
+      return "这篇文章超过 1 MB 云同步上限，已保存在本机，但不会同步到其他设备。";
+    }
     if (issue.remoteProjection?.deletedAt) {
       return "另一台设备已删除这篇文章。本机内容仍然保留。";
     }
@@ -80,12 +83,16 @@
         ? "正在处理…"
         : "保留本机版本";
       keepLocal.disabled = busyArticleId !== null;
+      if (issue.reason === "article-too-large") keepLocal.disabled = true;
       keepLocal.addEventListener("click", () => resolve(issue.articleId, "keep-local"));
       const useRemote = document.createElement("button");
       useRemote.type = "button";
       useRemote.className = "secondary";
       useRemote.textContent = "使用云端版本";
       useRemote.disabled = busyArticleId !== null;
+      if (issue.reason === "article-too-large" && !issue.remoteRevision) {
+        useRemote.hidden = true;
+      }
       useRemote.addEventListener("click", () => resolve(issue.articleId, "use-remote"));
       actions.append(keepLocal, useRemote);
       item.append(title, message, versions, actions);
@@ -195,6 +202,8 @@
       setFeedback("云端版本刚刚发生变化，请查看更新后的内容并重新确认。", "info");
     } else if (result.reason === "online-verification-required") {
       setFeedback("需要联网确认最新云端版本，请联网后重试。", "info");
+    } else if (result.reason === "article-too-large") {
+      setFeedback("这篇文章已保存在本机。请将正文缩至 1 MB 以内后再同步。", "info");
     } else if (result.status === "discarded") {
       closeConflictPanel();
       return;

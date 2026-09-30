@@ -25,7 +25,7 @@
   }
 
   function committedArticle(result) {
-    if (["desired", "ready", "unchanged"].includes(result?.status) && result.article) {
+    if (["desired", "ready", "unchanged", "oversized"].includes(result?.status) && result.article) {
       return result.article;
     }
     const error = new Error(result?.reason || "Article durable capture failed.");
@@ -36,6 +36,8 @@
   async function afterMutation(runtime, result) {
     if (["desired", "ready"].includes(result?.status)) {
       runtime.coordinator.requestSync("local-mutation");
+    } else if (result?.status === "oversized") {
+      window.dispatchEvent(new CustomEvent("lingoflow:article-sync-issues-changed"));
     }
     return committedArticle(result);
   }
@@ -76,6 +78,8 @@
     const result = await localEngine.captureExistingDesired(articleId, runtime.owner);
     if (["desired", "ready"].includes(result.status)) {
       runtime.coordinator.requestSync("backup-restore");
+    } else if (result.status === "quarantined") {
+      window.dispatchEvent(new CustomEvent("lingoflow:article-sync-issues-changed"));
     }
     return result;
   }

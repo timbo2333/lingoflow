@@ -915,6 +915,8 @@
     try {
       const projection = window.LingoFlowArticleSyncProjection
         .sanitizeArticleSyncProjection(value.candidate);
+      if (window.LingoFlowArticleSyncSize.validateArticleCloudSyncSize(projection)
+          .status !== "valid") return blocked("article-too-large");
       if (!value.ownerId || !value.bindingId || !value.mutationId ||
           !["put", "delete", "restore"].includes(value.operation) ||
           value.articleId !== projection.id ||
@@ -2048,6 +2050,103 @@
       });
     } catch (error) {
       return failed("article-runtime-issue-capture-failed", error);
+    }
+  }
+
+  // Keep the complete Article in the library, but atomically remove every
+  // sendable copy (including an older ready head) and record why it is local-only.
+  async function quarantineOversizedArticle(ownerId, bindingId, articleId, remote = null) {
+    try {
+      validateArticleBootstrapIdentity(ownerId, bindingId);
+      if (!isOpaqueString(articleId)) throw new Error("Article ID 无效。");
+      return await runTransaction(
+        [CONTROL_STORE, ARTICLE_OUTBOX_STORE, ARTICLE_SIDECAR_STORE],
+        "readwrite",
+        async tx => {
+          const control = tx.objectStore(CONTROL_STORE);
+          const binding = await requireBinding(control, ownerId, bindingId);
+          if (binding.status !== "ready") return binding;
+          const outbox = tx.objectStore(ARTICLE_OUTBOX_STORE);
+          const mutations = await requestResult(
+            outbox.index("byOwnerBinding").getAll([ownerId, bindingId])
+          );
+          for (const mutation of mutations) {
+            if (mutation.articleId === articleId) {
+              await requestResult(outbox.delete([ownerId, mutation.mutationId]));
+            }
+          }
+          const key = articleBootstrapKey(
+            ARTICLE_RUNTIME_ISSUE_PREFIX, ownerId, bindingId, articleId
+          );
+          const existing = await requestResult(control.get(key));
+          const bootstrapIssueKey = articleBootstrapKey(
+            ARTICLE_BOOTSTRAP_ISSUE_PREFIX, ownerId, bindingId, articleId
+          );
+          const bootstrapIssue = await requestResult(control.get(bootstrapIssueKey));
+          const sidecar = await requestResult(
+            tx.objectStore(ARTICLE_SIDECAR_STORE).get([ownerId, articleId])
+          );
+          const now = new Date().toISOString();
+          const issue = {
+            key, kind: "article-runtime-issue", ownerId, bindingId, articleId,
+            reason: "article-too-large", localProjection: null,
+            remoteProjection: remote?.projection || existing?.remoteProjection ||
+              bootstrapIssue?.remoteProjection || null,
+            remoteRevision: remote?.revision || existing?.remoteRevision ||
+              bootstrapIssue?.remoteRevision ||
+              sidecar?.knownRevision || null,
+            remoteCursor: remote?.cursor || existing?.remoteCursor || null,
+            mutationId: null, resolutionStatus: "pending",
+            resolutionAction: null, resolutionMutationId: null,
+            createdAt: existing?.createdAt || now, updatedAt: now
+          };
+          await requestResult(control.put(issue));
+          if (bootstrapIssue) {
+            await requestResult(control.delete(bootstrapIssueKey));
+            const bootstrapStateKey = articleBootstrapStateKey(ownerId, bindingId);
+            const bootstrapStateValue = await requestResult(control.get(bootstrapStateKey));
+            if (bootstrapStateValue) {
+              const bootstrapState = validateArticleBootstrapState(bootstrapStateValue);
+              const all = await requestResult(control.getAll());
+              const remaining = all.filter(item => item?.kind === "article-bootstrap-issue" &&
+                item.ownerId === ownerId && item.bindingId === bindingId);
+              await requestResult(control.put({
+                ...bootstrapState,
+                ...(bootstrapState.status === "blocked" && remaining.length === 0
+                  ? { status: "in_progress",
+                    phase: bootstrapState.blockedFromPhase || "reconciling",
+                    lastError: null }
+                  : {}),
+                issueCount: remaining.length,
+                updatedAt: now
+              }));
+            }
+          }
+          return { status: "quarantined", issue };
+        }
+      );
+    } catch (error) {
+      return failed("article-size-quarantine-failed", error);
+    }
+  }
+
+  async function clearOversizedArticleIssue(ownerId, bindingId, articleId) {
+    try {
+      return await runTransaction([CONTROL_STORE], "readwrite", async tx => {
+        const store = tx.objectStore(CONTROL_STORE);
+        const binding = await requireBinding(store, ownerId, bindingId);
+        if (binding.status !== "ready") return binding;
+        const key = articleBootstrapKey(
+          ARTICLE_RUNTIME_ISSUE_PREFIX, ownerId, bindingId, articleId
+        );
+        const current = await requestResult(store.get(key));
+        if (current?.reason === "article-too-large") {
+          await requestResult(store.delete(key));
+        }
+        return { status: "ready" };
+      });
+    } catch (error) {
+      return failed("article-size-issue-clear-failed", error);
     }
   }
 
@@ -4201,6 +4300,8 @@
     listArticleRuntimePendingChanges,
     commitArticleRuntimePullPage,
     captureArticleRuntimeIssue,
+    quarantineOversizedArticle,
+    clearOversizedArticleIssue,
     listArticleRuntimeIssues,
     prepareArticleKeepLocalResolution,
     beginArticleUseRemoteResolution,

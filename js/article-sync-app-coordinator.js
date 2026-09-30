@@ -352,6 +352,14 @@
           if (promoted.status !== "ready") return { ...promoted, outcomes };
           mutation = promoted.mutation;
         }
+        if (window.LingoFlowArticleSyncSize
+          .validateArticleCloudSyncSize(mutation.candidate).status !== "valid") {
+          const quarantined = await active.state.quarantineOversizedArticle(
+            active.owner.ownerId, active.owner.bindingId, mutation.articleId
+          );
+          if (quarantined.status !== "quarantined") return { ...quarantined, outcomes };
+          continue;
+        }
         const attempted = await active.state.markArticleMutationAttempt(
           active.owner.ownerId,
           active.owner.bindingId,
@@ -448,6 +456,14 @@
           continue;
         }
         const expected = await active.repository.getProjection(change.articleId);
+        if (expected && window.LingoFlowArticleSyncSize
+          .validateArticleCloudSyncSize(expected).status !== "valid") {
+          const quarantined = await active.state.quarantineOversizedArticle(
+            active.owner.ownerId, active.owner.bindingId, change.articleId, change
+          );
+          if (quarantined.status !== "quarantined") return quarantined;
+          continue;
+        }
         const applied = await active.repository.applyRemoteProjection({
           ...active.owner,
           remoteProjection: change.projection,

@@ -49,8 +49,11 @@
           revisionNumber(issue.remoteRevision) >= revisionNumber(existing.remoteRevision)
           ? issue
           : existing;
+        const oversized = issue.reason === "article-too-large" ||
+          existing?.reason === "article-too-large";
         grouped.set(issue.articleId, {
           ...preferred,
+          ...(oversized ? { reason: "article-too-large" } : {}),
           issueKinds: Array.from(new Set([
             ...(existing?.issueKinds || (existing ? [existing.kind] : [])),
             issue.kind
@@ -128,6 +131,14 @@
       const localProjection = await deps().repository.getProjection(articleId);
       if (!localProjection || !contextCurrent(current)) {
         return { status: "failed", reason: "local-article-missing" };
+      }
+      if (window.LingoFlowArticleSyncSize
+        .validateArticleCloudSyncSize(localProjection).status !== "valid") {
+        await deps().state.quarantineOversizedArticle(
+          current.owner.ownerId, current.owner.bindingId, articleId
+        );
+        emit();
+        return { status: "blocked", reason: "article-too-large" };
       }
       const localDeleted = localProjection.deletedAt !== null;
       const remoteDeleted = remoteProjection?.deletedAt !== null && Boolean(remoteProjection);

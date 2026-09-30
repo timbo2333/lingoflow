@@ -7855,6 +7855,8 @@ function setReaderShellActive(active) {
   layout?.classList.toggle("show", active);
 
   if (!active) {
+    const sizeNotice = document.getElementById("articleCloudSizeNotice");
+    if (sizeNotice) sizeNotice.hidden = true;
     closeReaderPopovers();
     toolbar?.classList.remove("readerHeaderHidden", "readerTitleVisible");
     readerTitleVisibilityObserver?.disconnect();
@@ -7989,6 +7991,14 @@ async function renderArticleText(text, options = {}) {
 
   document.getElementById("inputPanel").style.display = "none";
   setReaderShellActive(true);
+  const sizeNotice = document.getElementById("articleCloudSizeNotice");
+  if (sizeNotice) {
+    const signedIn = window.LingoFlowSupabaseAuth?.getState?.().status === "authenticated";
+    sizeNotice.hidden = !signedIn || window.LingoFlowArticleSyncSize
+      .validateArticleCloudSyncSize({ content: text }).status === "valid";
+    sizeNotice.textContent = sizeNotice.hidden ? "" :
+      "这篇文章超过 1 MB 云同步上限，已保存在本机，但不会同步到其他设备。";
+  }
 
   if (options.restoreReading?.updatedAt) {
     await restoreArticleReadingPosition(options.restoreReading, renderToken);

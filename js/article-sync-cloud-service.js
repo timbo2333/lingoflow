@@ -62,6 +62,15 @@
         return { status: "unavailable", reason: "rpc-unavailable" };
       }
       if (!response?.ok || typeof response.json !== "function") {
+        if (name === RPC.push && response?.status === 400) {
+          try {
+            const error = await response.json();
+            if (["article_sync_record_content_limit", "article_sync_change_content_limit"]
+              .some(constraint => String(error?.message || "").includes(constraint))) {
+              return { status: "rejected", reason: "article-too-large" };
+            }
+          } catch { /* preserve generic transport result */ }
+        }
         return { status: "unavailable", reason: "server-error" };
       }
       try { return { status: "received", value: await response.json() }; }
@@ -84,7 +93,9 @@
 
     async function pushArticleMutation(owner, readyMutation) {
       const checked = protocol.validateReadyMutation(owner, readyMutation);
-      if (checked.status !== "valid") return { status: "rejected", reason: "invalid-payload" };
+      if (checked.status !== "valid") {
+        return { status: "rejected", reason: checked.reason || "invalid-payload" };
+      }
       const response = await postRpc(RPC.push, owner, {
         p_expected_owner_id: owner.ownerId,
         p_mutation: checked.mutation

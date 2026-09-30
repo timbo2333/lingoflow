@@ -8,6 +8,7 @@
     const repository = options.repository || window.LingoFlowArticleSyncRepository;
     const library = options.library || window.LingoFlowArticleLibrary;
     const projection = options.projection || window.LingoFlowArticleSyncProjection;
+    const size = window.LingoFlowArticleSyncSize;
     const auth = options.auth || window.LingoFlowSupabaseAuth;
     const cloud = options.cloud || window.LingoFlowArticleSyncCloudService?.create();
     const localEngine = options.localEngine || window.LingoFlowArticleSyncLocalEngine?.create();
@@ -87,6 +88,14 @@
     async function reconcileRemote(owner, remoteValue, pendingByArticle) {
       const articleId = remoteValue.articleId;
       const localValue = await repository.getProjection(articleId);
+      if (localValue && size.validateArticleCloudSyncSize(localValue).status !== "valid") {
+        const quarantined = await state.quarantineOversizedArticle(
+          owner.ownerId, owner.bindingId, articleId, remoteValue
+        );
+        return quarantined.status === "quarantined"
+          ? { status: "reconciled", kind: "local-only-oversized" }
+          : quarantined;
+      }
       if (pendingByArticle.has(articleId)) {
         await captureIssue(
           owner,
@@ -204,7 +213,7 @@
           result = await reconcileRemote(owner, remoteValue, pendingByArticle);
         } else if (localValue && !pendingByArticle.has(articleId)) {
           result = await localEngine.captureBootstrapArticle(articleId, owner);
-          if (!["ready", "existing"].includes(result.status)) {
+          if (!["ready", "existing", "quarantined"].includes(result.status)) {
             await captureIssue(
               owner,
               articleId,
@@ -218,7 +227,9 @@
         } else {
           result = { status: "existing" };
         }
-        if (result.status === "blocked") return result;
+        if (!["reconciled", "ready", "existing", "quarantined"].includes(result.status)) {
+          return result;
+        }
         await hooks.afterReconcileItem?.({ articleId, result });
       }
       const issues = await state.listArticleBootstrapIssues(owner.ownerId, owner.bindingId);
@@ -250,6 +261,13 @@
         }
         const mutation = outbox.items.find(item => item.status === "ready");
         if (!mutation) break;
+        if (size.validateArticleCloudSyncSize(mutation.candidate).status !== "valid") {
+          const quarantined = await state.quarantineOversizedArticle(
+            owner.ownerId, owner.bindingId, mutation.articleId
+          );
+          if (quarantined.status !== "quarantined") return quarantined;
+          continue;
+        }
         const result = await cloud.pushArticleMutation(owner, mutation);
         if (result.status === "unavailable") {
           await state.pauseArticleBootstrap(owner.ownerId, owner.bindingId, result.reason);
@@ -302,7 +320,7 @@
         const context = await requireContext(owner);
         if (context.status !== "ready") return context;
         const result = await reconcileRemote(owner, change, pendingByArticle);
-        if (result.status === "blocked") return result;
+        if (result.status !== "reconciled") return result;
       }
       const committed = await state.commitArticleBootstrapCatchupPage(
         owner.ownerId,
