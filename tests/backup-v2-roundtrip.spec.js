@@ -1,4 +1,5 @@
 const { test, expect } = require("@playwright/test");
+const { createHash } = require("node:crypto");
 
 async function loadBackupEnvironment(page) {
   await page.addInitScript(() => {
@@ -120,6 +121,61 @@ test("Backup v2 Envelope can build and restore Article-only data roundtrip", asy
     expect(restoreResult.favoriteLearningStates).toEqual([]);
   } finally {
     await restoreContext.close();
+  }
+});
+
+test("Backup v2 export/import preserves Resume; legacy backup without Resume remains valid", async ({ browser }) => {
+  const legacy = createArticleFixture();
+  const checkpoint = {
+    progress: 0.3,
+    paragraphIndex: 1,
+    contentFingerprint: "sha256:" + createHash("sha256").update(legacy.content).digest("hex"),
+    updatedAt: "2026-09-30T00:00:00.000Z"
+  };
+  const withResume = {
+    ...legacy,
+    id: "article:roundtrip-with-resume",
+    reading: { ...legacy.reading, resume: checkpoint }
+  };
+  const source = await browser.newContext();
+  let backup;
+  try {
+    const page = await source.newPage();
+    await loadBackupEnvironment(page);
+    backup = await page.evaluate(async incoming => {
+      await window.LingoFlowArticleLibrary.restoreArticle(incoming);
+      return window.LingoFlowBackupV2Export.exportBackup();
+    }, withResume);
+  } finally {
+    await source.close();
+  }
+  expect(backup.status).toBe("ready");
+  expect(backup.payload.data.articles[0].reading.resume).toEqual(checkpoint);
+
+  const destination = await browser.newContext();
+  try {
+    const page = await destination.newPage();
+    await loadBackupEnvironment(page);
+    const result = await page.evaluate(async ({ payload, oldArticle }) => {
+      const current = await window.LingoFlowBackupV2.restoreBackup(payload);
+      const legacyPayload = window.LingoFlowBackupV2Envelope.buildEnvelope({
+        articles: [oldArticle]
+      }).envelope;
+      const older = await window.LingoFlowBackupV2.restoreBackup(legacyPayload);
+      return {
+        current, older,
+        currentArticle: await window.LingoFlowArticleLibrary.getArticle(
+          payload.data.articles[0].id
+        ),
+        oldArticle: await window.LingoFlowArticleLibrary.getArticle(oldArticle.id)
+      };
+    }, { payload: backup.payload, oldArticle: legacy });
+    expect(result.current.status).toBe("completed");
+    expect(result.older.status).toBe("completed");
+    expect(result.currentArticle.reading.resume).toEqual(checkpoint);
+    expect(result.oldArticle.reading).not.toHaveProperty("resume");
+  } finally {
+    await destination.close();
   }
 });
 

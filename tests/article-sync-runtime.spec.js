@@ -727,19 +727,27 @@ test("reading-only changes create neither desired tail nor push", async ({ page 
     const article = await window.LingoFlowArticleSyncWriteService.createArticle({ content: "A" });
     await h.runtime.syncNow();
     const beforePushes = h.calls.push.length;
+    const beforeLastReadAt = (await window.LingoFlowArticleLibrary.getArticle(article.id)).lastReadAt;
+    const fingerprint = await window.LingoFlowReadingResume.fingerprintContent(article.content);
     await window.LingoFlowArticleLibrary.updateArticleReading(article.id, {
-      progress: 0.5, paragraphIndex: 4, lastReadAt: "2026-09-21T11:00:00.000Z"
+      progress: 0.5, paragraphIndex: 4,
+      resume: window.LingoFlowReadingResume.createCheckpoint(
+        { progress: 0.3, paragraphIndex: 2 }, fingerprint
+      )
     });
     await h.runtime.syncNow();
     return {
       beforePushes,
       afterPushes: h.calls.push.length,
+      beforeLastReadAt,
+      afterLastReadAt: (await window.LingoFlowArticleLibrary.getArticle(article.id)).lastReadAt,
       mutations: await window.LingoFlowSyncStateRepository.listArticleMutations(
         owner.ownerId, owner.bindingId
       )
     };
   }, OWNER);
   expect(result.afterPushes).toBe(result.beforePushes);
+  expect(result.afterLastReadAt).toBe(result.beforeLastReadAt);
   expect(result.mutations.items).toEqual([]);
 });
 

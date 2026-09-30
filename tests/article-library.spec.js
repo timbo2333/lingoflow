@@ -968,7 +968,7 @@ test("打开我的文章和切换文章前会 flush 当前阅读进度", async (
   expect(flushed.reading.progress).toBeGreaterThan(0.4);
 });
 
-test("回到顶部超过 debounce 后通过真实 UI 重开仍恢复最远进度", async ({ page }) => {
+test("回到顶部超过 debounce 后保留最远进度，但重开恢复最近位置", async ({ page }) => {
   await fillDraft(page, makeLongArticle("Keep farthest progress after toolbar navigation", 70));
   await startReading(page);
   const [created] = await getArticles(page);
@@ -984,6 +984,7 @@ test("回到顶部超过 debounce 后通过真实 UI 重开仍恢复最远进度
 
   const [afterTop] = await getArticles(page);
   expect(afterTop.reading.progress).toBeGreaterThan(0.55);
+  expect(afterTop.reading.resume.progress).toBeLessThan(0.1);
 
   await openMyArticles(page);
   await getMyArticleItem(page, "Keep farthest progress after toolbar navigation")
@@ -994,11 +995,12 @@ test("回到顶部超过 debounce 后通过真实 UI 重开仍恢复最远进度
   await expect(page.locator("#myArticlesModal")).not.toHaveClass(/show/);
 
   await expect.poll(() => page.evaluate(() => (
-    calculateArticleReadingSnapshot()?.progress || 0
-  ))).toBeGreaterThan(0.5);
+    calculateArticleReadingSnapshot()?.progress ?? 1
+  ))).toBeLessThan(0.1);
 
   const [reopened] = await getArticles(page);
   expect(reopened.reading.progress).toBeGreaterThan(0.55);
+  expect(reopened.reading.resume.progress).toBeLessThan(0.1);
 });
 
 test("持久化进度只前进，视觉进度仍可随向上回读下降", async ({ page }) => {
@@ -1033,6 +1035,129 @@ test("持久化进度只前进，视觉进度仍可随向上回读下降", async
   expect(currentView.progressBarPercent).toBeLessThan(35);
   expect(afterReadingBack.reading.progress).toBe(atEighty.reading.progress);
   expect(afterReadingBack.reading.paragraphIndex).toBe(atEighty.reading.paragraphIndex);
+  expect(afterReadingBack.reading.resume.progress).toBeGreaterThan(0.25);
+  expect(afterReadingBack.reading.resume.progress).toBeLessThan(0.35);
+  expect(afterReadingBack.reading.resume.paragraphIndex).toBeGreaterThan(0);
+
+  await scrollArticleToProgress(page, 0.9);
+  await expect.poll(async () => (await getArticles(page))[0].reading.progress, {
+    timeout: 2500
+  }).toBeGreaterThan(0.85);
+  const [afterReadingForward] = await getArticles(page);
+  expect(afterReadingForward.reading.resume.progress).toBeGreaterThan(0.85);
+});
+
+test("旧文章只打开不移动，不把历史最远进度伪造成 Resume", async ({ page }) => {
+  const title = "Legacy reading without resume";
+  const created = await page.evaluate(async content => {
+    const library = window.LingoFlowArticleLibrary;
+    const article = await library.createArticle({
+      title: "Legacy reading without resume",
+      content,
+      sourceType: "paste"
+    });
+    return library.updateArticleReading(article.id, {
+      progress: 0.8,
+      paragraphIndex: 40,
+      updatedAt: "2026-09-01T00:00:00.000Z"
+    });
+  }, makeLongArticle(title, 70));
+  await openMyArticles(page);
+  await getMyArticleItem(page, title).getByRole("button", {
+    name: `继续阅读文章：${title}`
+  }).click();
+  await expect.poll(() => page.evaluate(() =>
+    calculateArticleReadingSnapshot()?.progress ?? 0
+  )).toBeGreaterThan(0.5);
+  await page.waitForTimeout(900);
+  await page.evaluate(() => returnFromReader());
+  const [article] = (await getArticles(page)).filter(item => item.id === created.id);
+  expect(article.reading.progress).toBe(0.8);
+  expect(article.reading).not.toHaveProperty("resume");
+});
+
+test("Reader 优先恢复匹配正文的 Resume；正文变化后回退历史最远位置且不删除旧 checkpoint", async ({ page }) => {
+  const title = "Resume fingerprint authority";
+  const seeded = await page.evaluate(async content => {
+    const library = window.LingoFlowArticleLibrary;
+    const resume = window.LingoFlowReadingResume;
+    const article = await library.createArticle({
+      title: "Resume fingerprint authority", content, sourceType: "paste"
+    });
+    const checkpoint = resume.createCheckpoint(
+      { progress: 0.3, paragraphIndex: 20 },
+      await resume.fingerprintContent(content)
+    );
+    const updated = await library.updateArticleReading(article.id, {
+      progress: 0.8, paragraphIndex: 55,
+      updatedAt: "2026-09-30T00:00:00.000Z", resume: checkpoint
+    });
+    return { id: updated.id, checkpoint };
+  }, makeLongArticle(title, 70));
+
+  await openMyArticles(page);
+  await getMyArticleItem(page, title).getByRole("button", {
+    name: `继续阅读文章：${title}`
+  }).click();
+  await expect.poll(() => page.evaluate(() =>
+    calculateArticleReadingSnapshot()?.progress ?? 0
+  )).toBeGreaterThan(0.2);
+  expect(await page.evaluate(() => calculateArticleReadingSnapshot().progress)).toBeLessThan(0.45);
+
+  await page.evaluate(async id => {
+    await window.LingoFlowArticleLibrary.updateArticle(id, { title: "Retitled resume authority" });
+  }, seeded.id);
+  await page.reload();
+  await expect.poll(() => page.evaluate(() =>
+    calculateArticleReadingSnapshot()?.progress ?? 0
+  )).toBeGreaterThan(0.2);
+  expect(await page.evaluate(() => calculateArticleReadingSnapshot().progress)).toBeLessThan(0.45);
+
+  await page.evaluate(async id => {
+    const library = window.LingoFlowArticleLibrary;
+    const article = await library.getArticle(id);
+    await library.updateArticle(id, { content: article.content + "\nA changed final paragraph." });
+  }, seeded.id);
+  await page.reload();
+  await expect.poll(() => page.evaluate(() =>
+    calculateArticleReadingSnapshot()?.progress ?? 0
+  )).toBeGreaterThan(0.65);
+  const article = await page.evaluate(id =>
+    window.LingoFlowArticleLibrary.getArticle(id), seeded.id);
+  expect(article.reading.resume).toEqual(seeded.checkpoint);
+
+  await scrollArticleToProgress(page, 0.4);
+  await expect.poll(async () => (
+    await page.evaluate(id => window.LingoFlowArticleLibrary.getArticle(id), seeded.id)
+  ).reading.resume.progress, { timeout: 2500 }).toBeGreaterThan(0.35);
+  const afterMovement = await page.evaluate(id =>
+    window.LingoFlowArticleLibrary.getArticle(id), seeded.id);
+  expect(afterMovement.reading.resume.contentFingerprint)
+    .not.toBe(seeded.checkpoint.contentFingerprint);
+  expect(afterMovement.reading.progress).toBe(0.8);
+});
+
+test("Resume paragraphIndex 不存在时使用 progress 作为恢复 fallback", async ({ page }) => {
+  const title = "Resume progress fallback";
+  await page.evaluate(async content => {
+    const library = window.LingoFlowArticleLibrary;
+    const resume = window.LingoFlowReadingResume;
+    const article = await library.createArticle({ title: "Resume progress fallback", content });
+    await library.updateArticleReading(article.id, {
+      progress: 0.8, paragraphIndex: 55,
+      updatedAt: "2026-09-30T00:00:00.000Z",
+      resume: resume.createCheckpoint({ progress: 0.3, paragraphIndex: 9999 },
+        await resume.fingerprintContent(content))
+    });
+  }, makeLongArticle(title, 70));
+  await openMyArticles(page);
+  await getMyArticleItem(page, title).getByRole("button", {
+    name: `继续阅读文章：${title}`
+  }).click();
+  await expect.poll(() => page.evaluate(() =>
+    calculateArticleReadingSnapshot()?.progress ?? 0
+  )).toBeGreaterThan(0.25);
+  expect(await page.evaluate(() => calculateArticleReadingSnapshot().progress)).toBeLessThan(0.35);
 });
 
 test("刷新后从我的文章打开会恢复保存的 paragraphIndex", async ({ page }) => {

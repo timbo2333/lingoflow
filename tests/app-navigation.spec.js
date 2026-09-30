@@ -167,12 +167,18 @@ test("Browser Back 离开 Reader 前保存阅读进度，Forward 后恢复", asy
   await expect.poll(() => page.evaluate(async id => (
     (await window.LingoFlowArticleLibrary.getArticle(id)).reading.progress
   ), articleId)).toBeGreaterThan(0.4);
+  const savedResume = await page.evaluate(async id => (
+    (await window.LingoFlowArticleLibrary.getArticle(id)).reading.resume
+  ), articleId);
+  expect(savedResume.progress).toBeGreaterThan(0.4);
+  expect(savedResume.progress).toBeLessThan(0.6);
 
   await page.goForward();
   await expect(page.locator("#readerLayout")).toHaveClass(/show/);
   await expect.poll(() => page.evaluate(() => (
     calculateArticleReadingSnapshot()?.progress || 0
   ))).toBeGreaterThan(0.35);
+  expect(await page.evaluate(() => calculateArticleReadingSnapshot().progress)).toBeLessThan(0.65);
 });
 
 test("Reader reload 只 restore 当前 state，不新增重复 history entry", async ({ page }) => {

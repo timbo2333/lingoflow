@@ -4392,9 +4392,10 @@ function getParagraphIndexAtReadingAnchor(article, anchorOffset) {
   return Math.max(0, Math.trunc(closestIndex));
 }
 
-function calculateArticleReadingSnapshot() {
+function calculateArticleReadingSnapshot(options = {}) {
   const metrics = getArticleReadingMetrics();
-  if (!metrics || !activeArticleId || suppressReadingProgressSave) return null;
+  if (!metrics || !activeArticleId ||
+      (suppressReadingProgressSave && !options.allowSuppressed)) return null;
 
   return {
     articleId: activeArticleId,
@@ -4457,8 +4458,26 @@ function initializeReadingProgressSession(article) {
       )
     },
     enqueuedProgress: progress,
-    dirty: false
+    dirty: false,
+    contentFingerprint: null,
+    resumeBaseline: null,
+    resumeDesired: null,
+    resumeEnqueuedPosition: null,
+    resumeCommittedPosition: null,
+    resumeDirty: false
   };
+}
+
+function establishReadingSessionBaseline(contentFingerprint) {
+  const session = readingProgressSession;
+  const baseline = calculateArticleReadingSnapshot({ allowSuppressed: true });
+  if (!session || !baseline || session.articleId !== baseline.articleId) return;
+  session.contentFingerprint = contentFingerprint;
+  session.resumeBaseline = { ...baseline };
+  session.resumeDesired = { ...baseline };
+  session.resumeEnqueuedPosition = { ...baseline };
+  session.resumeCommittedPosition = { ...baseline };
+  session.resumeDirty = false;
 }
 
 function clearReadingProgressSession() {
@@ -4476,33 +4495,62 @@ function captureFarthestReadingSnapshot(candidate) {
   return true;
 }
 
-function queueReadingProgressWrite(snapshot) {
-  const reading = {
-    progress: clampReadingProgress(snapshot.progress),
-    paragraphIndex: Math.max(0, Math.trunc(snapshot.paragraphIndex)),
-    updatedAt: new Date().toISOString()
-  };
+function captureResumeReadingSnapshot(candidate) {
+  const session = readingProgressSession;
+  if (!candidate || !session || candidate.articleId !== session.articleId ||
+      !session.contentFingerprint || !session.resumeBaseline) return false;
+  const changed = window.LingoFlowReadingResume.positionChanged;
+  if (!changed(candidate, session.resumeDesired)) return false;
+  session.resumeDesired = { ...candidate };
+  session.resumeDirty = changed(candidate, session.resumeEnqueuedPosition);
+  return session.resumeDirty;
+}
+
+function queueReadingProgressWrite(articleId, furthestSnapshot, resumeSnapshot, contentFingerprint) {
+  const reading = {};
+  const timestamp = new Date().toISOString();
+  if (furthestSnapshot) {
+    reading.progress = clampReadingProgress(furthestSnapshot.progress);
+    reading.paragraphIndex = Math.max(0, Math.trunc(furthestSnapshot.paragraphIndex));
+    reading.updatedAt = timestamp;
+  }
+  if (resumeSnapshot) {
+    reading.resume = window.LingoFlowReadingResume.createCheckpoint(
+      resumeSnapshot, contentFingerprint, timestamp
+    );
+  }
 
   readingProgressWriteQueue = readingProgressWriteQueue
     .then(async () => {
       const library = window.LingoFlowArticleLibrary;
       if (!library) throw new Error("文章数据层未加载，阅读进度无法保存。");
 
-      const updatedArticle = await library.updateArticleReading(snapshot.articleId, reading);
+      const updatedArticle = await library.updateArticleReading(articleId, reading);
       if (activeArticleId === updatedArticle.id && currentArticle?.id === updatedArticle.id) {
         currentArticle = {
           ...currentArticle,
           reading: updatedArticle.reading
         };
       }
+      const session = readingProgressSession;
+      if (session?.articleId === articleId && resumeSnapshot) {
+        session.resumeCommittedPosition = { ...resumeSnapshot };
+      }
       return updatedArticle;
     })
     .catch(error => {
       const session = readingProgressSession;
-      if (session?.articleId === snapshot.articleId &&
-          session.enqueuedProgress === snapshot.progress) {
-        session.enqueuedProgress = clampReadingProgress(currentArticle?.reading?.progress);
-        session.dirty = session.farthest.progress > session.enqueuedProgress;
+      if (session?.articleId === articleId) {
+        if (furthestSnapshot && session.enqueuedProgress === furthestSnapshot.progress) {
+          session.enqueuedProgress = clampReadingProgress(currentArticle?.reading?.progress);
+          session.dirty = session.farthest.progress > session.enqueuedProgress;
+        }
+        if (resumeSnapshot && session.resumeEnqueuedPosition === resumeSnapshot) {
+          session.resumeEnqueuedPosition = session.resumeCommittedPosition;
+          session.resumeDirty = window.LingoFlowReadingResume.positionChanged(
+            session.resumeDesired, session.resumeEnqueuedPosition
+          );
+        }
       }
       console.error("Reading progress save error:", error);
       return null;
@@ -4515,21 +4563,26 @@ function flushReadingProgress() {
   cancelScheduledReadingSave();
 
   const session = readingProgressSession;
-  if (!session?.dirty) return readingProgressWriteQueue;
+  if (!session?.dirty && !session?.resumeDirty) return readingProgressWriteQueue;
 
-  const snapshot = { ...session.farthest };
-  if (snapshot.progress <= session.enqueuedProgress) {
-    session.dirty = false;
-    return readingProgressWriteQueue;
-  }
-
-  session.enqueuedProgress = snapshot.progress;
+  const furthestSnapshot = session.dirty &&
+    session.farthest.progress > session.enqueuedProgress
+    ? { ...session.farthest }
+    : null;
+  const resumeSnapshot = session.resumeDirty ? { ...session.resumeDesired } : null;
+  if (!furthestSnapshot && !resumeSnapshot) return readingProgressWriteQueue;
+  if (furthestSnapshot) session.enqueuedProgress = furthestSnapshot.progress;
+  if (resumeSnapshot) session.resumeEnqueuedPosition = resumeSnapshot;
   session.dirty = false;
-  return queueReadingProgressWrite(snapshot);
+  session.resumeDirty = false;
+  return queueReadingProgressWrite(
+    session.articleId, furthestSnapshot, resumeSnapshot, session.contentFingerprint
+  );
 }
 
 function scheduleReadingProgressSave() {
-  if (suppressReadingProgressSave || !readingProgressSession?.dirty) return;
+  if (suppressReadingProgressSave ||
+      (!readingProgressSession?.dirty && !readingProgressSession?.resumeDirty)) return;
 
   cancelScheduledReadingSave();
   readingProgressSaveTimer = setTimeout(() => {
@@ -4543,6 +4596,7 @@ function handleReadingScroll() {
   requestReadingProgressUIUpdate();
   const candidate = calculateArticleReadingSnapshot();
   captureFarthestReadingSnapshot(candidate);
+  captureResumeReadingSnapshot(candidate);
   scheduleReadingProgressSave();
 }
 
@@ -7170,6 +7224,11 @@ function handleAppNavigationPopState(event) {
     navigation = createHomeNavigationState();
     replaceAppNavigationState(navigation);
   }
+  if (isReaderViewActive() && navigation.view !== "reader") {
+    // Browser history may restore the destination scroll position before the
+    // asynchronous Reader teardown finishes. That scroll is not reading.
+    suppressReadingProgressSave = true;
+  }
   void queueAppNavigationRestore(navigation);
 }
 
@@ -7335,6 +7394,7 @@ async function restoreArticleReadingPosition(reading, renderToken) {
   if (renderToken !== readingPositionRenderToken) return;
 
   updateReadingProgress();
+  establishReadingSessionBaseline(readingProgressSession?.contentFingerprint || null);
   suppressReadingProgressSave = false;
 }
 
@@ -7919,6 +7979,11 @@ async function persistArticleDraft(text) {
 async function renderArticleText(text, options = {}) {
   const article = document.getElementById("article");
   const renderToken = ++readingPositionRenderToken;
+  const fingerprintPromise = window.LingoFlowReadingResume.fingerprintContent(text)
+    .catch(error => {
+      console.warn("Resume checkpoint fingerprint unavailable:", error?.message || "unknown");
+      return null;
+    });
 
   suppressReadingProgressSave = true;
   cancelScheduledReadingSave();
@@ -8000,8 +8065,17 @@ async function renderArticleText(text, options = {}) {
       "这篇文章超过 1 MB 云同步上限，已保存在本机，但不会同步到其他设备。";
   }
 
-  if (options.restoreReading?.updatedAt) {
-    await restoreArticleReadingPosition(options.restoreReading, renderToken);
+  const contentFingerprint = await fingerprintPromise;
+  if (renderToken !== readingPositionRenderToken) return;
+  if (readingProgressSession?.articleId === activeArticleId) {
+    readingProgressSession.contentFingerprint = contentFingerprint;
+  }
+  const matchingResume = window.LingoFlowReadingResume.validForContent(
+    options.restoreReading, contentFingerprint
+  );
+  const restoreReading = matchingResume || options.restoreReading;
+  if (restoreReading?.updatedAt) {
+    await restoreArticleReadingPosition(restoreReading, renderToken);
     return;
   }
 
@@ -8009,6 +8083,7 @@ async function renderArticleText(text, options = {}) {
   await waitForReadingLayout();
   if (renderToken !== readingPositionRenderToken) return;
   updateReadingProgress();
+  establishReadingSessionBaseline(contentFingerprint);
   suppressReadingProgressSave = false;
 }
 

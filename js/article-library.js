@@ -56,6 +56,9 @@
       updatedAt: readingState.updatedAt ?? base.updatedAt ?? null
     };
     delete normalized.lastReadAt;
+    const resume = window.LingoFlowReadingResume?.normalizeCheckpoint(normalized.resume);
+    if (resume) normalized.resume = resume;
+    else delete normalized.resume;
     return normalized;
   }
 
@@ -190,7 +193,11 @@
       return { result: rejectRestoreArticle(article, "invalid-reading") };
     }
 
-    return { article: structuredClone(article) };
+    const incoming = structuredClone(article);
+    if (Object.prototype.hasOwnProperty.call(incoming.reading, "resume")) {
+      incoming.reading = normalizeReading(incoming.reading);
+    }
+    return { article: incoming };
   }
 
   function valuesEqual(left, right) {
