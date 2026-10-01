@@ -239,7 +239,7 @@ test("LingoFlowLibraryDB 使用预期的 version、store 和索引", async ({ pa
   });
 
   expect(schema.name).toBe("LingoFlowLibraryDB");
-  expect(schema.version).toBe(2);
+  expect(schema.version).toBe(3);
   expect(schema.storeName).toBe("articles");
   expect(schema.keyPath).toBe("id");
   expect(schema.indexes).toEqual([
@@ -874,20 +874,9 @@ test("正文外页面高度变化不会改变文章 progress", async ({ page }) 
 test("连续滚动由 700ms trailing debounce 合并为一次进度写入", async ({ page }) => {
   await fillDraft(page, makeLongArticle("Debounced progress"));
   await startReading(page);
-
-  await page.evaluate(() => {
-    const original = window.LingoFlowArticleLibrary;
-    window.__readingProgressWrites = [];
-    window.LingoFlowArticleLibrary = Object.freeze({
-      ...original,
-      updateArticleReading: async (id, changes) => {
-        if (Object.prototype.hasOwnProperty.call(changes, "progress")) {
-          window.__readingProgressWrites.push({ id, changes: { ...changes } });
-        }
-        return await original.updateArticleReading(id, changes);
-      }
-    });
-  });
+  const [initialArticle] = await getArticles(page);
+  const initialFence = await page.evaluate(id =>
+    window.LingoFlowArticleLibrary.getProgressContext(id), initialArticle.id);
 
   await scrollArticleToProgress(page, 0.18);
   await page.waitForTimeout(120);
@@ -895,11 +884,15 @@ test("连续滚动由 700ms trailing debounce 合并为一次进度写入", asyn
   await page.waitForTimeout(120);
   await scrollArticleToProgress(page, 0.44);
 
-  await expect.poll(() => page.evaluate(() => window.__readingProgressWrites.length), {
+  await expect.poll(() => page.evaluate(async id =>
+    (await window.LingoFlowArticleLibrary.getProgressContext(id)).fence.resumeRevision,
+    initialArticle.id), {
     timeout: 2500
-  }).toBe(1);
+  }).toBe(initialFence.fence.resumeRevision + 1);
   await page.waitForTimeout(250);
-  expect(await page.evaluate(() => window.__readingProgressWrites.length)).toBe(1);
+  expect(await page.evaluate(async id =>
+    (await window.LingoFlowArticleLibrary.getProgressContext(id)).fence.resumeRevision,
+    initialArticle.id)).toBe(initialFence.fence.resumeRevision + 1);
 
   const [article] = await getArticles(page);
   expect(article.reading.progress).toBeGreaterThan(0.35);

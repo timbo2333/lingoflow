@@ -1197,7 +1197,7 @@ test("v1 → v4 保留 binding、sidecar、prepared/ready request 并补齐 runt
     };
   }, OWNER);
 
-  expect(upgraded.version).toBe(4);
+  expect(upgraded.version).toBe(5);
   expect(upgraded.stores).toEqual([
     "articleOutbox",
     "articleSidecars",
@@ -1205,6 +1205,7 @@ test("v1 → v4 保留 binding、sidecar、prepared/ready request 并补齐 runt
     "entitySidecars",
     "inbox",
     "outbox",
+    "progressDesired",
     "syncIssues"
   ]);
   expect(upgraded.binding.binding).toMatchObject(OWNER);
@@ -1224,7 +1225,7 @@ test("v1 → v4 保留 binding、sidecar、prepared/ready request 并补齐 runt
   }
 });
 
-test("v1 ready mutation 升级至 v4 后以原 identity 完成真实 push settlement", async ({ page }) => {
+test("v1 ready mutation 升级至 v5 后以原 identity 完成真实 push settlement", async ({ page }) => {
   await page.goto("/");
   await page.addScriptTag({ url: "/js/sync-canonical.js" });
   await page.addScriptTag({ url: "/js/cloud-sync-protocol.js" });
@@ -1339,7 +1340,7 @@ test("v1 ready mutation 升级至 v4 后以原 identity 完成真实 push settle
     };
   }, OWNER);
 
-  expect(result.version).toBe(4);
+  expect(result.version).toBe(5);
   expect(result.stores).toEqual([
     "articleOutbox",
     "articleSidecars",
@@ -1347,6 +1348,7 @@ test("v1 ready mutation 升级至 v4 后以原 identity 完成真实 push settle
     "entitySidecars",
     "inbox",
     "outbox",
+    "progressDesired",
     "syncIssues"
   ]);
   expect(result.upgraded.items).toHaveLength(1);

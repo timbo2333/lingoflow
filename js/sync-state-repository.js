@@ -2,7 +2,7 @@
   "use strict";
 
   const DB_NAME = "LingoFlowSyncDB";
-  const DB_VERSION = 4;
+  const DB_VERSION = 5;
   const CONTROL_STORE = "control";
   const SIDECAR_STORE = "entitySidecars";
   const OUTBOX_STORE = "outbox";
@@ -11,6 +11,7 @@
   // Article payloads live in a separate lane so runtime work cannot block Favorite sync.
   const ARTICLE_OUTBOX_STORE = "articleOutbox";
   const ARTICLE_SIDECAR_STORE = "articleSidecars";
+  const PROGRESS_DESIRED_STORE = "progressDesired";
   const ARTICLE_BOOTSTRAP_STATE_PREFIX = "article-bootstrap-state:";
   const ARTICLE_BOOTSTRAP_INVENTORY_PREFIX = "article-bootstrap-inventory:";
   const ARTICLE_BOOTSTRAP_PENDING_PREFIX = "article-bootstrap-pending:";
@@ -838,6 +839,11 @@
         }
         if (!db.objectStoreNames.contains(ARTICLE_SIDECAR_STORE)) {
           db.createObjectStore(ARTICLE_SIDECAR_STORE, { keyPath: ["ownerId", "articleId"] });
+        }
+        if (!db.objectStoreNames.contains(PROGRESS_DESIRED_STORE)) {
+          db.createObjectStore(PROGRESS_DESIRED_STORE, {
+            keyPath: ["ownerId", "bindingId", "articleId"]
+          });
         }
       };
 
@@ -4265,10 +4271,127 @@
     }
   }
 
+  // Progress is an owner-scoped latest-intent register, not an Article mutation lane.
+  // The sequence is allocated in this transaction, so tabs share one ordering source.
+  function validProgressDesiredRecord(record, ownerId, bindingId, articleId = null) {
+    if (!record || record.ownerId !== ownerId || record.bindingId !== bindingId ||
+        typeof record.articleId !== "string" || !record.articleId ||
+        (articleId !== null && record.articleId !== articleId) ||
+        !Number.isSafeInteger(record.localSeq) || record.localSeq < 1) return false;
+    const normalize = window.LingoFlowReadingResume?.normalizeCheckpoint;
+    const pending = record.pending;
+    if (pending !== null && pending !== undefined &&
+        (typeof pending !== "object" || !pending.actionId ||
+         pending.localSeq !== record.localSeq || pending.articleId !== record.articleId ||
+         pending.ownerId !== ownerId || pending.bindingId !== bindingId ||
+         !normalize?.(pending.target) || !pending.scope?.scopeToken ||
+         !pending.articleFence?.lifecycleToken)) return false;
+    const confirmed = record.confirmed;
+    if (confirmed !== null && confirmed !== undefined &&
+        (!normalize?.(confirmed.checkpoint) || !confirmed.fence?.lifecycleToken ||
+         !confirmed.fence.action?.actionId)) return false;
+    return true;
+  }
+
+  async function prepareProgressMovement(value) {
+    const { ownerId, bindingId, articleId, target, beforeResume, articleFence, scope } = value || {};
+    const normalize = window.LingoFlowReadingResume?.normalizeCheckpoint;
+    const checkpoint = normalize?.(target);
+    const before = beforeResume === null ? null : normalize?.(beforeResume);
+    if (!ownerId || !bindingId || !articleId || !checkpoint ||
+        scope?.ownerId !== ownerId || scope?.bindingId !== bindingId ||
+        !scope?.scopeToken || !articleFence?.lifecycleToken ||
+        !Number.isInteger(articleFence.resumeRevision) ||
+        (beforeResume !== null && !before)) throw new Error("Progress movement 无效。");
+    return runTransaction([CONTROL_STORE, PROGRESS_DESIRED_STORE], "readwrite", async tx => {
+      const binding = await requireBinding(tx.objectStore(CONTROL_STORE), ownerId, bindingId);
+      if (binding.status !== "ready") return binding;
+      const store = tx.objectStore(PROGRESS_DESIRED_STORE);
+      const key = [ownerId, bindingId, articleId];
+      const previous = await requestResult(store.get(key));
+      if (previous && !validProgressDesiredRecord(previous, ownerId, bindingId, articleId)) {
+        return { status: "malformed-progress-record" };
+      }
+      const localSeq = (previous?.localSeq || 0) + 1;
+      const pending = {
+        actionId: window.crypto.randomUUID(), localSeq, articleId, ownerId, bindingId,
+        target: checkpoint, beforeResume: before,
+        contentFingerprint: checkpoint.contentFingerprint,
+        scope, articleFence
+      };
+      const record = {
+        ownerId, bindingId, articleId, localSeq,
+        confirmed: previous?.confirmed || null,
+        pending,
+        quarantined: previous?.quarantined || null
+      };
+      await requestResult(store.put(record));
+      return { status: "prepared", pending, record };
+    });
+  }
+
+  async function getProgressDesired(ownerId, bindingId, articleId) {
+    return runTransaction([CONTROL_STORE, PROGRESS_DESIRED_STORE], "readonly", async tx => {
+      const binding = await requireBinding(tx.objectStore(CONTROL_STORE), ownerId, bindingId);
+      if (binding.status !== "ready") return binding;
+      const record = await requestResult(tx.objectStore(PROGRESS_DESIRED_STORE)
+        .get([ownerId, bindingId, articleId]));
+      if (record && !validProgressDesiredRecord(record, ownerId, bindingId, articleId)) {
+        return { status: "malformed-progress-record" };
+      }
+      return { status: "ready", record: record || null };
+    });
+  }
+
+  async function listProgressDesired(ownerId, bindingId) {
+    return runTransaction([CONTROL_STORE, PROGRESS_DESIRED_STORE], "readonly", async tx => {
+      const binding = await requireBinding(tx.objectStore(CONTROL_STORE), ownerId, bindingId);
+      if (binding.status !== "ready") return binding;
+      const range = IDBKeyRange.bound([ownerId, bindingId, ""], [ownerId, bindingId, "\uffff"]);
+      const records = await requestResult(tx.objectStore(PROGRESS_DESIRED_STORE).getAll(range));
+      return { status: "ready", records: records.filter(record =>
+        validProgressDesiredRecord(record, ownerId, bindingId)),
+      malformedCount: records.filter(record =>
+        !validProgressDesiredRecord(record, ownerId, bindingId)).length };
+    });
+  }
+
+  async function settleProgressMovement(ownerId, bindingId, articleId, actionId, outcome,
+    reason = null, articleFence = null) {
+    if (!["promote", "quarantine"].includes(outcome)) throw new Error("Progress settlement 无效。");
+    return runTransaction([CONTROL_STORE, PROGRESS_DESIRED_STORE], "readwrite", async tx => {
+      const binding = await requireBinding(tx.objectStore(CONTROL_STORE), ownerId, bindingId);
+      if (binding.status !== "ready") return binding;
+      const store = tx.objectStore(PROGRESS_DESIRED_STORE);
+      const record = await requestResult(store.get([ownerId, bindingId, articleId]));
+      if (record && !validProgressDesiredRecord(record, ownerId, bindingId, articleId)) {
+        return { status: "malformed-progress-record" };
+      }
+      if (!record?.pending || record.pending.actionId !== actionId) {
+        return { status: "superseded", record: record || null };
+      }
+      if (outcome === "promote") {
+        if (!articleFence || articleFence.action?.actionId !== actionId ||
+            articleFence.action?.localSeq !== record.pending.localSeq) {
+          return { status: "unverified-fence" };
+        }
+        record.confirmed = { checkpoint: record.pending.target, fence: articleFence };
+      }
+      else record.quarantined = { pending: record.pending, reason: String(reason || "unsafe-replay") };
+      record.pending = null;
+      await requestResult(store.put(record));
+      return { status: outcome === "promote" ? "confirmed" : "quarantined", record };
+    });
+  }
+
   window.LingoFlowSyncStateRepository = Object.freeze({
     DB_NAME,
     DB_VERSION,
     openDatabase,
+    prepareProgressMovement,
+    getProgressDesired,
+    listProgressDesired,
+    settleProgressMovement,
     closeDatabase,
     bindWorkspace,
     getWorkspaceBinding,

@@ -12,6 +12,7 @@
   ]);
   const LEARNING_STORAGE_PREFIX = "LingoFlowFavoriteLearningState:";
   const ACTIVATION_PROMPT_PREFIX = "lingoflowFavoriteActivationPromptSeen:";
+  const WORKSPACE_SWITCH_LOCK = "lingoflow:workspace-account-switch";
 
   function isOpaqueString(value) {
     return typeof value === "string" && Boolean(value.trim()) && value === value.trim();
@@ -32,8 +33,9 @@
         typeof dependencies.articleSync?.prepareAccountSwitch !== "function" ||
         typeof dependencies.syncState?.getWorkspaceBinding !== "function" ||
         typeof dependencies.syncState?.replaceWorkspaceBinding !== "function" ||
-        typeof dependencies.articles?.listArticles !== "function" ||
-        typeof dependencies.articles?.replaceAllArticles !== "function" ||
+        typeof dependencies.articles?.getWorkspaceTransition !== "function" ||
+        typeof dependencies.articles?.beginWorkspaceTransition !== "function" ||
+        typeof dependencies.articles?.finishWorkspaceTransition !== "function" ||
         typeof dependencies.articles?.setAccountSwitchWriteBlocked !== "function") {
       throw new Error("账号切换依赖不可用。");
     }
@@ -69,6 +71,12 @@
   }
 
   function restoreCapturedStorage(snapshot) {
+    for (const item of snapshot) {
+      const current = localStorage.getItem(item.key);
+      if (current !== null && current !== item.value) {
+        throw new Error("账号切换期间本地用户数据发生变化，需要人工恢复。");
+      }
+    }
     const snapshotKeys = new Set(snapshot.map(item => item.key));
     for (let index = localStorage.length - 1; index >= 0; index -= 1) {
       const key = localStorage.key(index);
@@ -80,6 +88,16 @@
       if (item.value === null) localStorage.removeItem(item.key);
       else localStorage.setItem(item.key, item.value);
     }
+  }
+
+  function ensureCapturedStorageCleared(snapshot) {
+    for (const item of snapshot) {
+      const current = localStorage.getItem(item.key);
+      if (current !== null && current !== item.value) {
+        throw new Error("账号切换期间本地用户数据发生变化，需要人工恢复。");
+      }
+    }
+    for (const item of snapshot) localStorage.removeItem(item.key);
   }
 
   async function exportBackupDownload(backup) {
@@ -104,20 +122,49 @@
     return { status: "ready" };
   }
 
-  async function rollbackUserAssets(dependencies, articleSnapshot, storageSnapshot) {
-    let rollbackFailed = false;
-    try {
-      const articles = await dependencies.articles.replaceAllArticles([], articleSnapshot);
-      if (articles.status !== "replaced") rollbackFailed = true;
-    } catch {
-      rollbackFailed = true;
+  let recoveryPromise = null;
+  async function recoverTransitionUnderLock() {
+    const articles = window.LingoFlowArticleLibrary;
+    const syncState = window.LingoFlowSyncStateRepository;
+    if (typeof articles?.getWorkspaceTransition !== "function" ||
+        typeof articles?.finishWorkspaceTransition !== "function" ||
+        typeof syncState?.getWorkspaceBinding !== "function") {
+      return { status: "blocked", reason: "transition-dependencies-unavailable" };
     }
-    try {
-      restoreCapturedStorage(storageSnapshot);
-    } catch {
-      rollbackFailed = true;
+    const transition = await articles.getWorkspaceTransition();
+    if (!transition) return { status: "ready" };
+    const binding = await syncState.getWorkspaceBinding();
+    if (binding.status !== "ready") return { status: "blocked", reason: "binding-unavailable" };
+    const current = binding.binding;
+    if (current.ownerId === transition.from.ownerId &&
+        current.bindingId === transition.from.bindingId) {
+      restoreCapturedStorage(transition.storageSnapshot);
+      return await articles.finishWorkspaceTransition(transition.transitionId, "rollback");
     }
-    return rollbackFailed ? "rollback-failed" : "rolled-back";
+    if (current.ownerId === transition.to.ownerId &&
+        current.bindingId === transition.to.bindingId) {
+      ensureCapturedStorageCleared(transition.storageSnapshot);
+      return await articles.finishWorkspaceTransition(transition.transitionId, "finalize");
+    }
+    return { status: "blocked", reason: "binding-transition-mismatch" };
+  }
+
+  async function recoverInterruptedSwitch() {
+    if (recoveryPromise) return recoveryPromise;
+    if (!window.navigator.locks?.request) {
+      try {
+        const transition = await window.LingoFlowArticleLibrary?.getWorkspaceTransition();
+        return transition ? { status: "blocked", reason: "switch-lock-unavailable" }
+          : { status: "ready" };
+      } catch {
+        return { status: "blocked", reason: "transition-recovery-failed" };
+      }
+    }
+    recoveryPromise = window.navigator.locks.request(WORKSPACE_SWITCH_LOCK,
+      recoverTransitionUnderLock).catch(() =>
+      ({ status: "blocked", reason: "transition-recovery-failed" }));
+    try { return await recoveryPromise; }
+    finally { recoveryPromise = null; }
   }
 
   async function switchToCurrentAccount(options = {}) {
@@ -128,6 +175,13 @@
       return { status: "failed", reason: "switch-unavailable", message: error.message };
     }
 
+    const recoveredBefore = await recoverInterruptedSwitch();
+    if (!["ready", "rolled-back", "finalized"].includes(recoveredBefore.status)) {
+      return { status: "failed", reason: "switch-recovery-required" };
+    }
+    if (!window.navigator.locks?.request) {
+      return { status: "failed", reason: "switch-lock-unavailable" };
+    }
     let session;
     let bindingResult;
     try {
@@ -154,6 +208,7 @@
       if (typeof window.flushReadingProgress === "function") {
         await window.flushReadingProgress();
       }
+      await window.LingoFlowProgressLocalDesired?.prepareAccountSwitch();
       if (options.backupFirst) {
         const backup = await exportBackupDownload(dependencies.backup);
         if (backup.status !== "ready") return backup;
@@ -169,60 +224,83 @@
       return { status: "failed", reason: "switch-preparation-failed", message: error.message };
     }
 
-    let articleSnapshot = null;
-    let storageSnapshot = null;
-    let localAssetsCleared = false;
+    let switchResult;
     try {
-      articleSnapshot = await dependencies.articles.listArticles({ includeDeleted: true });
-      storageSnapshot = captureStorage(storageKeysForOwner(previousBinding.ownerId));
-      clearCapturedStorage(storageSnapshot);
-      const articleResult = await dependencies.articles.replaceAllArticles(articleSnapshot, []);
-      if (articleResult.status !== "replaced") {
-        throw new Error("文章数据在账号切换期间发生变化。");
-      }
-      localAssetsCleared = true;
+      switchResult = await window.navigator.locks.request(WORKSPACE_SWITCH_LOCK, async () => {
+        let transitionStarted = false;
+        try {
+          const latestBinding = await dependencies.syncState.getWorkspaceBinding();
+          if (latestBinding.status !== "ready" ||
+              latestBinding.binding.ownerId !== previousBinding.ownerId ||
+              latestBinding.binding.bindingId !== previousBinding.bindingId) {
+            throw new Error("Workspace 关联在账号切换前已变化。");
+          }
+          const storageSnapshot = captureStorage(storageKeysForOwner(previousBinding.ownerId));
+          const nextBinding = {
+            ownerId: session.user.id,
+            bindingId: createBindingId()
+          };
+          const transition = await dependencies.articles.beginWorkspaceTransition({
+            from: previousBinding, to: nextBinding, storageSnapshot
+          });
+          if (transition.status !== "switching") {
+            throw new Error("文章 Workspace 正在切换或归属已变化。");
+          }
+          transitionStarted = true;
+          clearCapturedStorage(storageSnapshot);
 
-      const nextBinding = {
-        ownerId: session.user.id,
-        bindingId: createBindingId()
-      };
-      const replacement = await dependencies.syncState.replaceWorkspaceBinding({
-        from: previousBinding,
-        to: nextBinding,
-        accountLabel: isOpaqueString(session.user.email) ? session.user.email : "当前账号"
+          const replacement = await dependencies.syncState.replaceWorkspaceBinding({
+            from: previousBinding,
+            to: nextBinding,
+            accountLabel: isOpaqueString(session.user.email) ? session.user.email : "当前账号"
+          });
+          if (replacement.status !== "replaced") {
+            throw new Error("Workspace 关联未能安全切换。");
+          }
+          ensureCapturedStorageCleared(storageSnapshot);
+          const finalized = await dependencies.articles.finishWorkspaceTransition(
+            transition.transition.transitionId, "finalize");
+          if (finalized.status !== "finalized") throw new Error("文章 Workspace finalize 未完成。");
+          dependencies.articles.setAccountSwitchWriteBlocked(false);
+          return { status: "switched", binding: replacement.binding };
+        } catch (error) {
+          const recovery = transitionStarted
+            ? await recoverTransitionUnderLock().catch(() =>
+              ({ status: "blocked", reason: "transition-recovery-failed" }))
+            : { status: "ready" };
+          if (recovery.status === "finalized") {
+            dependencies.articles.setAccountSwitchWriteBlocked(false);
+            return { status: "switched",
+              binding: (await dependencies.syncState.getWorkspaceBinding()).binding };
+          }
+          const safe = ["ready", "rolled-back"].includes(recovery.status);
+          if (safe) dependencies.articles.setAccountSwitchWriteBlocked(false);
+          return {
+            status: "failed",
+            reason: safe ? "switch-failed" : "switch-recovery-required",
+            message: error.message,
+            restartOldSync: safe
+          };
+        }
       });
-      if (replacement.status !== "replaced") {
-        throw new Error("Workspace 关联未能安全切换。");
-      }
-      return { status: "switched", binding: replacement.binding };
     } catch (error) {
-      let rollbackStatus = "not-needed";
-      if (storageSnapshot) {
-        rollbackStatus = localAssetsCleared
-          ? await rollbackUserAssets(dependencies, articleSnapshot || [], storageSnapshot)
-          : (() => {
-              try {
-                restoreCapturedStorage(storageSnapshot);
-                return "rolled-back";
-              } catch {
-                return "rollback-failed";
-              }
-            })();
-      }
-      dependencies.articles.setAccountSwitchWriteBlocked(false);
+      const recovery = await recoverInterruptedSwitch();
+      const safe = ["ready", "rolled-back", "finalized"].includes(recovery.status);
+      if (safe) dependencies.articles.setAccountSwitchWriteBlocked(false);
+      return { status: "failed", reason: safe ? "switch-failed" : "switch-recovery-required",
+        message: error.message };
+    }
+    if (switchResult.restartOldSync) {
       await dependencies.sync.bootstrap().catch(() => {});
       await dependencies.articleSync.start().catch(() => {});
-      return {
-        status: "failed",
-        reason: rollbackStatus === "rollback-failed"
-          ? "switch-rollback-failed"
-          : "switch-failed",
-        message: error.message
-      };
+      const { restartOldSync, ...result } = switchResult;
+      return result;
     }
+    return switchResult;
   }
 
   window.LingoFlowAccountSwitchService = Object.freeze({
-    switchToCurrentAccount
+    switchToCurrentAccount, recoverInterruptedSwitch
   });
+  void recoverInterruptedSwitch();
 })();

@@ -331,6 +331,10 @@
   }
 
   async function startRuntime(options = {}) {
+    const recovery = await window.LingoFlowAccountSwitchService?.recoverInterruptedSwitch();
+    if (recovery && !["ready", "rolled-back", "finalized"].includes(recovery.status)) {
+      return setState({ status: "blocked", reason: recovery.reason || "workspace-transition" });
+    }
     const epoch = runtimeEpoch;
     let session;
     let dependencies;

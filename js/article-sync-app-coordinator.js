@@ -166,6 +166,10 @@
 
     async function performStart() {
       if (!gateEnabled()) return stop("feature-disabled");
+      const recovery = await window.LingoFlowAccountSwitchService?.recoverInterruptedSwitch();
+      if (recovery && !["ready", "rolled-back", "finalized"].includes(recovery.status)) {
+        return setState({ status: "blocked", reason: recovery.reason || "workspace-transition" });
+      }
       const epoch = ++generation;
       clearPolling();
       setState({ status: "starting", reason: "resolving-context" });

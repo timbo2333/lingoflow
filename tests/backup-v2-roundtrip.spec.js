@@ -162,8 +162,14 @@ test("Backup v2 export/import preserves Resume; legacy backup without Resume rem
         articles: [oldArticle]
       }).envelope;
       const older = await window.LingoFlowBackupV2.restoreBackup(legacyPayload);
+      const binding = { ownerId: "backup-import-owner", bindingId: "backup-import-binding" };
+      await window.LingoFlowSyncStateRepository.bindWorkspace(binding);
+      const importedDesired = await window.LingoFlowSyncStateRepository.getProgressDesired(
+        binding.ownerId, binding.bindingId, payload.data.articles[0].id
+      );
       return {
         current, older,
+        importedDesired: importedDesired.record,
         currentArticle: await window.LingoFlowArticleLibrary.getArticle(
           payload.data.articles[0].id
         ),
@@ -173,6 +179,7 @@ test("Backup v2 export/import preserves Resume; legacy backup without Resume rem
     expect(result.current.status).toBe("completed");
     expect(result.older.status).toBe("completed");
     expect(result.currentArticle.reading.resume).toEqual(checkpoint);
+    expect(result.importedDesired).toBeNull();
     expect(result.oldArticle.reading).not.toHaveProperty("resume");
   } finally {
     await destination.close();

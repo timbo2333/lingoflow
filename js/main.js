@@ -3654,6 +3654,7 @@ const myArticleOperations = new Set();
 let readingProgressSaveTimer = null;
 let readingProgressUIFrame = null;
 let readingProgressWriteQueue = Promise.resolve(null);
+let readingProgressRetryDelay = 2000;
 let readingPositionRenderToken = 0;
 let suppressReadingProgressSave = false;
 let readingProgressSession = null;
@@ -4525,7 +4526,20 @@ function queueReadingProgressWrite(articleId, furthestSnapshot, resumeSnapshot, 
       const library = window.LingoFlowArticleLibrary;
       if (!library) throw new Error("文章数据层未加载，阅读进度无法保存。");
 
-      const updatedArticle = await library.updateArticleReading(articleId, reading);
+      let updatedArticle;
+      let resultStatus = "local-only";
+      if (resumeSnapshot && window.LingoFlowProgressLocalDesired) {
+        const result = await window.LingoFlowProgressLocalDesired.writeRealMovement(
+          articleId, reading.resume, furthestSnapshot
+        );
+        resultStatus = result.status;
+        if (!["confirmed", "local-only", "superseded"].includes(result.status)) {
+          throw new Error(`Resume movement deferred: ${result.status}`);
+        }
+        updatedArticle = result.article || await library.getArticle(articleId);
+      } else {
+        updatedArticle = await library.updateArticleReading(articleId, reading);
+      }
       if (activeArticleId === updatedArticle.id && currentArticle?.id === updatedArticle.id) {
         currentArticle = {
           ...currentArticle,
@@ -4533,9 +4547,11 @@ function queueReadingProgressWrite(articleId, furthestSnapshot, resumeSnapshot, 
         };
       }
       const session = readingProgressSession;
-      if (session?.articleId === articleId && resumeSnapshot) {
+      if (session?.articleId === articleId && resumeSnapshot &&
+          (resultStatus === "confirmed" || resultStatus === "local-only")) {
         session.resumeCommittedPosition = { ...resumeSnapshot };
       }
+      readingProgressRetryDelay = 2000;
       return updatedArticle;
     })
     .catch(error => {
@@ -4553,6 +4569,15 @@ function queueReadingProgressWrite(articleId, furthestSnapshot, resumeSnapshot, 
         }
       }
       console.error("Reading progress save error:", error);
+      if (session?.articleId === articleId && (session.dirty || session.resumeDirty) &&
+          document.visibilityState !== "hidden") {
+        cancelScheduledReadingSave();
+        readingProgressSaveTimer = setTimeout(() => {
+          readingProgressSaveTimer = null;
+          void flushReadingProgress();
+        }, readingProgressRetryDelay);
+        readingProgressRetryDelay = Math.min(readingProgressRetryDelay * 2, 30000);
+      }
       return null;
     });
 
@@ -4654,6 +4679,10 @@ window.addEventListener("scroll", handleReadingScroll, { passive: true });
 
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "hidden") void flushReadingProgress();
+});
+
+window.addEventListener("blur", () => {
+  void flushReadingProgress();
 });
 
 window.addEventListener("pagehide", () => {
@@ -8233,26 +8262,34 @@ function initializeArticleSync() {
   });
 }
 
-initializeModalSystem();
-window.LingoFlowAnnouncements?.initialize();
-updateLegacyImportModePresentation();
-window.addEventListener("lingoflow:auth-state", updateSettingsAccountSummary);
-window.addEventListener("lingoflow:favorite-sync-status", updateSettingsAccountSummary);
-window.addEventListener("lingoflow:article-sync-status", updateSettingsAccountSummary);
-ensureHistoryMigration();
-initializeFavoriteSync();
-initializeArticleSync();
-initializeDictionaryOnStartup();
-updateVocabBadges();
-applyReadingPreferences();
-initializeSpeechPreferences();
-setupTextDropZone();
-setupPhraseSelection();
-initializeReaderShell();
-checkBackupReminder();
-updateReadingProgress();
-initializeAppNavigation();
-void refreshHomeContinueReading();
+async function initializeAfterWorkspaceRecovery() {
+  const recovery = await window.LingoFlowAccountSwitchService?.recoverInterruptedSwitch();
+  if (recovery && !["ready", "rolled-back", "finalized"].includes(recovery.status)) {
+    console.warn("Workspace transition recovery required:", recovery.reason || "unknown");
+    return;
+  }
+  initializeModalSystem();
+  window.LingoFlowAnnouncements?.initialize();
+  updateLegacyImportModePresentation();
+  window.addEventListener("lingoflow:auth-state", updateSettingsAccountSummary);
+  window.addEventListener("lingoflow:favorite-sync-status", updateSettingsAccountSummary);
+  window.addEventListener("lingoflow:article-sync-status", updateSettingsAccountSummary);
+  ensureHistoryMigration();
+  initializeFavoriteSync();
+  initializeArticleSync();
+  initializeDictionaryOnStartup();
+  updateVocabBadges();
+  applyReadingPreferences();
+  initializeSpeechPreferences();
+  setupTextDropZone();
+  setupPhraseSelection();
+  initializeReaderShell();
+  checkBackupReminder();
+  updateReadingProgress();
+  initializeAppNavigation();
+  void refreshHomeContinueReading();
+}
+void initializeAfterWorkspaceRecovery();
 
 document.addEventListener("keydown", function(event) {
   if (event.key === "Escape") {

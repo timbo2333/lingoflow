@@ -17,7 +17,7 @@ async function bound(page) {
   expect(["bound", "unchanged"]).toContain(result.status);
 }
 
-test("Article DB v2 新建时 bySource 非唯一；相同 source 的不同 ID 共存", async ({ page }) => {
+test("Article DB v3 新建时 bySource 非唯一；相同 source 的不同 ID 共存", async ({ page }) => {
   const result = await page.evaluate(async () => {
     const library = window.LingoFlowArticleLibrary;
     const db = await library.openDatabase();
@@ -35,13 +35,13 @@ test("Article DB v2 新建时 bySource 非唯一；相同 source 的不同 ID �
       second: second.id
     };
   });
-  expect(result.version).toBe(2);
+  expect(result.version).toBe(3);
   expect(result.unique).toBe(false);
   expect(result.first).not.toBe(result.second);
   expect(result.ids).toEqual(expect.arrayContaining([result.first, result.second]));
 });
 
-test("真实 v1 → v2 upgrade 保留 ID、正文、reading、soft-delete", async ({ browser }) => {
+test("真实 v1 → v3 upgrade 保留 ID、正文、reading、soft-delete", async ({ browser }) => {
   const context = await browser.newContext({ baseURL: "http://127.0.0.1:4173" });
   const fresh = await context.newPage();
   try {
@@ -85,7 +85,7 @@ test("真实 v1 → v2 upgrade 保留 ID、正文、reading、soft-delete", asyn
         unique: db.transaction("articles").objectStore("articles").index("bySource").unique,
         article, second };
     });
-    expect(result.version).toBe(2);
+    expect(result.version).toBe(3);
     expect(result.unique).toBe(false);
     expect(result.article).toEqual(original);
     expect(result.second.id).not.toBe(original.id);
@@ -94,7 +94,7 @@ test("真实 v1 → v2 upgrade 保留 ID、正文、reading、soft-delete", asyn
   }
 });
 
-test("Sync DB v3 → v4 upgrade 保留原 binding 并只增 Article stores", async ({ browser }) => {
+test("Sync DB v3 → v5 upgrade 保留原 binding 并增 Article / Progress stores", async ({ browser }) => {
   const context = await browser.newContext({ baseURL: "http://127.0.0.1:4173" });
   const fresh = await context.newPage();
   try {
@@ -124,9 +124,9 @@ test("Sync DB v3 → v4 upgrade 保留原 binding 并只增 Article stores", asy
       return { version: db.version, stores: Array.from(db.objectStoreNames).sort(),
         binding: await state.getWorkspaceBinding() };
     });
-    expect(result.version).toBe(4);
+    expect(result.version).toBe(5);
     expect(result.stores).toEqual([
-      "articleOutbox", "articleSidecars", "control", "entitySidecars", "inbox", "outbox", "syncIssues"
+      "articleOutbox", "articleSidecars", "control", "entitySidecars", "inbox", "outbox", "progressDesired", "syncIssues"
     ]);
     expect(result.binding.binding).toMatchObject(OWNER);
   } finally {
