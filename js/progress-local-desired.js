@@ -406,6 +406,15 @@
     finally { inFlight.delete(operation); }
   }
 
+  async function prepareReceiptRecovery(ownerId, bindingId, articleId, attemptId) {
+    const owner = { ownerId, bindingId };
+    const capturedGeneration = generation;
+    if (!await stillCurrent(owner, capturedGeneration)) return { status: "blocked", reason: "scope-mismatch" };
+    const result = await state.prepareProgressReceiptRecovery(ownerId, bindingId, articleId, attemptId);
+    return await stillCurrent(owner, capturedGeneration) ? result
+      : { status: "blocked", reason: "scope-mismatch" };
+  }
+
   // A two-sided read is advisory only. Its answer must never be persisted as
   // permanent sync authority or used as permission to send another request.
   async function evaluateLatestLocalCloudCoverage(ownerId, bindingId, articleId) {
@@ -491,7 +500,7 @@
     writeRealMovement, reconcile, evaluateConfirmed, evaluateCloudCandidate,
     prepareCloudAttempt, resumeCloudAttemptPostflight,
     reserveCloudAttemptForDispatch, captureCloudResponseContext,
-    settleCloudResult, evaluateLatestLocalCloudCoverage, prepareAccountSwitch
+    settleCloudResult, prepareReceiptRecovery, evaluateLatestLocalCloudCoverage, prepareAccountSwitch
   });
   const scheduleReconcile = () => {
     void reconcile().catch(error => console.warn("Progress local recovery deferred:", error));

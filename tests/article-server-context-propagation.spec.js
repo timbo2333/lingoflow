@@ -110,6 +110,7 @@ test("canonical conflict snapshot supplies context, never the rejected candidate
       item.id, "revision:1", "a".repeat(64), "active");
     const service = window.LingoFlowArticleSyncCloudService.create({
       projectUrl: "https://example.supabase.co", publishableKey: "test-publishable-key",
+      captureSnapshotGuard: () => () => true,
       auth: { getSessionContext: async () => ({ status: "ready", user: { id: h.owner.ownerId } }),
         getAccessToken: async () => "test-token" },
       fetchImpl: async url => ({ ok: true, status: 200, json: async () => url.endsWith("_push")
@@ -130,7 +131,9 @@ test("canonical conflict snapshot supplies context, never the rejected candidate
   });
   expect(r.result.status).toBe("conflict");
   expect(r.result.remoteServerReadingContext).toEqual(r.parent);
-  expect(r.observed.status).toBe("recorded");
+  // The real snapshot seam ingests the context/evidence before returning.
+  // Copying that context into the conflict pipeline is not another observation.
+  expect(r.observed.status).toBe("unchanged");
   expect(r.beforeBind.context).toBeNull();
   expect(r.afterBind.context).toEqual(r.parent);
 });

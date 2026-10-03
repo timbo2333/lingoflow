@@ -4355,6 +4355,201 @@
   const progressScopeRange = (ownerId, bindingId) =>
     IDBKeyRange.bound([ownerId, bindingId, ""], [ownerId, bindingId, "\uffff"]);
 
+  // Local provenance only: neither counter orders server revisions, epochs,
+  // devices or reading positions. No clock/timestamp participates in this proof.
+  const evidenceKey = (ownerId, bindingId, articleId) =>
+    `article-context-evidence:${JSON.stringify([ownerId, bindingId, articleId])}`;
+  const safeOrdinal = value => Number.isSafeInteger(value) && value >= 0;
+  const evidenceFields = new Set(["key", "kind", "ownerId", "bindingId", "articleId",
+    "eventOrdinal", "confirmationSeq", "lastConfirmedRequestOrdinal", "requests"]);
+  const ticketFields = new Set(["ownerId", "bindingId", "articleId", "observationId", "requestEventOrdinal"]);
+  const confirmationFields = new Set(["ownerId", "bindingId", "articleId", "confirmationSeq",
+    "observationId", "source", "requestEventOrdinal", "context", "snapshotCursor"]);
+  const parentRejectionReasons = new Set(["parent-not-ready", "article-deleted",
+    "parent-epoch-mismatch", "fingerprint-mismatch"]);
+
+  function validEvidenceClock(value, ownerId, bindingId, articleId) {
+    return isPlainObject(value) && hasExactFields(value, evidenceFields) &&
+      value.key === evidenceKey(ownerId, bindingId, articleId) && value.kind === "article-context-evidence" &&
+      value.ownerId === ownerId && value.bindingId === bindingId && value.articleId === articleId &&
+      safeOrdinal(value.eventOrdinal) && safeOrdinal(value.confirmationSeq) &&
+      safeOrdinal(value.lastConfirmedRequestOrdinal) && value.confirmationSeq <= value.eventOrdinal &&
+      value.lastConfirmedRequestOrdinal <= value.eventOrdinal &&
+      (value.confirmationSeq === 0) === (value.lastConfirmedRequestOrdinal === 0) &&
+      Array.isArray(value.requests) && value.requests.length <= 32 &&
+      value.requests.every(ticket => isPlainObject(ticket) && hasExactFields(ticket, ticketFields) &&
+        ticket.ownerId === ownerId && ticket.bindingId === bindingId && ticket.articleId === articleId &&
+        uuid(ticket.observationId) && safeOrdinal(ticket.requestEventOrdinal) &&
+        ticket.requestEventOrdinal > 0 && ticket.requestEventOrdinal <= value.eventOrdinal) &&
+      new Set(value.requests.map(ticket => ticket.observationId)).size === value.requests.length &&
+      new Set(value.requests.map(ticket => ticket.requestEventOrdinal)).size === value.requests.length;
+  }
+
+  function validConfirmation(value, ownerId, bindingId, articleId) {
+    return isPlainObject(value) && hasExactFields(value, confirmationFields) &&
+      value.ownerId === ownerId && value.bindingId === bindingId && value.articleId === articleId &&
+      safeOrdinal(value.confirmationSeq) && value.confirmationSeq > 0 &&
+      safeOrdinal(value.requestEventOrdinal) && value.requestEventOrdinal > 0 &&
+      uuid(value.observationId) && value.source === "current-snapshot" &&
+      Boolean(progressCausal().normalizeParent(value.context)) &&
+      window.LingoFlowArticleSyncCloudProtocol?.cursorNumber(value.snapshotCursor, false) != null &&
+      typeof value.snapshotCursor === "string";
+  }
+
+  async function readEvidenceClock(tx, ownerId, bindingId, articleId, sidecar) {
+    const raw = await requestResult(tx.objectStore(CONTROL_STORE)
+      .get(evidenceKey(ownerId, bindingId, articleId)));
+    const confirmation = sidecar?.serverContextConfirmation;
+    if ((raw && !validEvidenceClock(raw, ownerId, bindingId, articleId)) ||
+        (confirmation != null && (!validConfirmation(confirmation, ownerId, bindingId, articleId) ||
+          !raw || confirmation.confirmationSeq !== raw.confirmationSeq ||
+          confirmation.requestEventOrdinal !== raw.lastConfirmedRequestOrdinal))) {
+      return { status: "malformed-confirmation-evidence" };
+    }
+    return { status: "ready", exists: Boolean(raw), clock: raw || { key: evidenceKey(ownerId, bindingId, articleId),
+      kind: "article-context-evidence", ownerId, bindingId, articleId,
+      eventOrdinal: 0, confirmationSeq: 0, lastConfirmedRequestOrdinal: 0, requests: [] } };
+  }
+
+  const evidenceScopeCurrent = (ownerId, guard) => authenticatedProgressOwner(ownerId) &&
+    (guard == null || (typeof guard === "function" && guard() === true));
+
+  async function evidenceWorkspaceStable() {
+    const library = window.LingoFlowArticleLibrary;
+    if (typeof library?.getWorkspaceTransition !== "function") return false;
+    try { return !await library.getWorkspaceTransition(); } catch { return false; }
+  }
+
+  async function beginArticleServerContextObservation(ownerId, bindingId, articleId, guard) {
+    if (![ownerId, bindingId, articleId].every(isOpaqueString) || !evidenceScopeCurrent(ownerId, guard) ||
+        !await evidenceWorkspaceStable()) {
+      return { status: "blocked", reason: "scope-mismatch" };
+    }
+    return runTransaction([CONTROL_STORE, ARTICLE_SIDECAR_STORE], "readwrite", async tx => {
+      const control = tx.objectStore(CONTROL_STORE);
+      const binding = await requireBinding(control, ownerId, bindingId);
+      if (binding.status !== "ready") return binding;
+      const sidecar = await requestResult(tx.objectStore(ARTICLE_SIDECAR_STORE).get([ownerId, articleId]));
+      if (sidecar?.bindingId !== bindingId || !progressCausal().revision(sidecar.knownRevision)) {
+        return { status: "parent-cloud-identity-missing" };
+      }
+      const read = await readEvidenceClock(tx, ownerId, bindingId, articleId, sidecar);
+      if (read.status !== "ready") return read;
+      if (read.clock.eventOrdinal === Number.MAX_SAFE_INTEGER) return { status: "evidence-counter-exhausted" };
+      if (!evidenceScopeCurrent(ownerId, guard)) return { status: "blocked", reason: "scope-mismatch" };
+      const ticket = { ownerId, bindingId, articleId, observationId: crypto.randomUUID(),
+        requestEventOrdinal: read.clock.eventOrdinal + 1 };
+      // Bound abandoned requests after crash. Evicted old responses fail closed;
+      // neither durable counter is reset and no discarded request can confirm.
+      await requestResult(control.put({ ...read.clock, eventOrdinal: ticket.requestEventOrdinal,
+        requests: [...read.clock.requests, ticket].slice(-32) }));
+      if (!evidenceScopeCurrent(ownerId, guard)) { tx.abort(); return { status: "blocked", reason: "scope-mismatch" }; }
+      return { status: "ready", ticket };
+    });
+  }
+
+  async function discardArticleServerContextObservation(ticket) {
+    if (!ticket || !hasExactFields(ticket, ticketFields)) return { status: "invalid-observation-ticket" };
+    return runTransaction([CONTROL_STORE], "readwrite", async tx => {
+      const { ownerId, bindingId, articleId } = ticket;
+      const store = tx.objectStore(CONTROL_STORE);
+      const binding = await requireBinding(store, ownerId, bindingId);
+      if (binding.status !== "ready") return binding;
+      const raw = await requestResult(store.get(evidenceKey(ownerId, bindingId, articleId)));
+      if (!validEvidenceClock(raw, ownerId, bindingId, articleId)) return { status: "malformed-confirmation-evidence" };
+      await requestResult(store.put({ ...raw, requests: raw.requests.filter(item =>
+        !sameProgressFact(item, ticket)) }));
+      return { status: "discarded" };
+    });
+  }
+
+  async function recordArticleServerContextConfirmation(ticket, snapshot, guard) {
+    if (!ticket || !hasExactFields(ticket, ticketFields) || !evidenceScopeCurrent(ticket.ownerId, guard) ||
+        !await evidenceWorkspaceStable()) {
+      return { status: "blocked", reason: "scope-mismatch" };
+    }
+    const { ownerId, bindingId, articleId } = ticket;
+    // Validate the actual normalized current-snapshot result, not a detached
+    // context copied from a receipt/pull. The producer owns the request ticket.
+    const protocol = window.LingoFlowArticleSyncCloudProtocol;
+    const checked = protocol?.validateSnapshotResult({ ...snapshot,
+      readingEpoch: snapshot?.serverReadingContext?.readingEpoch,
+      contentFingerprint: snapshot?.serverReadingContext?.contentFingerprint }, articleId);
+    const next = progressCausal().normalizeParent(snapshot?.serverReadingContext);
+    if (!checked || checked.status !== "found" || !next ||
+        !progressCausal().same(next, checked.serverReadingContext)) return { status: "invalid-current-snapshot" };
+    if (await window.LingoFlowReadingResume.fingerprintContent(checked.projection.content) !== next.contentFingerprint) {
+      return { status: "invalid-current-snapshot" };
+    }
+    return runTransaction([CONTROL_STORE, ARTICLE_SIDECAR_STORE], "readwrite", async tx => {
+      const control = tx.objectStore(CONTROL_STORE);
+      const binding = await requireBinding(control, ownerId, bindingId);
+      if (binding.status !== "ready") return binding;
+      const store = tx.objectStore(ARTICLE_SIDECAR_STORE);
+      const sidecar = await requestResult(store.get([ownerId, articleId]));
+      if (sidecar?.bindingId !== bindingId || !progressCausal().revision(sidecar.knownRevision)) {
+        return { status: "parent-cloud-identity-missing" };
+      }
+      const read = await readEvidenceClock(tx, ownerId, bindingId, articleId, sidecar);
+      if (read.status !== "ready") return read;
+      // Validation/hashing and queued transactions can outlive the captured
+      // generation. Diagnostics are durable writes too, not an exception to it.
+      if (!evidenceScopeCurrent(ownerId, guard)) return { status: "blocked", reason: "scope-mismatch" };
+      if (!read.clock.requests.some(item => sameProgressFact(item, ticket))) {
+        const prior = sidecar.serverContextConfirmation;
+        if (prior?.observationId !== ticket.observationId ||
+            prior.requestEventOrdinal !== ticket.requestEventOrdinal) return { status: "unknown-observation-ticket" };
+        if (progressCausal().same(prior.context, next) && prior.snapshotCursor === checked.cursor) {
+          return { status: "unchanged" };
+        }
+        // A replay of one observation cannot introduce different canonical facts.
+        // Keep the original proof/counter and stop using its parent as trusted.
+        if (!evidenceScopeCurrent(ownerId, guard)) return { status: "blocked", reason: "scope-mismatch" };
+        await requestResult(store.put({ ...sidecar,
+          serverReadingContextDiagnostic: { reason: "inconsistent-current-observation" } }));
+        if (!evidenceScopeCurrent(ownerId, guard)) { tx.abort(); return { status: "blocked", reason: "scope-mismatch" }; }
+        return { status: "contradictory-current-snapshot" };
+      }
+      const previous = progressCausal().normalizeParent(sidecar.serverReadingContext);
+      if (sidecar.serverReadingContext != null && !previous) return { status: "malformed-parent-context" };
+      if (progressCausal().ordinal(next.articleRevision) < progressCausal().ordinal(sidecar.knownRevision) ||
+          (previous && progressCausal().ordinal(next.articleRevision) < progressCausal().ordinal(previous.articleRevision))) {
+        return { status: "stale-parent-context" };
+      }
+      if ((previous?.articleRevision === next.articleRevision && !progressCausal().same(previous, next)) ||
+          (next.articleRevision === sidecar.knownRevision && sidecar.lastSyncedLifecycle &&
+            sidecar.lastSyncedLifecycle !== next.lifecycle) ||
+          (previous?.readingEpoch === next.readingEpoch &&
+            (previous.contentFingerprint !== next.contentFingerprint || previous.lifecycle !== next.lifecycle))) {
+        await requestResult(store.put({ ...sidecar,
+          serverReadingContextDiagnostic: { reason: "inconsistent-parent-context" } }));
+        if (!evidenceScopeCurrent(ownerId, guard)) { tx.abort(); return { status: "blocked", reason: "scope-mismatch" }; }
+        return { status: "inconsistent-parent-context" };
+      }
+      if (sidecar.serverReadingContextDiagnostic && previous?.articleRevision === next.articleRevision) {
+        return { status: "parent-context-diagnostic" };
+      }
+      // Request order only disqualifies freshness, not the returned server fact:
+      // the caller can still ingest it through the ordinary Article boundary.
+      if (ticket.requestEventOrdinal <= read.clock.lastConfirmedRequestOrdinal) {
+        return { status: "stale-observation-ticket" };
+      }
+      if (read.clock.confirmationSeq === Number.MAX_SAFE_INTEGER) return { status: "evidence-counter-exhausted" };
+      if (!evidenceScopeCurrent(ownerId, guard)) return { status: "blocked", reason: "scope-mismatch" };
+      const confirmation = { ownerId, bindingId, articleId,
+        confirmationSeq: read.clock.confirmationSeq + 1, observationId: ticket.observationId,
+        source: "current-snapshot", requestEventOrdinal: ticket.requestEventOrdinal,
+        context: next, snapshotCursor: checked.cursor };
+      await requestResult(store.put({ ...sidecar, serverReadingContext: next,
+        serverReadingContextDiagnostic: null, serverContextConfirmation: confirmation }));
+      await requestResult(control.put({ ...read.clock, confirmationSeq: confirmation.confirmationSeq,
+        lastConfirmedRequestOrdinal: ticket.requestEventOrdinal,
+        requests: read.clock.requests.filter(item => item.observationId !== ticket.observationId) }));
+      if (!evidenceScopeCurrent(ownerId, guard)) { tx.abort(); return { status: "blocked", reason: "scope-mismatch" }; }
+      return { status: "confirmed", confirmation };
+    });
+  }
+
   function progressObservationResult(record, ownerId, bindingId, articleId) {
     const observation = progressCausal().observationFromRecord(record, ownerId, bindingId, articleId);
     return observation ? { status: "ready", observation, diagnostic: record?.diagnostic || null }
@@ -4475,6 +4670,8 @@
       if (observed.status !== "ready") return observed;
       const sidecar = await requestResult(tx.objectStore(ARTICLE_SIDECAR_STORE).get([ownerId, articleId]));
       if (sidecar && sidecar.bindingId !== bindingId) return blocked("workspace-binding-mismatch");
+      const evidence = await readEvidenceClock(tx, ownerId, bindingId, articleId, sidecar);
+      if (evidence.status !== "ready") return evidence;
       const bootstrap = await requestResult(control.get(articleBootstrapStateKey(ownerId, bindingId)));
       let bootstrapSafe = false;
       try {
@@ -4698,7 +4895,10 @@
         result?.parse(value.settlement.result, request).status === "success"
       : value.status === "terminal"
         ? isPlainObject(value.settlement) &&
-          hasExactFields(value.settlement, new Set(["reason", "currentRevisionHint", "currentCursorHint"])) &&
+          hasExactFields(value.settlement, new Set(["reason", "currentRevisionHint", "currentCursorHint",
+            ...(Object.hasOwn(value.settlement, "parentRejection") ? ["parentRejection"] : [])])) &&
+          (!Object.hasOwn(value.settlement, "parentRejection") ||
+            validParentRejection(value.settlement.parentRejection, value)) &&
           PROGRESS_TERMINAL_REASONS.has(value.reason) &&
           value.settlement.reason === value.reason &&
           (value.settlement.currentRevisionHint === null ||
@@ -4711,7 +4911,10 @@
             : value.settlement.currentRevisionHint === null &&
               value.settlement.currentCursorHint === null)
         : isPlainObject(value.settlement) &&
-          hasExactFields(value.settlement, new Set(["reason", "priorResult"])) &&
+          hasExactFields(value.settlement, new Set(["reason", "priorResult",
+            ...(Object.hasOwn(value.settlement, "facts") ? ["facts"] : [])])) &&
+          (!Object.hasOwn(value.settlement, "facts") ||
+            result?.validAttentionFacts(value.settlement.facts, value.reason)) &&
           PROGRESS_SETTLEMENT_ATTENTION_REASONS.has(value.reason) &&
           value.settlement.reason === value.reason &&
           (value.reason === "conflicting-duplicate-result"
@@ -4774,6 +4977,24 @@
       value.sourceCausalBase.parent?.contentFingerprint === request.contentFingerprint;
   }
 
+  function validParentRejection(value, attempt) {
+    return parentRejectionReasons.has(attempt.reason) && isPlainObject(value) &&
+      hasExactFields(value, new Set(["confirmationSeqAtRejection", "rejectionEventOrdinal", "rejectedParent"])) &&
+      (value.confirmationSeqAtRejection === null || safeOrdinal(value.confirmationSeqAtRejection)) &&
+      safeOrdinal(value.rejectionEventOrdinal) && value.rejectionEventOrdinal > 0 &&
+      sameProgressFact(value.rejectedParent, attempt.sourceCausalBase.parent);
+  }
+
+  function hasPostRejectionConfirmation(attempt, sidecar, parent) {
+    const baseline = attempt.settlement.parentRejection;
+    const evidence = sidecar?.serverContextConfirmation;
+    return validParentRejection(baseline, attempt) &&
+      validConfirmation(evidence, attempt.ownerId, attempt.bindingId, attempt.articleId) &&
+      progressCausal().same(evidence.context, parent) &&
+      evidence.confirmationSeq > (baseline.confirmationSeqAtRejection ?? 0) &&
+      evidence.requestEventOrdinal > baseline.rejectionEventOrdinal;
+  }
+
   function progressAttemptRefreshGate(attempts, observation, sidecar) {
     const causal = progressCausal();
     const parent = causal.trustedParent(sidecar);
@@ -4796,11 +5017,13 @@
         const frozen = attempt.sourceCausalBase.parent;
         // A title-only revision is not proof that the rejected parent context
         // changed. The old request can never be patched into a new attempt.
-        const refreshed = parent && frozen && parent.lifecycle === "active" &&
+        const newEpoch = parent && frozen &&
           causal.ordinal(parent.articleRevision) > causal.ordinal(frozen.articleRevision) &&
-          (parent.readingEpoch !== frozen.readingEpoch ||
-            parent.contentFingerprint !== frozen.contentFingerprint ||
-            frozen.lifecycle !== parent.lifecycle);
+          parent.readingEpoch !== frozen.readingEpoch;
+        const refreshed = parent?.lifecycle === "active" &&
+          (reason === "parent-not-ready" ? hasPostRejectionConfirmation(attempt, sidecar, parent)
+            : reason === "article-deleted" ? newEpoch && hasPostRejectionConfirmation(attempt, sidecar, parent)
+              : newEpoch);
         if (!refreshed) return { status: "not-ready", reason: "parent-refresh-required" };
       }
       if (reason === "invalid-mutation" || reason === "invalid-checkpoint") {
@@ -5072,6 +5295,7 @@
   // never a request. No transport is created or invoked in this module.
   async function settleProgressCloudResult(ownerId, bindingId, articleId, attemptId, rawResult) {
     if (!authenticatedProgressOwner(ownerId)) return { status: "not-ready", reason: "scope-mismatch" };
+    if (!await evidenceWorkspaceStable()) return { status: "not-ready", reason: "workspace-transition" };
     const read = await getProgressCloudAttempt(ownerId, bindingId, articleId, attemptId);
     if (read.status !== "ready") return read;
     const parser = window.LingoFlowProgressCloudResult;
@@ -5108,20 +5332,44 @@
         await requestResult(store.put(attention));
         return { status: "settlement_attention", reason: attention.reason };
       }
-      if (attempt.status !== "may_have_sent") {
+      if (attempt.status === "settlement_attention") {
+        const eligibility = await evaluateProgressReceiptRecoveryInTransaction(tx,
+          ownerId, bindingId, articleId, attempt);
+        if (eligibility.status !== "recoverable") return eligibility;
+        // Reuse the ordinary settlement branch without rewriting/erasing the
+        // attention record. No special recovered-result protocol exists.
+      } else if (attempt.status !== "may_have_sent") {
         return { status: "not-settleable", attemptStatus: attempt.status };
       }
       if (parsed.status === "attention") {
         const attention = { ...attempt, status: "settlement_attention", reason: parsed.reason,
-          settlement: { reason: parsed.reason, priorResult: null } };
+          settlement: { reason: parsed.reason, priorResult: null,
+            ...(parsed.facts ? { facts: parsed.facts } : {}) } };
         await requestResult(store.put(attention));
         return { status: "settlement_attention", reason: parsed.reason };
       }
       if (parsed.status === "terminal") {
+        let parentRejection;
+        if (parentRejectionReasons.has(parsed.reason)) {
+          const sidecar = await requestResult(tx.objectStore(ARTICLE_SIDECAR_STORE).get([ownerId, articleId]));
+          const evidence = await readEvidenceClock(tx, ownerId, bindingId, articleId, sidecar);
+          if (evidence.status !== "ready") return evidence;
+          if (evidence.clock.eventOrdinal === Number.MAX_SAFE_INTEGER) return { status: "evidence-counter-exhausted" };
+          parentRejection = {
+            // null is a missing clock; zero is an initialized clock with no
+            // confirmation. Malformed clocks cannot reach this transaction.
+            confirmationSeqAtRejection: evidence.exists ? evidence.clock.confirmationSeq : null,
+            rejectionEventOrdinal: evidence.clock.eventOrdinal + 1,
+            rejectedParent: attempt.sourceCausalBase.parent
+          };
+          await requestResult(tx.objectStore(CONTROL_STORE).put({ ...evidence.clock,
+            eventOrdinal: parentRejection.rejectionEventOrdinal }));
+        }
         const terminal = { ...attempt, status: "terminal", reason: parsed.reason,
           settlement: { reason: parsed.reason,
             currentRevisionHint: parsed.currentRevisionHint || null,
-            currentCursorHint: parsed.currentCursorHint || null } };
+            currentCursorHint: parsed.currentCursorHint || null,
+            ...(parentRejection ? { parentRejection } : {}) } };
         await requestResult(store.put(terminal));
         return { status: "terminal", reason: parsed.reason };
       }
@@ -5160,6 +5408,59 @@
       return { status: "succeeded", resultStatus: parsed.result.status,
         localCoverageAtSettlement: coverage, observationStatus: observed.status };
     });
+  }
+
+  async function evaluateProgressReceiptRecoveryInTransaction(tx, ownerId, bindingId, articleId, attempt) {
+    if (!authenticatedProgressOwner(ownerId)) return { status: "blocked", reason: "scope-mismatch" };
+    const eligibility = window.LingoFlowProgressCloudResult.evaluateReceiptRecovery(attempt);
+    if (eligibility.status !== "recoverable") return eligibility;
+    const attempts = await requestResult(tx.objectStore(PROGRESS_ATTEMPTS_STORE).index("byScope")
+      .getAll(progressAttemptScope(ownerId, bindingId, articleId)));
+    if (attempts.some(item => !validProgressCloudAttempt(item, ownerId, bindingId, articleId))) {
+      return malformedProgressAttempt();
+    }
+    if (attempts.some(item => item.attemptId !== attempt.attemptId &&
+        ["awaiting_postflight", "prepared", "may_have_sent", "settlement_attention"].includes(item.status))) {
+      return { status: "blocked", reason: "scope-occupied" };
+    }
+    const record = await requestResult(tx.objectStore(PROGRESS_OBSERVATIONS_STORE).get([ownerId, bindingId, articleId]));
+    const observation = progressObservationResult(record, ownerId, bindingId, articleId);
+    if (observation.status !== "ready" || observation.diagnostic) {
+      return { status: "blocked", reason: "local-authority-contradiction" };
+    }
+    return authenticatedProgressOwner(ownerId) ? { status: "recoverable" }
+      : { status: "blocked", reason: "scope-mismatch" };
+  }
+
+  function frozenProgressCopy(value) {
+    const copy = structuredClone(value);
+    const freeze = item => {
+      if (item && typeof item === "object") { Object.values(item).forEach(freeze); Object.freeze(item); }
+    };
+    freeze(copy);
+    return copy;
+  }
+
+  // Eligibility/read only. It never dispatches, mints an ID, rebases or replaces
+  // the original frozen payload with today's desired. A future sender still
+  // needs the existing captured-generation guard and final dispatch validation.
+  async function prepareProgressReceiptRecovery(ownerId, bindingId, articleId, attemptId) {
+    if (!authenticatedProgressOwner(ownerId) || !await evidenceWorkspaceStable()) {
+      return { status: "blocked", reason: "scope-mismatch" };
+    }
+    return runTransaction([CONTROL_STORE, PROGRESS_ATTEMPTS_STORE, PROGRESS_OBSERVATIONS_STORE],
+      "readonly", async tx => {
+        const binding = await requireBinding(tx.objectStore(CONTROL_STORE), ownerId, bindingId);
+        if (binding.status !== "ready") return binding;
+        const attempt = await requestResult(tx.objectStore(PROGRESS_ATTEMPTS_STORE)
+          .get([ownerId, bindingId, articleId, attemptId]));
+        if (!attempt) return { status: "blocked", reason: "missing-attempt" };
+        if (!validProgressCloudAttempt(attempt, ownerId, bindingId, articleId)) return malformedProgressAttempt();
+        const eligibility = await evaluateProgressReceiptRecoveryInTransaction(tx, ownerId, bindingId, articleId, attempt);
+        return eligibility.status === "recoverable" ? frozenProgressCopy({ status: "recoverable",
+          attemptId: attempt.attemptId, cloudMutationId: attempt.cloudMutationId,
+          immutableRequest: attempt.request }) : eligibility;
+      });
   }
 
   async function getProgressCloudAttempt(ownerId, bindingId, articleId, attemptId) {
@@ -5237,6 +5538,9 @@
     recordProgressRemoteObservation,
     getArticleServerReadingContext,
     recordArticleServerReadingContext,
+    beginArticleServerContextObservation,
+    recordArticleServerContextConfirmation,
+    discardArticleServerContextObservation,
     getProgressCausalSnapshot,
     prepareProgressMovement,
     getProgressDesired,
@@ -5247,6 +5551,7 @@
     rejectAwaitingProgressCloudAttempt,
     reserveProgressCloudAttemptForDispatch,
     settleProgressCloudResult,
+    prepareProgressReceiptRecovery,
     getProgressCloudAttempt,
     listProgressCloudAttempts,
     blockPreparedProgressCloudAttempt,

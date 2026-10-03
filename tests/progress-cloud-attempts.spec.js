@@ -110,7 +110,9 @@ test("strict Progress parser accepts complete success and rejects unknown shapes
   expect(parsed.missing).toBe("unparseable");
   expect(parsed.overflowingRevision).toBe("unparseable");
   expect(parsed.overflowingCursor).toBe("unparseable");
-  expect(parsed.wrongId).toEqual({ status: "attention", reason: "success-identity-mismatch" });
+  expect(parsed.wrongId).toEqual({ status: "attention", reason: "success-identity-mismatch",
+    facts: { mutationIdMatches: false, articleIdMatches: true,
+      mismatchedFields: ["mutationId"], hadAcceptedCanonicalResult: false } });
   expect(parsed.unknownStatus).toBe("unparseable");
   expect(parsed.unknownReason).toBe("unparseable");
   expect(parsed.conflict).toEqual({ status: "terminal", reason: "revision-mismatch",

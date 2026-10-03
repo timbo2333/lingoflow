@@ -20,6 +20,14 @@
       throw new Error("Article Cloud transport 配置无效。");
     }
     const baseUrl = projectUrl.replace(/\/$/, "");
+    const evidence = options.state || window.LingoFlowSyncStateRepository;
+    const captureSnapshotGuard = options.captureSnapshotGuard || (owner => {
+      const app = window.LingoFlowArticleSyncApp;
+      const context = app?.getResolutionContext?.();
+      return context?.status === "ready" && context.owner?.ownerId === owner.ownerId &&
+        context.owner?.bindingId === owner.bindingId
+        ? () => app.isResolutionContextCurrent(context) : null;
+    });
 
     async function postRpc(name, owner, body) {
       let session;
@@ -82,13 +90,36 @@
           !articleId.trim() || articleId !== articleId.trim()) {
         return { status: "rejected", reason: "invalid-payload" };
       }
-      const response = await postRpc(RPC.snapshot, owner, {
-        p_expected_owner_id: owner.ownerId,
-        p_article_id: articleId
-      });
-      if (response.status !== "received") return response;
-      const result = protocol.validateSnapshotResult(response.value, articleId);
-      return result || { status: "unavailable", reason: "server-error" };
+      // Plumbing on an existing request only; never trigger an extra snapshot.
+      // A closure captures the runtime generation before request issuance, then
+      // the repository checks it again within the response's SyncDB transaction.
+      const guard = captureSnapshotGuard(owner, articleId);
+      let ticket;
+      if (guard && typeof evidence?.beginArticleServerContextObservation === "function") {
+        try {
+          const started = await evidence.beginArticleServerContextObservation(
+            owner.ownerId, owner.bindingId, articleId, guard);
+          if (started.status === "ready") ticket = started.ticket;
+        } catch { /* Evidence outage must not break existing Article transport. */ }
+      }
+      try {
+        const response = await postRpc(RPC.snapshot, owner, {
+          p_expected_owner_id: owner.ownerId,
+          p_article_id: articleId
+        });
+        if (response.status !== "received") return response;
+        const result = protocol.validateSnapshotResult(response.value, articleId);
+        if (ticket && result?.status === "found" && result.serverReadingContext) {
+          try { await evidence.recordArticleServerContextConfirmation(ticket, result, guard); }
+          catch { /* No fresh proof is granted on a failed/aborted evidence write. */ }
+        }
+        return result || { status: "unavailable", reason: "server-error" };
+      } finally {
+        if (ticket) {
+          try { await evidence.discardArticleServerContextObservation(ticket); }
+          catch { /* Bounded abandoned tickets are not authorization. */ }
+        }
+      }
     }
 
     async function pushArticleMutation(owner, readyMutation) {
