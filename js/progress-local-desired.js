@@ -5,6 +5,11 @@
   const library = window.LingoFlowArticleLibrary;
   const resume = window.LingoFlowReadingResume;
   let generation = 0;
+  const scopeInvalidators = new Set();
+  const invalidateScope = () => {
+    generation++;
+    for (const invalidate of [...scopeInvalidators]) invalidate();
+  };
   const inFlight = new Set();
   const retryableActions = new Map();
   // This lock is optional; the Article transaction fence is authoritative.
@@ -392,18 +397,81 @@
       ? Object.freeze({ ownerId, bindingId, generation: capturedGeneration }) : null;
   }
 
-  async function settleCloudResult(responseContext, articleId, attemptId, rawResult) {
+  async function settleCloudResult(responseContext, articleId, attemptId, rawResult, callGuard = () => true) {
     const owner = { ownerId: responseContext?.ownerId, bindingId: responseContext?.bindingId };
     const capturedGeneration = responseContext?.generation;
     if (!Number.isSafeInteger(capturedGeneration) ||
         !await stillCurrent(owner, capturedGeneration)) {
       return { status: "not-ready", reason: "scope-mismatch" };
     }
+    const guard = () => generation === capturedGeneration && callGuard() &&
+      window.LingoFlowSupabaseAuth?.getState()?.status === "authenticated" &&
+      window.LingoFlowSupabaseAuth.getState().user?.id === owner.ownerId;
+    // Abort an already-open settlement transaction immediately on trust loss,
+    // including the interval after its last request and before commit.
+    guard.subscribe = invalidate => {
+      scopeInvalidators.add(invalidate);
+      const unsubscribeCall = callGuard.subscribe?.(invalidate);
+      return () => { scopeInvalidators.delete(invalidate); unsubscribeCall?.(); };
+    };
+    if (!guard()) return { status: "not-ready", reason: "scope-mismatch" };
     const operation = state.settleProgressCloudResult(owner.ownerId, owner.bindingId,
-      articleId, attemptId, rawResult);
+      articleId, attemptId, rawResult, guard, responseContext.cloudMutationId);
     inFlight.add(operation);
     try { return await operation; }
     finally { inFlight.delete(operation); }
+  }
+
+  // Explicit injected-HTTP capability. Default dispatch is deliberately inert
+  // until a separately reviewed LIVE slice wires HTTP. No arbitrary request API.
+  function createCloudDispatcher(options = {}) {
+    const service = window.LingoFlowProgressSyncCloudService.create({ fetchImpl: options.fetchImpl });
+    const deadlineMs = Number.isFinite(options.deadlineMs) && options.deadlineMs > 0
+      ? options.deadlineMs : 10000;
+    return async function dispatchProgressCloudAttempt(ownerId, bindingId, articleId, attemptId) {
+      const capturedGeneration = generation;
+      const owner = { ownerId, bindingId };
+      const controller = new AbortController();
+      let finished = false;
+      const deadline = performance.now() + deadlineMs;
+      const guard = () => !finished && !controller.signal.aborted && performance.now() < deadline &&
+        generation === capturedGeneration && window.LingoFlowSupabaseAuth?.getState()?.status === "authenticated" &&
+        window.LingoFlowSupabaseAuth.getState().user?.id === ownerId;
+      guard.subscribe = invalidate => {
+        controller.signal.addEventListener("abort", invalidate);
+        return () => controller.signal.removeEventListener("abort", invalidate);
+      };
+      let timer;
+      const expired = new Promise(resolve => {
+        timer = setTimeout(() => {
+          controller.abort();
+          resolve({ status: "unknown", reason: "deadline-exceeded" });
+        }, deadlineMs);
+      });
+      const operation = (async () => {
+        if (!await stillCurrent(owner, capturedGeneration) || !guard()) return { status: "not-ready", reason: "scope-mismatch" };
+        const response = await service.dispatch(ownerId, bindingId, articleId, attemptId, guard, controller.signal);
+        if (response.status !== "received") return response;
+        if (!guard() || !await stillCurrent(owner, capturedGeneration) || !guard()) return { status: "not-ready", reason: "scope-mismatch" };
+        const stored = await state.getProgressCloudAttempt(ownerId, bindingId, articleId, attemptId);
+        if (!guard() || stored.status !== "ready" || stored.attempt.cloudMutationId !== response.cloudMutationId) {
+          return { status: "not-ready", reason: "scope-mismatch" };
+        }
+        return settleCloudResult({ ...owner, generation: capturedGeneration, cloudMutationId: response.cloudMutationId },
+          articleId, attemptId, response.rawResult, guard);
+      })().catch(() => ({ status: "unknown", reason: "dispatch-unavailable" }));
+      try {
+        const result = await Promise.race([operation, expired]);
+        return performance.now() >= deadline ? { status: "unknown", reason: "deadline-exceeded" } : result;
+      }
+      finally { finished = true; clearTimeout(timer); controller.abort(); }
+    };
+  }
+
+  let defaultDispatcher;
+  function dispatchProgressCloudAttempt(ownerId, bindingId, articleId, attemptId) {
+    defaultDispatcher ||= createCloudDispatcher();
+    return defaultDispatcher(ownerId, bindingId, articleId, attemptId);
   }
 
   async function prepareReceiptRecovery(ownerId, bindingId, articleId, attemptId) {
@@ -491,7 +559,7 @@
   }
 
   async function prepareAccountSwitch() {
-    generation++;
+    invalidateScope();
     retryableActions.clear();
     await Promise.allSettled([...inFlight]);
   }
@@ -500,12 +568,19 @@
     writeRealMovement, reconcile, evaluateConfirmed, evaluateCloudCandidate,
     prepareCloudAttempt, resumeCloudAttemptPostflight,
     reserveCloudAttemptForDispatch, captureCloudResponseContext,
+    dispatchProgressCloudAttempt, createCloudDispatcher,
     settleCloudResult, prepareReceiptRecovery, evaluateLatestLocalCloudCoverage, prepareAccountSwitch
   });
   const scheduleReconcile = () => {
     void reconcile().catch(error => console.warn("Progress local recovery deferred:", error));
   };
-  window.addEventListener("lingoflow:auth-state", scheduleReconcile);
+  // Existing Auth publishes both session loss and session verification/refresh.
+  // Every trust notification invalidates old callbacks, even for the same user.
+  // Generation is cancellation ONLY, never revision/epoch/order authority.
+  window.addEventListener("lingoflow:auth-state", () => {
+    invalidateScope();
+    scheduleReconcile();
+  });
   window.addEventListener("lingoflow:favorite-sync-status", scheduleReconcile);
   window.addEventListener("load", scheduleReconcile, { once: true });
 })();

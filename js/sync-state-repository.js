@@ -698,15 +698,37 @@
     });
   }
 
-  function runTransaction(storeNames, mode, work) {
+  function runTransaction(storeNames, mode, work, scopeGuard) {
     return openDatabase().then(db => new Promise((resolve, reject) => {
       const tx = db.transaction(storeNames, mode);
       let result;
       let workError = null;
 
+      const checkScope = () => {
+        if (!scopeGuard) return;
+        let valid = false;
+        try { valid = scopeGuard() === true; } catch { /* fail closed */ }
+        if (!valid) {
+          workError = new Error("Progress settlement scope changed.");
+          workError.code = "progress-scope-changed";
+          try { tx.abort(); } catch { /* work promise also rejects below */ }
+          throw workError;
+        }
+      };
+      // Capture every queued IDB request completion, including writes made by
+      // nested helpers. Abort rolls ALL writes back if the runtime trust scope
+      // changed while a request was queued. No network/crypto await in this tx.
+      if (scopeGuard) tx.addEventListener("success", () => {
+        try { checkScope(); } catch { /* abort/error is handled by tx below */ }
+      }, true);
+      const unsubscribe = scopeGuard?.subscribe?.(() => {
+        try { checkScope(); } catch { /* tx.abort rolls back every queued write */ }
+      });
+
       Promise.resolve()
-        .then(() => work(tx))
+        .then(() => { checkScope(); return work(tx); })
         .then(value => {
+          checkScope();
           result = value;
         })
         .catch(error => {
@@ -718,9 +740,9 @@
           }
         });
 
-      tx.oncomplete = () => resolve(result);
-      tx.onerror = () => reject(workError || tx.error || new Error("Sync DB transaction failed."));
-      tx.onabort = () => reject(workError || tx.error || new Error("Sync DB transaction aborted."));
+      tx.oncomplete = () => { unsubscribe?.(); resolve(result); };
+      tx.onerror = () => { unsubscribe?.(); reject(workError || tx.error || new Error("Sync DB transaction failed.")); };
+      tx.onabort = () => { unsubscribe?.(); reject(workError || tx.error || new Error("Sync DB transaction aborted.")); };
     }));
   }
 
@@ -5293,11 +5315,16 @@
 
   // Explicit local settlement only: the caller supplies a received/mock value,
   // never a request. No transport is created or invoked in this module.
-  async function settleProgressCloudResult(ownerId, bindingId, articleId, attemptId, rawResult) {
-    if (!authenticatedProgressOwner(ownerId)) return { status: "not-ready", reason: "scope-mismatch" };
+  async function settleProgressCloudResult(ownerId, bindingId, articleId, attemptId, rawResult, guard, expectedCloudMutationId) {
+    const current = () => evidenceScopeCurrent(ownerId, guard);
+    current.subscribe = guard?.subscribe;
+    if (!current()) return { status: "not-ready", reason: "scope-mismatch" };
     if (!await evidenceWorkspaceStable()) return { status: "not-ready", reason: "workspace-transition" };
     const read = await getProgressCloudAttempt(ownerId, bindingId, articleId, attemptId);
     if (read.status !== "ready") return read;
+    if (!current() || (expectedCloudMutationId !== undefined && read.attempt.cloudMutationId !== expectedCloudMutationId)) {
+      return { status: "not-ready", reason: "scope-mismatch" };
+    }
     const parser = window.LingoFlowProgressCloudResult;
     const parsed = parser.parse(rawResult, read.attempt.request);
     if (parsed.status === "unparseable" || parsed.status === "auth-paused") {
@@ -5305,10 +5332,11 @@
     }
     const local = parsed.status === "success"
       ? await readProgressLocalCoverage(ownerId, bindingId, articleId) : null;
-    return runTransaction([CONTROL_STORE, PROGRESS_ATTEMPTS_STORE, PROGRESS_DESIRED_STORE,
+    if (!current()) return { status: "not-ready", reason: "scope-mismatch" };
+    try { return await runTransaction([CONTROL_STORE, PROGRESS_ATTEMPTS_STORE, PROGRESS_DESIRED_STORE,
       PROGRESS_OBSERVATIONS_STORE, ARTICLE_SIDECAR_STORE], "readwrite", async tx => {
       const binding = await requireBinding(tx.objectStore(CONTROL_STORE), ownerId, bindingId);
-      if (binding.status !== "ready" || !authenticatedProgressOwner(ownerId)) {
+      if (binding.status !== "ready" || !current()) {
         return { status: "not-ready", reason: "scope-mismatch" };
       }
       const store = tx.objectStore(PROGRESS_ATTEMPTS_STORE);
@@ -5317,9 +5345,12 @@
       if (!validProgressCloudAttempt(attempt, ownerId, bindingId, articleId)) {
         return malformedProgressAttempt();
       }
-      const current = parser.parse(rawResult, attempt.request);
-      if (current.status !== parsed.status ||
-          !sameProgressFact(current.result || current, parsed.result || parsed)) {
+      if (expectedCloudMutationId !== undefined && attempt.cloudMutationId !== expectedCloudMutationId) {
+        return { status: "not-ready", reason: "attempt-identity-changed" };
+      }
+      const reparsed = parser.parse(rawResult, attempt.request);
+      if (reparsed.status !== parsed.status ||
+          !sameProgressFact(reparsed.result || reparsed, parsed.result || parsed)) {
         return { status: "unparseable" };
       }
       if (attempt.status === "succeeded") {
@@ -5407,7 +5438,12 @@
       await requestResult(store.put(succeeded));
       return { status: "succeeded", resultStatus: parsed.result.status,
         localCoverageAtSettlement: coverage, observationStatus: observed.status };
-    });
+    }, current); } catch (error) {
+      if (error?.code === "progress-scope-changed" || !current()) {
+        return { status: "not-ready", reason: "scope-mismatch" };
+      }
+      throw error;
+    }
   }
 
   async function evaluateProgressReceiptRecoveryInTransaction(tx, ownerId, bindingId, articleId, attempt) {
@@ -5460,6 +5496,47 @@
         return eligibility.status === "recoverable" ? frozenProgressCopy({ status: "recoverable",
           attemptId: attempt.attemptId, cloudMutationId: attempt.cloudMutationId,
           immutableRequest: attempt.request }) : eligibility;
+      });
+  }
+
+  // Read-only dispatch permission, never reserve/rebase or derive from today's
+  // Resume. may_have_sent and eligible attention keep their original identity.
+  async function prepareProgressCloudDispatch(ownerId, bindingId, articleId, attemptId, guard) {
+    const current = () => evidenceScopeCurrent(ownerId, guard);
+    if (!current() || !await evidenceWorkspaceStable()) return { status: "blocked", reason: "scope-mismatch" };
+    const initial = await getProgressCloudAttempt(ownerId, bindingId, articleId, attemptId);
+    if (initial.status !== "ready") return initial;
+    if (initial.attempt.status === "settlement_attention") {
+      const recovery = await prepareProgressReceiptRecovery(ownerId, bindingId, articleId, attemptId);
+      if (recovery.status !== "recoverable") return recovery;
+    }
+    if (!current()) return { status: "blocked", reason: "scope-mismatch" };
+    return runTransaction([CONTROL_STORE, PROGRESS_ATTEMPTS_STORE, PROGRESS_OBSERVATIONS_STORE],
+      "readonly", async tx => {
+        const binding = await requireBinding(tx.objectStore(CONTROL_STORE), ownerId, bindingId);
+        if (binding.status !== "ready") return binding;
+        const store = tx.objectStore(PROGRESS_ATTEMPTS_STORE);
+        const attempt = await requestResult(store.get([ownerId, bindingId, articleId, attemptId]));
+        if (!attempt) return { status: "missing" };
+        if (!validProgressCloudAttempt(attempt, ownerId, bindingId, articleId)) return malformedProgressAttempt();
+        if (attempt.cloudMutationId !== initial.attempt.cloudMutationId ||
+            !sameProgressFact(attempt.request, initial.attempt.request)) {
+          return { status: "blocked", reason: "attempt-identity-changed" };
+        }
+        if (attempt.status === "settlement_attention") {
+          const eligible = await evaluateProgressReceiptRecoveryInTransaction(tx, ownerId, bindingId, articleId, attempt);
+          if (eligible.status !== "recoverable") return eligible;
+        } else if (attempt.status === "may_have_sent") {
+          const attempts = await requestResult(store.index("byScope").getAll(progressAttemptScope(ownerId, bindingId, articleId)));
+          if (attempts.some(item => !validProgressCloudAttempt(item, ownerId, bindingId, articleId))) return malformedProgressAttempt();
+          if (attempts.some(item => item.attemptId !== attemptId &&
+              ["awaiting_postflight", "prepared", "may_have_sent", "settlement_attention"].includes(item.status))) {
+            return { status: "blocked", reason: "scope-occupied" };
+          }
+        } else return { status: "not-sendable", attemptStatus: attempt.status };
+        return current() ? frozenProgressCopy({ status: "sendable", attemptId: attempt.attemptId,
+          cloudMutationId: attempt.cloudMutationId, immutableRequest: attempt.request })
+          : { status: "blocked", reason: "scope-mismatch" };
       });
   }
 
@@ -5550,6 +5627,7 @@
     confirmProgressCloudAttempt,
     rejectAwaitingProgressCloudAttempt,
     reserveProgressCloudAttemptForDispatch,
+    prepareProgressCloudDispatch,
     settleProgressCloudResult,
     prepareProgressReceiptRecovery,
     getProgressCloudAttempt,
