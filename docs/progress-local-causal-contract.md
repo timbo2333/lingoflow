@@ -124,6 +124,44 @@ reading writes and later login never synthesize desired or observation. Reading-
 writes retain the B2 zero Article mutation/outbox/push boundary. No own-success
 predecessor chain, rebase API or cloud attempt fields are introduced.
 
+## Durable cloud attempt dispatch boundary (B3-3B-1)
+
+The local `progressCloudAttempts` store remains in SyncDB v7. Its states are
+`awaiting_postflight`, `prepared`, `may_have_sent`, `blocked_before_dispatch`,
+and `superseded`. A frozen UPDATE request is immutable across every state.
+`prepared` is **not** send authorization: a caller must explicitly recover an
+awaiting postflight or reserve a prepared attempt before any future transport.
+
+`resumeCloudAttemptPostflight` rereads LibraryDB and completes the original
+awaiting attempt through a binding-checked SyncDB transaction. It never creates
+a replacement request and never skips directly to `may_have_sent`. Concurrent
+recovery returns the same prepared result or preserves a blocked result; no
+wall-clock lease or orphan timeout is used.
+
+`reserveCloudAttemptForDispatch` rereads the Article, Resume, fence, lifecycle,
+scope, fingerprint, and cloud-size eligibility. Its SyncDB transaction then
+revalidates binding, desired sequence/pending state, observation, Article parent
+context, bootstrap, conflicts and Article outbox. A newer pending movement
+defers; a newer confirmed movement supersedes the old prepared attempt. A
+stale local or causal fact blocks dispatch. Only after the `prepared` →
+`may_have_sent` transaction commits does the API return a frozen copy of its
+durable request.
+
+`may_have_sent` means the client **cannot prove the server has not seen the
+mutation**. It does not mean sent, uploaded, synced, acknowledged, or successful.
+It cannot be superseded or rewritten, and blocks a second attempt in its scope.
+Future retry or recovery must reuse the same mutation ID and byte-equivalent
+immutable request; this slice implements neither network transport nor result
+settlement. Reader movement remains free to create a newer local desired while
+an older attempt is `may_have_sent`.
+
+The LibraryDB and SyncDB checks are not a cross-database lock. A local-only
+Resume write in the narrow gap after the final LibraryDB read can leave a newer
+local position without a corresponding desired while an older request becomes
+`may_have_sent`. The newer Resume is preserved; the cloud may lag it until a
+later real action. Future settlement/rollout must not equate this reservation
+with the latest local position being synced.
+
 ## Validation
 
 `progress-causal-state.spec.js` covers real IndexedDB transactions, fixtures,

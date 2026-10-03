@@ -65,7 +65,7 @@ test.beforeEach(async ({ page }) => {
 });
 
 test.afterEach(async ({ page }) => {
-  expect(page.__progressRequests, "B3-3A must make zero Progress requests").toEqual([]);
+  expect(page.__progressRequests, "B3-3B-1 must make zero Progress requests").toEqual([]);
 });
 
 test("revision-ready freezes an independent immutable UPDATE attempt", async ({ page }) => {
@@ -422,6 +422,573 @@ test("same owner with a new binding cannot see or supersede the old binding's at
   expect(result.oldRead.status).toBe("blocked");
   expect(result.oldSupersede.status).toBe("blocked");
   expect(result.newList.attempts).toEqual([]);
+});
+
+test("awaiting crash recovery reuses the frozen request and is idempotent", async ({ page }) => {
+  const frozen = await page.evaluate(async () => {
+    await h.setup(); await h.movement(0.3);
+    const context = await h.lib.getProgressContext(h.article.id, h.binding, { initialize: false });
+    return (await h.repo.prepareProgressCloudAttempt(...h.args, {
+      scope: context.scope, fence: context.fence, checkpoint: context.article.reading.resume,
+      fingerprint: h.fp, articleActive: true, cloudEligible: true, transitionInactive: true
+    })).attempt;
+  });
+  await page.reload();
+  const result = await page.evaluate(async attempt => {
+    window.LingoFlowSupabaseAuth = { getState: () => ({ status: "authenticated",
+      user: { id: attempt.ownerId } }) };
+    const flow = window.LingoFlowProgressLocalDesired;
+    const args = [attempt.ownerId, attempt.bindingId, attempt.articleId, attempt.attemptId];
+    const first = await flow.resumeCloudAttemptPostflight(...args);
+    const second = await flow.resumeCloudAttemptPostflight(...args);
+    return { first, second, attempts: await window.LingoFlowSyncStateRepository
+      .listProgressCloudAttempts(...args.slice(0, 3)) };
+  }, frozen);
+  expect(result.first.status).toBe("prepared");
+  expect(result.second.status).toBe("prepared");
+  expect(result.first.attempt).toEqual(result.second.attempt);
+  expect(result.first.attempt.request).toEqual(frozen.request);
+  expect(result.attempts.attempts).toHaveLength(1);
+});
+
+test("two tabs recover one awaiting attempt without replacement or block", async ({ page }) => {
+  const attempt = await page.evaluate(async () => {
+    await h.setup(); await h.movement(0.3);
+    const context = await h.lib.getProgressContext(h.article.id, h.binding, { initialize: false });
+    return (await h.repo.prepareProgressCloudAttempt(...h.args, {
+      scope: context.scope, fence: context.fence, checkpoint: context.article.reading.resume,
+      fingerprint: h.fp, articleActive: true, cloudEligible: true, transitionInactive: true
+    })).attempt;
+  });
+  const second = await page.context().newPage();
+  try {
+    await second.goto("/");
+    await second.evaluate(() => { window.LingoFlowSupabaseAuth = { getState: () => ({
+      status: "authenticated", user: { id: "attempt-owner-a" } }) }; });
+    const args = [attempt.ownerId, attempt.bindingId, attempt.articleId, attempt.attemptId];
+    const [a, b] = await Promise.all([
+      page.evaluate(args => h.flow.resumeCloudAttemptPostflight(...args), args),
+      second.evaluate(args => window.LingoFlowProgressLocalDesired
+        .resumeCloudAttemptPostflight(...args), args)
+    ]);
+    expect([a.status, b.status]).toEqual(["prepared", "prepared"]);
+    expect(a.attempt).toEqual(b.attempt);
+    expect(a.attempt.cloudMutationId).toBe(attempt.cloudMutationId);
+  } finally { await second.close(); }
+});
+
+test("original postflight and another tab's recovery converge on one prepared attempt", async ({ page }) => {
+  const frozen = await page.evaluate(async () => {
+    await h.setup(); await h.movement(0.3);
+    const context = await h.lib.getProgressContext(h.article.id, h.binding, { initialize: false });
+    const local = { scope: context.scope, fence: context.fence,
+      checkpoint: context.article.reading.resume, fingerprint: h.fp,
+      articleActive: true, cloudEligible: true, transitionInactive: true };
+    const attempt = (await h.repo.prepareProgressCloudAttempt(...h.args, local)).attempt;
+    return { attempt, local };
+  });
+  const second = await page.context().newPage();
+  try {
+    await second.goto("/");
+    await second.evaluate(() => { window.LingoFlowSupabaseAuth = { getState: () => ({
+      status: "authenticated", user: { id: "attempt-owner-a" } }) }; });
+    const args = [frozen.attempt.ownerId, frozen.attempt.bindingId,
+      frozen.attempt.articleId, frozen.attempt.attemptId];
+    const [original, recovered] = await Promise.all([
+      page.evaluate(({ args, local }) => h.repo.confirmProgressCloudAttempt(...args, local),
+        { args, local: frozen.local }),
+      second.evaluate(args => window.LingoFlowProgressLocalDesired
+        .resumeCloudAttemptPostflight(...args), args)
+    ]);
+    expect(original.status).toBe("prepared");
+    expect(recovered.status).toBe("prepared");
+    expect(original.attempt).toEqual(recovered.attempt);
+    expect(original.attempt.request).toEqual(frozen.attempt.request);
+    const all = await page.evaluate(args => h.repo.listProgressCloudAttempts(...args.slice(0, 3)), args);
+    expect(all.attempts).toHaveLength(1);
+  } finally { await second.close(); }
+});
+
+test("invalid awaiting recovery blocks rather than creating a new attempt", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    await h.setup(); await h.movement(0.3);
+    const context = await h.lib.getProgressContext(h.article.id, h.binding, { initialize: false });
+    const attempt = (await h.repo.prepareProgressCloudAttempt(...h.args, {
+      scope: context.scope, fence: context.fence, checkpoint: context.article.reading.resume,
+      fingerprint: h.fp, articleActive: true, cloudEligible: true, transitionInactive: true
+    })).attempt;
+    await h.raw("progressRemoteObservations", tx => {
+      const store = tx.objectStore("progressRemoteObservations");
+      const request = store.get(h.args);
+      request.onsuccess = () => store.put({ ...request.result, revision: "revision:11",
+        cursor: "cursor:11" });
+    });
+    const recovered = await h.flow.resumeCloudAttemptPostflight(...h.args, attempt.attemptId);
+    const again = await h.flow.resumeCloudAttemptPostflight(...h.args, attempt.attemptId);
+    return { attempt, recovered, again, stored: await h.repo.getProgressCloudAttempt(...h.args,
+      attempt.attemptId) };
+  });
+  expect(result.recovered.status).toBe("not-ready");
+  expect(result.stored.attempt.status).toBe("blocked_before_dispatch");
+  expect(result.stored.attempt.request).toEqual(result.attempt.request);
+  expect(result.again.status).toBe("not-awaiting-postflight");
+});
+
+test("reservation commits may_have_sent before exposing the immutable request", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    await h.setup(); await h.movement(0.3);
+    const prepared = (await h.prepare()).attempt;
+    const reserved = await h.flow.reserveCloudAttemptForDispatch(...h.args, prepared.attemptId);
+    const requestFrozen = Object.isFrozen(reserved.immutableRequest);
+    const stored = await h.repo.getProgressCloudAttempt(...h.args, prepared.attemptId);
+    const second = await h.flow.reserveCloudAttemptForDispatch(...h.args, prepared.attemptId);
+    const supersede = await h.repo.supersedePreparedProgressCloudAttempt(...h.args, prepared.attemptId);
+    return { prepared, reserved, requestFrozen, stored, second, supersede };
+  });
+  expect(result.reserved.status).toBe("may_have_sent");
+  expect(result.stored.attempt.status).toBe("may_have_sent");
+  expect(result.reserved.immutableRequest).toEqual(result.stored.attempt.request);
+  expect(result.requestFrozen).toBe(true);
+  expect(result.reserved.cloudMutationId).toBe(result.prepared.cloudMutationId);
+  expect(result.second.status).toBe("not-prepared");
+  expect(result.supersede.status).toBe("not-prepared");
+});
+
+test("dispatch request is returned only after the attempt transaction completes", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    await h.setup(); await h.movement(0.3);
+    const attempt = (await h.prepare()).attempt;
+    const original = IDBDatabase.prototype.transaction;
+    let completionObserved = false;
+    IDBDatabase.prototype.transaction = function(names, mode, ...rest) {
+      const tx = original.call(this, names, mode, ...rest);
+      if (this.name === "LingoFlowSyncDB" && mode === "readwrite" &&
+          Array.from(names).includes("progressCloudAttempts")) {
+        tx.addEventListener("complete", () => { completionObserved = true; });
+      }
+      return tx;
+    };
+    try {
+      const reserved = await h.flow.reserveCloudAttemptForDispatch(...h.args, attempt.attemptId);
+      return { reserved, completionObserved };
+    } finally { IDBDatabase.prototype.transaction = original; }
+  });
+  expect(result.reserved.status).toBe("may_have_sent");
+  expect(result.completionObserved).toBe(true);
+});
+
+test("local-only Resume/fence advance blocks dispatch even without newer desired", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    await h.setup(); await h.movement(0.3);
+    const attempt = (await h.prepare()).attempt;
+    const context = await h.lib.getProgressContext(h.article.id, h.binding);
+    const target = h.target(0.4);
+    const local = await h.lib.commitReadingResumeIfCurrent({ articleId: h.article.id,
+      expectedContent: context.article.content, contentFingerprint: h.fp,
+      beforeResume: context.article.reading.resume, target, furthest: null,
+      scope: context.scope, expectedFence: context.fence });
+    const desired = await h.repo.getProgressDesired(...h.args);
+    const reserved = await h.flow.reserveCloudAttemptForDispatch(...h.args, attempt.attemptId);
+    return { local, desired, reserved, stored: await h.repo.getProgressCloudAttempt(...h.args,
+      attempt.attemptId) };
+  });
+  expect(result.local.status).toBe("committed");
+  expect(result.desired.record.confirmed.checkpoint.progress).toBe(0.3);
+  expect(result.reserved.status).toBe("not-ready");
+  expect(result.stored.attempt.status).toBe("blocked_before_dispatch");
+});
+
+test("direct repository reservation cannot trust a stale caller snapshot", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    await h.setup(); await h.movement(0.3);
+    const attempt = (await h.prepare()).attempt;
+    const context = await h.lib.getProgressContext(h.article.id, h.binding);
+    const oldLocal = { scope: context.scope, fence: context.fence,
+      checkpoint: context.article.reading.resume, fingerprint: h.fp,
+      articleActive: true, cloudEligible: true, transitionInactive: true };
+    await h.lib.commitReadingResumeIfCurrent({ articleId: h.article.id,
+      expectedContent: context.article.content, contentFingerprint: h.fp,
+      beforeResume: context.article.reading.resume, target: h.target(0.4), furthest: null,
+      scope: context.scope, expectedFence: context.fence });
+    const direct = await h.repo.reserveProgressCloudAttemptForDispatch(...h.args,
+      attempt.attemptId, oldLocal);
+    return { direct, stored: await h.repo.getProgressCloudAttempt(...h.args, attempt.attemptId) };
+  });
+  expect(result.direct.status).not.toBe("may_have_sent");
+  expect(result.stored.attempt.status).toBe("blocked_before_dispatch");
+});
+
+test("local-only movement after final Library read preserves newer Resume despite conservative reservation", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    await h.setup(); await h.movement(0.3);
+    const attempt = (await h.prepare()).attempt;
+    const original = window.LingoFlowArticleLibrary;
+    let reads = 0;
+    let localStatus = null;
+    window.LingoFlowArticleLibrary = { ...original,
+      getProgressContext: async (...args) => {
+        const context = await original.getProgressContext(...args);
+        reads += 1;
+        if (reads === 2) {
+          const local = await original.commitReadingResumeIfCurrent({ articleId: h.article.id,
+            expectedContent: context.article.content, contentFingerprint: h.fp,
+            beforeResume: context.article.reading.resume, target: h.target(0.4),
+            furthest: null, scope: context.scope, expectedFence: context.fence });
+          localStatus = local.status;
+        }
+        return context;
+      } };
+    let reserved;
+    try { reserved = await h.repo.reserveProgressCloudAttemptForDispatch(...h.args,
+      attempt.attemptId); }
+    finally { window.LingoFlowArticleLibrary = original; }
+    const now = await original.getProgressContext(h.article.id, h.binding);
+    const desired = await h.repo.getProgressDesired(...h.args);
+    return { reads, localStatus, reserved, localResume: now.article.reading.resume,
+      desired: desired.record.confirmed.checkpoint,
+      stored: await h.repo.getProgressCloudAttempt(...h.args, attempt.attemptId) };
+  });
+  expect(result.reads).toBe(2);
+  expect(result.localStatus).toBe("committed");
+  expect(result.reserved.status).toBe("may_have_sent");
+  expect(result.localResume.progress).toBe(0.4);
+  expect(result.desired.progress).toBe(0.3);
+  expect(result.stored.attempt.request.progress).toBe(0.3);
+});
+
+test("failed older postflight cannot undo another tab's prepared recovery", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    await h.setup(); await h.movement(0.3);
+    const context = await h.lib.getProgressContext(h.article.id, h.binding, { initialize: false });
+    const attempt = (await h.repo.prepareProgressCloudAttempt(...h.args, {
+      scope: context.scope, fence: context.fence, checkpoint: context.article.reading.resume,
+      fingerprint: h.fp, articleActive: true, cloudEligible: true, transitionInactive: true
+    })).attempt;
+    const recovered = await h.flow.resumeCloudAttemptPostflight(...h.args, attempt.attemptId);
+    const lateRejection = await h.repo.rejectAwaitingProgressCloudAttempt(...h.args,
+      attempt.attemptId, "late-old-tab-postflight");
+    return { recovered, lateRejection, stored: await h.repo.getProgressCloudAttempt(...h.args,
+      attempt.attemptId) };
+  });
+  expect(result.recovered.status).toBe("prepared");
+  expect(result.lateRejection.status).toBe("prepared");
+  expect(result.stored.attempt.status).toBe("prepared");
+});
+
+test("prepared survives reload before dispatch; a concurrent reservation returns one request", async ({ page }) => {
+  const prepared = await page.evaluate(async () => {
+    await h.setup(); await h.movement(0.3);
+    return (await h.prepare()).attempt;
+  });
+  await page.reload();
+  const second = await page.context().newPage();
+  try {
+    await second.goto("/");
+    const auth = () => { window.LingoFlowSupabaseAuth = { getState: () => ({
+      status: "authenticated", user: { id: "attempt-owner-a" } }) }; };
+    await page.evaluate(auth);
+    await second.evaluate(auth);
+    const args = [prepared.ownerId, prepared.bindingId, prepared.articleId, prepared.attemptId];
+    const before = await page.evaluate(args => window.LingoFlowSyncStateRepository
+      .getProgressCloudAttempt(...args), args);
+    const [a, b] = await Promise.all([
+      page.evaluate(args => window.LingoFlowProgressLocalDesired
+        .reserveCloudAttemptForDispatch(...args), args),
+      second.evaluate(args => window.LingoFlowProgressLocalDesired
+        .reserveCloudAttemptForDispatch(...args), args)
+    ]);
+    expect(before.attempt.status).toBe("prepared");
+    expect([a.status, b.status].sort()).toEqual(["may_have_sent", "not-prepared"]);
+    const sent = a.status === "may_have_sent" ? a : b;
+    expect(sent.immutableRequest).toEqual(prepared.request);
+  } finally { await second.close(); }
+});
+
+test("may_have_sent survives reload and newer Reader movement without mutation", async ({ page }) => {
+  const before = await page.evaluate(async () => {
+    await h.setup(); await h.movement(0.3);
+    const attempt = (await h.prepare()).attempt;
+    const reserved = await h.flow.reserveCloudAttemptForDispatch(...h.args, attempt.attemptId);
+    await h.movement(0.4);
+    const second = await h.prepare();
+    return { attempt, reserved, second, desired: await h.repo.getProgressDesired(...h.args) };
+  });
+  expect(before.second.status).toBe("existing-attempt");
+  expect(before.desired.record.confirmed.checkpoint.progress).toBe(0.4);
+  await page.reload();
+  const after = await page.evaluate(async attempt => {
+    const repo = window.LingoFlowSyncStateRepository;
+    return repo.getProgressCloudAttempt(attempt.ownerId, attempt.bindingId,
+      attempt.articleId, attempt.attemptId);
+  }, before.attempt);
+  expect(after.attempt.status).toBe("may_have_sent");
+  expect(after.attempt.request).toEqual(before.attempt.request);
+  expect(after.attempt.cloudMutationId).toBe(before.attempt.cloudMutationId);
+});
+
+test("malformed may_have_sent fails closed and cannot make another attempt", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    await h.setup(); await h.movement(0.3);
+    const attempt = (await h.prepare()).attempt;
+    await h.flow.reserveCloudAttemptForDispatch(...h.args, attempt.attemptId);
+    await h.raw("progressCloudAttempts", tx => tx.objectStore("progressCloudAttempts")
+      .put({ ...attempt, status: "may_have_sent", request: { ...attempt.request,
+        expectedProgressRevision: "revision:11" } }));
+    return { read: await h.repo.getProgressCloudAttempt(...h.args, attempt.attemptId),
+      prepare: await h.prepare(), reserve: await h.flow.reserveCloudAttemptForDispatch(...h.args,
+        attempt.attemptId) };
+  });
+  expect(result.read.status).toBe("malformed-attempt");
+  expect(result.prepare.status).toBe("malformed-attempt");
+  expect(result.reserve.status).toBe("malformed-attempt");
+});
+
+for (const flaw of ["mutationId", "source-target", "scope"]) {
+  test(`malformed may_have_sent ${flaw} remains a high-severity unresolved stop`, async ({ page }) => {
+    const result = await page.evaluate(async flaw => {
+      await h.setup(); await h.movement(0.3);
+      const attempt = (await h.prepare()).attempt;
+      await h.flow.reserveCloudAttemptForDispatch(...h.args, attempt.attemptId);
+      let corrupt = { ...attempt, status: "may_have_sent" };
+      if (flaw === "mutationId") corrupt.request = { ...attempt.request,
+        mutationId: "00000000-0000-4000-8000-000000000000" };
+      if (flaw === "source-target") corrupt.sourceFence = { ...attempt.sourceFence,
+        action: { ...attempt.sourceFence.action,
+          target: { ...attempt.sourceFence.action.target, progress: 0.9 } } };
+      if (flaw === "scope") corrupt.sourceScope = { ...attempt.sourceScope,
+        bindingId: "wrong-binding" };
+      await h.raw("progressCloudAttempts", tx => tx.objectStore("progressCloudAttempts")
+        .put(corrupt));
+      return { read: await h.repo.getProgressCloudAttempt(...h.args, attempt.attemptId),
+        list: await h.repo.listProgressCloudAttempts(...h.args),
+        next: await h.prepare() };
+    }, flaw);
+    expect(result.read).toMatchObject({ status: "malformed-attempt", severity: "high" });
+    expect(result.list.status).toBe("malformed-attempt");
+    expect(result.next.status).toBe("malformed-attempt");
+  });
+}
+
+for (const change of ["observation", "epoch", "fingerprint", "outbox", "bootstrap"]) {
+  test(`dispatch revalidation denies ${change} advancement`, async ({ page }) => {
+    const result = await page.evaluate(async change => {
+      await h.setup(); await h.movement(0.3);
+      const attempt = (await h.prepare()).attempt;
+      if (change === "observation") await h.repo.recordProgressRemoteObservation(...h.args, {
+        kind: "revision", revision: "revision:11", cursor: "cursor:11",
+        parentReadingEpoch: h.epoch, contentFingerprint: h.fp,
+        checkpoint: { progress: 0.2, paragraphIndex: 2 }
+      });
+      if (["epoch", "fingerprint"].includes(change)) await h.raw("articleSidecars", tx => {
+        const store = tx.objectStore("articleSidecars");
+        const request = store.get([h.binding.ownerId, h.article.id]);
+        request.onsuccess = () => {
+          const row = request.result;
+          store.put({ ...row, knownRevision: "revision:2", serverReadingContext: {
+            articleRevision: "revision:2", readingEpoch: change === "epoch" ? h.epoch2 : h.epoch,
+            contentFingerprint: change === "fingerprint" ? `sha256:${"b".repeat(64)}` : h.fp,
+            lifecycle: "active" } });
+        };
+      });
+      if (change === "outbox") await h.raw("articleOutbox", tx => tx.objectStore("articleOutbox")
+        .put({ ...h.binding, articleId: h.article.id, mutationId: "pending-article" }));
+      if (change === "bootstrap") await h.raw("control", tx => {
+        const store = tx.objectStore("control");
+        const request = store.getAll();
+        request.onsuccess = () => {
+          const row = request.result.find(item => item.kind === "article-bootstrap-state" &&
+            item.ownerId === h.binding.ownerId);
+          store.put({ ...row, status: "in_progress", phase: "catching-up" });
+        };
+      });
+      const reserved = await h.flow.reserveCloudAttemptForDispatch(...h.args, attempt.attemptId);
+      return { reserved, stored: await h.repo.getProgressCloudAttempt(...h.args, attempt.attemptId) };
+    }, change);
+    expect(result.reserved.status).not.toBe("may_have_sent");
+    expect(result.stored.attempt.status).toBe("blocked_before_dispatch");
+  });
+}
+
+test("title-only Article revision advance preserves compatible epoch and dispatch readiness", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    await h.setup(); await h.movement(0.3);
+    const attempt = (await h.prepare()).attempt;
+    await h.raw("articleSidecars", tx => {
+      const store = tx.objectStore("articleSidecars");
+      const request = store.get([h.binding.ownerId, h.article.id]);
+      request.onsuccess = () => store.put({ ...request.result, knownRevision: "revision:2",
+        serverReadingContext: { articleRevision: "revision:2", readingEpoch: h.epoch,
+          contentFingerprint: h.fp, lifecycle: "active" } });
+    });
+    return h.flow.reserveCloudAttemptForDispatch(...h.args, attempt.attemptId);
+  });
+  expect(result.status).toBe("may_have_sent");
+  expect(result.immutableRequest.expectedProgressRevision).toBe("revision:10");
+});
+
+test("newer confirmed supersedes prepared; newer pending defers without blocking", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    await h.setup(); await h.movement(0.3);
+    const first = (await h.prepare()).attempt;
+    const context = await h.lib.getProgressContext(h.article.id, h.binding);
+    const pending = await h.repo.prepareProgressMovement({ ...h.binding, articleId: h.article.id,
+      target: h.target(0.4), beforeResume: context.article.reading.resume,
+      articleFence: context.fence, scope: context.scope });
+    const deferred = await h.flow.reserveCloudAttemptForDispatch(...h.args, first.attemptId);
+    const before = await h.repo.getProgressCloudAttempt(...h.args, first.attemptId);
+    await h.repo.settleProgressMovement(...h.args, pending.pending.actionId,
+      "quarantine", "fixture-aborted-pending");
+    await h.movement(0.5);
+    const superseded = await h.flow.reserveCloudAttemptForDispatch(...h.args, first.attemptId);
+    return { deferred, before, superseded,
+      after: await h.repo.getProgressCloudAttempt(...h.args, first.attemptId) };
+  });
+  expect(result.deferred.status).toBe("deferred-newer-pending");
+  expect(result.before.attempt.status).toBe("prepared");
+  expect(result.superseded).toMatchObject({ status: "not-ready", reason: "newer-confirmed" });
+  expect(result.after.attempt.status).toBe("superseded");
+});
+
+test("Account Switch and new binding reject old recovery and reservation", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    await h.setup(); await h.movement(0.3);
+    const context = await h.lib.getProgressContext(h.article.id, h.binding, { initialize: false });
+    const awaiting = (await h.repo.prepareProgressCloudAttempt(...h.args, {
+      scope: context.scope, fence: context.fence, checkpoint: context.article.reading.resume,
+      fingerprint: h.fp, articleActive: true, cloudEligible: true, transitionInactive: true
+    })).attempt;
+    const next = { ...h.binding, bindingId: "attempt-binding-a-new" };
+    await h.raw("control", tx => tx.objectStore("control")
+      .put({ key: "workspace-binding", ...next }));
+    const wrongBinding = await h.flow.resumeCloudAttemptPostflight(...h.args, awaiting.attemptId);
+    await h.raw("control", tx => tx.objectStore("control")
+      .put({ key: "workspace-binding", ...h.binding }));
+    const recovered = await h.flow.resumeCloudAttemptPostflight(...h.args, awaiting.attemptId);
+    const other = { ownerId: "attempt-owner-b", bindingId: "attempt-binding-b" };
+    await h.repo.replaceWorkspaceBinding({ from: h.binding, to: other,
+      accountLabel: "b@example.test" });
+    h.setAuthOwner(other.ownerId);
+    const oldRecovery = await h.flow.resumeCloudAttemptPostflight(...h.args, awaiting.attemptId);
+    const oldReserve = await h.flow.reserveCloudAttemptForDispatch(...h.args, awaiting.attemptId);
+    return { wrongBinding, recovered, oldRecovery, oldReserve };
+  });
+  expect(result.wrongBinding.status).toBe("not-ready");
+  expect(result.recovered.status).toBe("prepared");
+  expect(result.oldRecovery.status).toBe("not-ready");
+  expect(result.oldReserve.status).toBe("not-ready");
+});
+
+test("Account Switch during awaiting recovery cannot promote the old attempt", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    await h.setup(); await h.movement(0.3);
+    const context = await h.lib.getProgressContext(h.article.id, h.binding, { initialize: false });
+    const attempt = (await h.repo.prepareProgressCloudAttempt(...h.args, {
+      scope: context.scope, fence: context.fence, checkpoint: context.article.reading.resume,
+      fingerprint: h.fp, articleActive: true, cloudEligible: true, transitionInactive: true
+    })).attempt;
+    const original = SubtleCrypto.prototype.digest;
+    let injected = false;
+    SubtleCrypto.prototype.digest = async function(...args) {
+      if (!injected) {
+        injected = true;
+        await h.repo.replaceWorkspaceBinding({ from: h.binding,
+          to: { ownerId: "attempt-owner-b", bindingId: "attempt-binding-b" },
+          accountLabel: "b@example.test" });
+        h.setAuthOwner("attempt-owner-b");
+      }
+      return original.apply(this, args);
+    };
+    let recovered;
+    try { recovered = await h.flow.resumeCloudAttemptPostflight(...h.args, attempt.attemptId); }
+    finally { SubtleCrypto.prototype.digest = original; }
+    const db = await h.repo.openDatabase();
+    const raw = await new Promise(resolve => {
+      const request = db.transaction("progressCloudAttempts").objectStore("progressCloudAttempts")
+        .get([...h.args, attempt.attemptId]);
+      request.onsuccess = () => resolve(request.result);
+    });
+    return { injected, recovered, raw };
+  });
+  expect(result.injected).toBe(true);
+  expect(result.recovered.status).toBe("not-ready");
+  expect(result.raw.status).toBe("blocked_before_dispatch");
+});
+
+test("Account Switch between Library revalidation and SyncDB reservation denies dispatch", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    await h.setup(); await h.movement(0.3);
+    const attempt = (await h.prepare()).attempt;
+    const original = SubtleCrypto.prototype.digest;
+    let calls = 0;
+    SubtleCrypto.prototype.digest = async function(...args) {
+      calls += 1;
+      if (calls === 2) {
+        await h.repo.replaceWorkspaceBinding({ from: h.binding,
+          to: { ownerId: "attempt-owner-b", bindingId: "attempt-binding-b" },
+          accountLabel: "b@example.test" });
+        h.setAuthOwner("attempt-owner-b");
+      }
+      return original.apply(this, args);
+    };
+    let reserved;
+    try { reserved = await h.flow.reserveCloudAttemptForDispatch(...h.args, attempt.attemptId); }
+    finally { SubtleCrypto.prototype.digest = original; }
+    const db = await h.repo.openDatabase();
+    const raw = await new Promise(resolve => {
+      const request = db.transaction("progressCloudAttempts").objectStore("progressCloudAttempts")
+        .get([...h.args, attempt.attemptId]);
+      request.onsuccess = () => resolve(request.result);
+    });
+    return { calls, reserved, raw };
+  });
+  expect(result.calls).toBeGreaterThanOrEqual(2);
+  expect(result.reserved.status).toBe("not-ready");
+  expect(result.raw.status).toBe("blocked_before_dispatch");
+});
+
+test("may_have_sent remains retained but inaccessible after Account Switch", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    await h.setup(); await h.movement(0.3);
+    const attempt = (await h.prepare()).attempt;
+    await h.flow.reserveCloudAttemptForDispatch(...h.args, attempt.attemptId);
+    const other = { ownerId: "attempt-owner-b", bindingId: "attempt-binding-b" };
+    await h.repo.replaceWorkspaceBinding({ from: h.binding, to: other,
+      accountLabel: "b@example.test" });
+    h.setAuthOwner(other.ownerId);
+    const oldRead = await h.repo.getProgressCloudAttempt(...h.args, attempt.attemptId);
+    const oldReserve = await h.flow.reserveCloudAttemptForDispatch(...h.args, attempt.attemptId);
+    const db = await h.repo.openDatabase();
+    const raw = await new Promise(resolve => {
+      const request = db.transaction("progressCloudAttempts").objectStore("progressCloudAttempts")
+        .get([...h.args, attempt.attemptId]);
+      request.onsuccess = () => resolve(request.result);
+    });
+    return { oldRead, oldReserve, raw };
+  });
+  expect(result.oldRead.status).toBe("blocked");
+  expect(result.oldReserve.status).toBe("not-ready");
+  expect(result.raw.status).toBe("may_have_sent");
+});
+
+test("anonymous and disabled CREATE path cannot reserve", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    await h.setup(); await h.movement(0.3);
+    const attempt = (await h.prepare()).attempt;
+    h.setAuthOwner(null);
+    const anonymous = await h.flow.reserveCloudAttemptForDispatch(...h.args, attempt.attemptId);
+    const directAnonymous = await h.repo.reserveProgressCloudAttemptForDispatch(...h.args,
+      attempt.attemptId);
+    h.setAuthOwner(h.binding.ownerId);
+    await h.raw("progressCloudAttempts", tx => {
+      const store = tx.objectStore("progressCloudAttempts");
+      store.put({ ...attempt, request: { ...attempt.request, expectedState: "absent" } });
+    });
+    const create = await h.flow.reserveCloudAttemptForDispatch(...h.args, attempt.attemptId);
+    return { anonymous, directAnonymous, create };
+  });
+  expect(result.anonymous.status).toBe("not-ready");
+  expect(result.directAnonymous.status).toBe("not-ready");
+  expect(result.create.status).toBe("malformed-attempt");
 });
 
 test("simultaneous tabs serialize one unresolved attempt in SyncDB", async ({ page }) => {

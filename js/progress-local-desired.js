@@ -298,14 +298,18 @@
     const result = await state.prepareProgressCloudAttempt(ownerId, bindingId, articleId, before.local);
     if (result.status !== "awaiting-postflight") return result;
 
-    let after = null;
-    let current = false;
+    let after;
+    let current;
     try {
       after = await cloudAttemptPreflight(owner, articleId);
       current = await stillCurrent(owner, capturedGeneration);
-    } catch { /* A failed postflight must not leave an ordinary prepared attempt. */ }
+    } catch {
+      // Infrastructure failure is not proof of a changed Article. Leave the
+      // non-dispatchable awaiting record for explicit recovery.
+      return { status: "retryable", reason: "local-postflight-unavailable" };
+    }
     if (!current || after?.status !== "ready" || !same(before.local, after.local)) {
-      const blocked = await state.blockPreparedProgressCloudAttempt(ownerId, bindingId,
+      const blocked = await state.rejectAwaitingProgressCloudAttempt(ownerId, bindingId,
         articleId, result.attempt.attemptId, "local-postflight-changed");
       // Binding replacement transaction also blocks the old scope's prepared
       // attempts. Never return an attempt as prepared after failed postflight.
@@ -314,6 +318,69 @@
     }
     return state.confirmProgressCloudAttempt(ownerId, bindingId, articleId,
       result.attempt.attemptId, after.local);
+  }
+
+  // Explicit crash recovery only. No timer or network path is attached to it.
+  async function resumeCloudAttemptPostflight(ownerId, bindingId, articleId, attemptId) {
+    const owner = { ownerId, bindingId };
+    const capturedGeneration = generation;
+    if (!await stillCurrent(owner, capturedGeneration)) {
+      return { status: "not-ready", reason: "scope-mismatch" };
+    }
+    const stored = await state.getProgressCloudAttempt(ownerId, bindingId, articleId, attemptId);
+    if (stored.status !== "ready") return stored;
+    if (stored.attempt.status === "prepared") return { status: "prepared", attempt: stored.attempt };
+    if (stored.attempt.status !== "awaiting_postflight") {
+      return { status: "not-awaiting-postflight", attemptStatus: stored.attempt.status };
+    }
+    let postflight;
+    try { postflight = await cloudAttemptPreflight(owner, articleId); }
+    catch { return { status: "retryable", reason: "local-postflight-unavailable" }; }
+    if (!await stillCurrent(owner, capturedGeneration)) {
+      return { status: "not-ready", reason: "scope-mismatch" };
+    }
+    if (postflight.status !== "ready") {
+      const rejected = await state.rejectAwaitingProgressCloudAttempt(ownerId, bindingId,
+        articleId, attemptId, "local-postflight-changed");
+      return rejected.status === "prepared" ? rejected :
+        { status: "not-ready", reason: "local-postflight-changed", attemptStatus: rejected.status };
+    }
+    return state.confirmProgressCloudAttempt(ownerId, bindingId, articleId,
+      attemptId, postflight.local);
+  }
+
+  // Re-read LibraryDB now, then atomically recheck SyncDB and persist the
+  // conservative may-have-sent state before exposing a request to transport.
+  async function reserveCloudAttemptForDispatch(ownerId, bindingId, articleId, attemptId) {
+    const owner = { ownerId, bindingId };
+    const capturedGeneration = generation;
+    if (!await stillCurrent(owner, capturedGeneration)) {
+      return { status: "not-ready", reason: "scope-mismatch" };
+    }
+    const stored = await state.getProgressCloudAttempt(ownerId, bindingId, articleId, attemptId);
+    if (stored.status !== "ready") return stored;
+    if (stored.attempt.status !== "prepared") {
+      return { status: "not-prepared", attemptStatus: stored.attempt.status };
+    }
+    let preflight;
+    try { preflight = await cloudAttemptPreflight(owner, articleId); }
+    catch { return { status: "retryable", reason: "local-revalidation-unavailable" }; }
+    if (!await stillCurrent(owner, capturedGeneration)) {
+      return { status: "not-ready", reason: "scope-mismatch" };
+    }
+    if (preflight.status !== "ready") {
+      const blocked = await state.blockPreparedProgressCloudAttempt(ownerId, bindingId,
+        articleId, attemptId, "local-state-advanced");
+      return { status: "not-ready", reason: "local-state-advanced", attemptStatus: blocked.status };
+    }
+    const reserved = await state.reserveProgressCloudAttemptForDispatch(ownerId, bindingId,
+      articleId, attemptId);
+    // A switch after commit leaves the durable conservative state intact, but
+    // an old-owner callback must not hand a request to a future transport.
+    if (!await stillCurrent(owner, capturedGeneration)) {
+      return { status: "not-ready", reason: "scope-mismatch" };
+    }
+    return reserved;
   }
 
   async function reconcileInternal() {
@@ -346,7 +413,8 @@
 
   window.LingoFlowProgressLocalDesired = Object.freeze({
     writeRealMovement, reconcile, evaluateConfirmed, evaluateCloudCandidate,
-    prepareCloudAttempt, prepareAccountSwitch
+    prepareCloudAttempt, resumeCloudAttemptPostflight,
+    reserveCloudAttemptForDispatch, prepareAccountSwitch
   });
   const scheduleReconcile = () => {
     void reconcile().catch(error => console.warn("Progress local recovery deferred:", error));

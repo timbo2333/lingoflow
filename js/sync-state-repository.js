@@ -4628,7 +4628,7 @@
   }
 
   const PROGRESS_ATTEMPT_STATUSES = new Set([
-    "awaiting_postflight", "prepared", "blocked_before_dispatch", "superseded"
+    "awaiting_postflight", "prepared", "may_have_sent", "blocked_before_dispatch", "superseded"
   ]);
   const PROGRESS_REQUEST_FIELDS = new Set([
     "mutationId", "articleId", "expectedState", "expectedProgressRevision",
@@ -4656,6 +4656,17 @@
   const uuid = value => typeof value === "string" &&
     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(value);
 
+  function malformedProgressAttempt() {
+    // Do not log request, ID, owner, or credentials. A possibly-sent corrupt
+    // row is a high-severity stop, not permission to create another attempt.
+    console.error("High-severity Progress cloud attempt corruption; dispatch is blocked.");
+    return { status: "malformed-attempt", severity: "high" };
+  }
+  const authenticatedProgressOwner = ownerId => {
+    const auth = window.LingoFlowSupabaseAuth?.getState();
+    return auth?.status === "authenticated" && auth.user?.id === ownerId;
+  };
+
   function validProgressCloudAttempt(value, ownerId, bindingId, articleId) {
     const normalize = window.LingoFlowReadingResume?.normalizeCheckpoint;
     const request = value?.request;
@@ -4664,7 +4675,7 @@
       uuid(value.attemptId) && uuid(value.cloudMutationId) &&
       value.attemptId !== value.cloudMutationId &&
       PROGRESS_ATTEMPT_STATUSES.has(value.status) &&
-      (["awaiting_postflight", "prepared"].includes(value.status)
+      (["awaiting_postflight", "prepared", "may_have_sent"].includes(value.status)
         ? value.reason === null : isOpaqueString(value.reason)) &&
       Number.isSafeInteger(value.sourceLocalSeq) && value.sourceLocalSeq > 0 &&
       isOpaqueString(value.sourceActionId) &&
@@ -4720,6 +4731,7 @@
   // The LibraryDB facts were checked before this transaction and must be
   // checked again afterwards; a future dispatcher must revalidate once more.
   async function prepareProgressCloudAttempt(ownerId, bindingId, articleId, local) {
+    if (!authenticatedProgressOwner(ownerId)) return { status: "not-ready", reason: "scope-mismatch" };
     if (![ownerId, bindingId, articleId].every(isOpaqueString) ||
         !isPlainObject(local) || !isPlainObject(local.scope) || !isPlainObject(local.fence)) {
       return { status: "not-ready", reason: "invalid-local-preflight" };
@@ -4759,10 +4771,10 @@
       const previous = await requestResult(store.index("byScope")
         .getAll(progressAttemptScope(ownerId, bindingId, articleId)));
       if (previous.some(item => !validProgressCloudAttempt(item, ownerId, bindingId, articleId))) {
-        return { status: "malformed-attempt" };
+        return malformedProgressAttempt();
       }
       const unresolved = previous.find(item =>
-        ["awaiting_postflight", "prepared"].includes(item.status));
+        ["awaiting_postflight", "prepared", "may_have_sent"].includes(item.status));
       if (unresolved) return { status: "existing-attempt", attempt: unresolved };
       if (!window.crypto?.randomUUID) return { status: "not-ready", reason: "random-id-unavailable" };
       const attemptId = window.crypto.randomUUID();
@@ -4795,16 +4807,19 @@
   }
 
   async function confirmProgressCloudAttempt(ownerId, bindingId, articleId, attemptId, local) {
+    if (!authenticatedProgressOwner(ownerId)) return { status: "not-ready", reason: "scope-mismatch" };
     return runTransaction([CONTROL_STORE, PROGRESS_DESIRED_STORE, PROGRESS_OBSERVATIONS_STORE,
       ARTICLE_SIDECAR_STORE, ARTICLE_OUTBOX_STORE, PROGRESS_ATTEMPTS_STORE], "readwrite", async tx => {
       const snapshot = await readProgressCausalSnapshot(tx, ownerId, bindingId, articleId);
       if (snapshot.status !== "ready") return { status: "not-ready", reason: snapshot.reason || snapshot.status };
       const store = tx.objectStore(PROGRESS_ATTEMPTS_STORE);
       const attempt = await requestResult(store.get([ownerId, bindingId, articleId, attemptId]));
+      if (!authenticatedProgressOwner(ownerId)) return { status: "not-ready", reason: "scope-mismatch" };
       if (!attempt) return { status: "missing" };
       if (!validProgressCloudAttempt(attempt, ownerId, bindingId, articleId)) {
-        return { status: "malformed-attempt" };
+        return malformedProgressAttempt();
       }
+      if (attempt.status === "prepared") return { status: "prepared", attempt };
       if (attempt.status !== "awaiting_postflight") return { status: "not-awaiting-postflight" };
       const confirmed = snapshot.record?.confirmed;
       const unchanged = confirmed && !snapshot.record.pending &&
@@ -4836,6 +4851,103 @@
     });
   }
 
+  // Only an unconfirmed proposal may be rejected by a recovery postflight.
+  // A concurrent tab may already have promoted it; never undo that result.
+  async function rejectAwaitingProgressCloudAttempt(ownerId, bindingId, articleId, attemptId, reason) {
+    if (!authenticatedProgressOwner(ownerId)) return { status: "not-ready", reason: "scope-mismatch" };
+    if (!isOpaqueString(reason)) return { status: "invalid-reason" };
+    return runTransaction([CONTROL_STORE, PROGRESS_ATTEMPTS_STORE], "readwrite", async tx => {
+      const binding = await requireBinding(tx.objectStore(CONTROL_STORE), ownerId, bindingId);
+      if (binding.status !== "ready") return binding;
+      const store = tx.objectStore(PROGRESS_ATTEMPTS_STORE);
+      const attempt = await requestResult(store.get([ownerId, bindingId, articleId, attemptId]));
+      if (!authenticatedProgressOwner(ownerId)) return { status: "not-ready", reason: "scope-mismatch" };
+      if (!attempt) return { status: "missing" };
+      if (!validProgressCloudAttempt(attempt, ownerId, bindingId, articleId)) {
+        return malformedProgressAttempt();
+      }
+      if (attempt.status !== "awaiting_postflight") return { status: attempt.status, attempt };
+      const blocked = { ...attempt, status: "blocked_before_dispatch", reason };
+      await requestResult(store.put(blocked));
+      return { status: "blocked_before_dispatch", attempt: blocked };
+    });
+  }
+
+  // The sole local send-authorization boundary. A LibraryDB snapshot is
+  // rechecked by the caller immediately beforehand; this transaction then
+  // serializes the attempt and all SyncDB causal gates before returning a
+  // frozen request. There is intentionally no transport callback here.
+  async function reserveProgressCloudAttemptForDispatch(ownerId, bindingId, articleId, attemptId) {
+    if (!authenticatedProgressOwner(ownerId)) return { status: "not-ready", reason: "scope-mismatch" };
+    // Do not accept a caller-supplied readiness flag or a previously captured
+    // candidate. Even direct repository callers must perform LibraryDB phase 1.
+    const library = window.LingoFlowArticleLibrary;
+    const resume = window.LingoFlowReadingResume;
+    const owner = { ownerId, bindingId };
+    const context = await library.getProgressContext(articleId, owner, { initialize: false });
+    if (context.status !== "ready") return { status: "not-ready", reason: context.status };
+    const checkpoint = resume.normalizeCheckpoint(context.article.reading?.resume);
+    if (!checkpoint) return { status: "not-ready", reason: "resume-missing" };
+    const fingerprint = await resume.fingerprintContent(context.article.content);
+    const verified = await library.getProgressContext(articleId, owner, { initialize: false });
+    if (verified.status !== "ready" || !sameProgressFact(context, verified)) {
+      return { status: "not-ready", reason: "local-revalidation-changed" };
+    }
+    const local = { scope: context.scope, fence: context.fence, checkpoint, fingerprint,
+      articleActive: !context.article.deletedAt,
+      cloudEligible: window.LingoFlowArticleSyncSize.validateArticleCloudSyncSize(context.article).status === "valid",
+      transitionInactive: true };
+    return runTransaction([CONTROL_STORE, PROGRESS_DESIRED_STORE, PROGRESS_OBSERVATIONS_STORE,
+      ARTICLE_SIDECAR_STORE, ARTICLE_OUTBOX_STORE, PROGRESS_ATTEMPTS_STORE], "readwrite", async tx => {
+      const snapshot = await readProgressCausalSnapshot(tx, ownerId, bindingId, articleId);
+      if (snapshot.status !== "ready") return { status: "not-ready", reason: snapshot.reason || snapshot.status };
+      const store = tx.objectStore(PROGRESS_ATTEMPTS_STORE);
+      const attempt = await requestResult(store.get([ownerId, bindingId, articleId, attemptId]));
+      if (!authenticatedProgressOwner(ownerId)) return { status: "not-ready", reason: "scope-mismatch" };
+      if (!attempt) return { status: "missing" };
+      if (!validProgressCloudAttempt(attempt, ownerId, bindingId, articleId)) {
+        return malformedProgressAttempt();
+      }
+      if (attempt.status !== "prepared") return { status: "not-prepared", attemptStatus: attempt.status };
+      const confirmed = snapshot.record?.confirmed;
+      if (snapshot.record?.pending) return { status: "deferred-newer-pending" };
+      if (confirmed && snapshot.record.localSeq > attempt.sourceLocalSeq &&
+          confirmed.fence?.action?.localSeq === snapshot.record.localSeq) {
+        const superseded = { ...attempt, status: "superseded", reason: "newer-confirmed" };
+        await requestResult(store.put(superseded));
+        return { status: "not-ready", reason: "newer-confirmed", attempt: superseded };
+      }
+      const unchanged = confirmed && snapshot.record.localSeq === attempt.sourceLocalSeq &&
+        confirmed.fence?.action?.actionId === attempt.sourceActionId &&
+        sameProgressFact(confirmed.fence, attempt.sourceFence) &&
+        sameProgressFact(confirmed.checkpoint, attempt.sourceCheckpoint) &&
+        sameProgressFact(confirmed.causalBase, attempt.sourceCausalBase) &&
+        snapshot.observation.kind === "revision" &&
+        snapshot.observation.revision === attempt.request.expectedProgressRevision &&
+        sameProgressFact(local?.fence, attempt.sourceFence) &&
+        sameProgressFact(local?.scope, attempt.sourceScope) &&
+        sameProgressFact(local?.checkpoint, attempt.sourceCheckpoint) &&
+        local?.fingerprint === attempt.request.contentFingerprint;
+      const decision = unchanged ? progressCausal().evaluate({ ...snapshot,
+        scopeValid: local.scope?.ownerId === ownerId && local.scope?.bindingId === bindingId,
+        transitionInactive: local.transitionInactive === true,
+        fenceValid: true, articleActive: local.articleActive === true,
+        cloudEligible: local.cloudEligible === true, localFingerprint: local.fingerprint
+      }) : { status: "not-ready", reason: "local-or-causal-state-changed" };
+      if (decision.status !== "ready" || decision.mode !== "update") {
+        const blocked = { ...attempt, status: "blocked_before_dispatch",
+          reason: decision.reason || "create-path-disabled" };
+        await requestResult(store.put(blocked));
+        return { status: "not-ready", reason: blocked.reason, attempt: blocked };
+      }
+      const reserved = { ...attempt, status: "may_have_sent" };
+      await requestResult(store.put(reserved));
+      return { status: "may_have_sent", attemptId: reserved.attemptId,
+        cloudMutationId: reserved.cloudMutationId,
+        immutableRequest: Object.freeze({ ...reserved.request }) };
+    });
+  }
+
   async function getProgressCloudAttempt(ownerId, bindingId, articleId, attemptId) {
     return runTransaction([CONTROL_STORE, PROGRESS_ATTEMPTS_STORE], "readonly", async tx => {
       const binding = await requireBinding(tx.objectStore(CONTROL_STORE), ownerId, bindingId);
@@ -4844,7 +4956,7 @@
         .get([ownerId, bindingId, articleId, attemptId]));
       if (!attempt) return { status: "missing" };
       return validProgressCloudAttempt(attempt, ownerId, bindingId, articleId)
-        ? { status: "ready", attempt } : { status: "malformed-attempt" };
+        ? { status: "ready", attempt } : malformedProgressAttempt();
     });
   }
 
@@ -4855,7 +4967,7 @@
       const records = await requestResult(tx.objectStore(PROGRESS_ATTEMPTS_STORE).index("byScope")
         .getAll(progressAttemptScope(ownerId, bindingId, articleId)));
       if (records.some(item => !validProgressCloudAttempt(item, ownerId, bindingId, articleId))) {
-        return { status: "malformed-attempt" };
+        return malformedProgressAttempt();
       }
       return { status: "ready", attempts: records };
     });
@@ -4881,7 +4993,7 @@
         const attempt = await requestResult(store.get([ownerId, bindingId, articleId, attemptId]));
         if (!attempt) return { status: "missing" };
         if (!validProgressCloudAttempt(attempt, ownerId, bindingId, articleId)) {
-          return { status: "malformed-attempt" };
+          return malformedProgressAttempt();
         }
         if (status === "superseded" ? attempt.status !== "prepared" :
             !["awaiting_postflight", "prepared"].includes(attempt.status)) {
@@ -4918,6 +5030,8 @@
     settleProgressMovement,
     prepareProgressCloudAttempt,
     confirmProgressCloudAttempt,
+    rejectAwaitingProgressCloudAttempt,
+    reserveProgressCloudAttemptForDispatch,
     getProgressCloudAttempt,
     listProgressCloudAttempts,
     blockPreparedProgressCloudAttempt,
