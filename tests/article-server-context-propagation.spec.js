@@ -1,4 +1,5 @@
 const { test, expect } = require("@playwright/test");
+const { trapProgressNetwork } = require("./progress-transport-helpers");
 
 test.beforeEach(async ({ page }) => {
   const progressCalls = [];
@@ -6,8 +7,10 @@ test.beforeEach(async ({ page }) => {
     if (/\/rpc\/.*progress/i.test(request.url())) progressCalls.push(request.url().split("?")[0]);
   });
   page.__progressCalls = progressCalls;
-  await page.route("https://**/*", route => route.abort());
-  await page.addInitScript(() => localStorage.setItem("EnglishReaderDictionaryGuideDeferred", "1"));
+  // These tests install synthetic parent/observation/bootstrap state. The
+  // unrelated production automatic worker must not race that fixture. Reuse
+  // the existing mock-only gate isolation; explicit coordinator tests stay on.
+  await trapProgressNetwork(page);
   await page.goto("/");
   await page.evaluate(async () => {
     const owner = { ownerId: "context-owner", bindingId: "context-binding" };

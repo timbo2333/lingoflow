@@ -294,8 +294,12 @@ async function createLocalFavorite(page, text) {
 
 async function openAccountModal(page) {
   const modal = page.locator("#authModal");
+  // Workspace recovery initializes the modal system asynchronously. Do not
+  // type while its initial rAF focus can still redirect fill() into email.
+  await expect(page.locator("#authModal > .modalCard > .modalBody")).toHaveCount(1);
   if (!(await modal.evaluate(element => element.classList.contains("show")))) {
     await page.click("#accountButton");
+    await expect.poll(() => modal.evaluate(element => element.contains(document.activeElement))).toBe(true);
   }
 }
 
