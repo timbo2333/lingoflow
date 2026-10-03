@@ -116,7 +116,8 @@
         ...(current.status === "found" ? {
           remoteProjection: current.projection,
           remoteCursor: current.cursor,
-          remoteLifecycle: current.lifecycle
+          remoteLifecycle: current.lifecycle,
+          remoteServerReadingContext: current.serverReadingContext || null
         }
           : { snapshotStatus: current.status })
       };

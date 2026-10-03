@@ -1197,7 +1197,7 @@ test("v1 → v4 保留 binding、sidecar、prepared/ready request 并补齐 runt
     };
   }, OWNER);
 
-  expect(upgraded.version).toBe(5);
+  expect(upgraded.version).toBe(6);
   expect(upgraded.stores).toEqual([
     "articleOutbox",
     "articleSidecars",
@@ -1206,6 +1206,7 @@ test("v1 → v4 保留 binding、sidecar、prepared/ready request 并补齐 runt
     "inbox",
     "outbox",
     "progressDesired",
+    "progressRemoteObservations",
     "syncIssues"
   ]);
   expect(upgraded.binding.binding).toMatchObject(OWNER);
@@ -1340,7 +1341,7 @@ test("v1 ready mutation 升级至 v5 后以原 identity 完成真实 push settle
     };
   }, OWNER);
 
-  expect(result.version).toBe(5);
+  expect(result.version).toBe(6);
   expect(result.stores).toEqual([
     "articleOutbox",
     "articleSidecars",
@@ -1349,6 +1350,7 @@ test("v1 ready mutation 升级至 v5 后以原 identity 完成真实 push settle
     "inbox",
     "outbox",
     "progressDesired",
+    "progressRemoteObservations",
     "syncIssues"
   ]);
   expect(result.upgraded.items).toHaveLength(1);

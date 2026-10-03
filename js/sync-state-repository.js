@@ -2,7 +2,7 @@
   "use strict";
 
   const DB_NAME = "LingoFlowSyncDB";
-  const DB_VERSION = 5;
+  const DB_VERSION = 6;
   const CONTROL_STORE = "control";
   const SIDECAR_STORE = "entitySidecars";
   const OUTBOX_STORE = "outbox";
@@ -12,6 +12,7 @@
   const ARTICLE_OUTBOX_STORE = "articleOutbox";
   const ARTICLE_SIDECAR_STORE = "articleSidecars";
   const PROGRESS_DESIRED_STORE = "progressDesired";
+  const PROGRESS_OBSERVATIONS_STORE = "progressRemoteObservations";
   const ARTICLE_BOOTSTRAP_STATE_PREFIX = "article-bootstrap-state:";
   const ARTICLE_BOOTSTRAP_INVENTORY_PREFIX = "article-bootstrap-inventory:";
   const ARTICLE_BOOTSTRAP_PENDING_PREFIX = "article-bootstrap-pending:";
@@ -845,6 +846,11 @@
             keyPath: ["ownerId", "bindingId", "articleId"]
           });
         }
+        if (!db.objectStoreNames.contains(PROGRESS_OBSERVATIONS_STORE)) {
+          db.createObjectStore(PROGRESS_OBSERVATIONS_STORE, {
+            keyPath: ["ownerId", "bindingId", "articleId"]
+          });
+        }
       };
 
       request.onsuccess = () => {
@@ -1177,6 +1183,35 @@
     }
   }
 
+  function mergeArticleServerReadingContext(sidecar, incoming) {
+    if (incoming === undefined || incoming === null) return sidecar;
+    const causal = progressCausal();
+    const next = causal.normalizeParent(incoming);
+    if (!next || next.articleRevision !== sidecar.knownRevision) {
+      return { ...sidecar, serverReadingContextDiagnostic: { reason: "invalid-parent-context" } };
+    }
+    const previous = causal.normalizeParent(sidecar.serverReadingContext);
+    if (sidecar.serverReadingContext != null && !previous) {
+      return { ...sidecar, serverReadingContextDiagnostic: { reason: "malformed-parent-context" } };
+    }
+    if (previous && causal.ordinal(previous.articleRevision) > causal.ordinal(next.articleRevision)) {
+      return sidecar;
+    }
+    if (previous?.articleRevision === next.articleRevision) {
+      return causal.same(previous, next) &&
+        (!sidecar.lastSyncedLifecycle || next.lifecycle === sidecar.lastSyncedLifecycle) ? sidecar :
+        { ...sidecar, serverReadingContextDiagnostic: { reason: "inconsistent-parent-context" } };
+    }
+    if (sidecar.lastSyncedLifecycle && next.lifecycle !== sidecar.lastSyncedLifecycle) {
+      return { ...sidecar, serverReadingContextDiagnostic: { reason: "invalid-parent-context" } };
+    }
+    if (previous?.readingEpoch === next.readingEpoch &&
+        (previous.contentFingerprint !== next.contentFingerprint || previous.lifecycle !== next.lifecycle)) {
+      return { ...sidecar, serverReadingContextDiagnostic: { reason: "inconsistent-parent-context" } };
+    }
+    return { ...sidecar, serverReadingContext: next, serverReadingContextDiagnostic: null };
+  }
+
   // Bootstrap and gated runtime both settle through this idempotent boundary.
   async function settleArticleMutationSuccess(ownerId, bindingId, mutationId, result) {
     try {
@@ -1213,12 +1248,14 @@
               BigInt(sidecar.knownRevision.slice(9)) > BigInt(result.revision.slice(9))) {
             return blocked("article-stale-acknowledgement");
           }
-          await requestResult(sidecars.put({
+          const nextSidecar = {
             ...sidecar,
             knownRevision: result.revision,
             lastSyncedFingerprint: mutation.candidateFingerprint,
             lastSyncedLifecycle: mutation.candidate.deletedAt === null ? "active" : "deleted"
-          }));
+          };
+          await requestResult(sidecars.put(mergeArticleServerReadingContext(
+            nextSidecar, result.serverReadingContext)));
           await requestResult(outbox.delete([ownerId, mutationId]));
           if (mutation.resolutionKind === "keep-local") {
             for (const key of articleConflictKeys(
@@ -1595,7 +1632,8 @@
     articleId,
     revision,
     fingerprint,
-    lifecycle = null
+    lifecycle = null,
+    serverReadingContext = null
   ) {
     try {
       validateArticleBootstrapIdentity(ownerId, bindingId);
@@ -1630,6 +1668,7 @@
             return blocked("article-stale-remote-revision");
           }
           const sidecar = {
+            ...current,
             ownerId,
             bindingId,
             articleId,
@@ -1640,8 +1679,9 @@
                 lastSyncedLifecycle: current.lastSyncedLifecycle
               } : {})
           };
-          await requestResult(store.put(sidecar));
-          return { status: "bound", sidecar };
+          const updated = mergeArticleServerReadingContext(sidecar, serverReadingContext);
+          await requestResult(store.put(updated));
+          return { status: "bound", sidecar: updated };
         }
       );
     } catch (error) {
@@ -2225,6 +2265,11 @@
           if (!conflictRevisionMatches(issues, input.expectedRevision)) {
             return blocked("article-conflict-revision-changed");
           }
+          const sidecars = tx.objectStore(ARTICLE_SIDECAR_STORE);
+          const existingSidecar = await requestResult(sidecars.get([input.ownerId, input.articleId]));
+          if (existingSidecar && existingSidecar.bindingId !== input.bindingId) {
+            return blocked("workspace-binding-mismatch");
+          }
           const outbox = tx.objectStore(ARTICLE_OUTBOX_STORE);
           const mutations = await requestResult(
             outbox.index("byOwnerBinding").getAll([input.ownerId, input.bindingId])
@@ -2254,8 +2299,8 @@
             promotedAt: now
           };
           await requestResult(outbox.add(resolutionMutation));
-          const sidecars = tx.objectStore(ARTICLE_SIDECAR_STORE);
           await requestResult(sidecars.put({
+            ...existingSidecar,
             ownerId: input.ownerId,
             bindingId: input.bindingId,
             articleId: input.articleId,
@@ -2445,6 +2490,15 @@
             issue.resolutionAction !== "use-remote")) {
             return blocked("article-conflict-resolution-mismatch");
           }
+          const sidecars = tx.objectStore(ARTICLE_SIDECAR_STORE);
+          const existingSidecar = await requestResult(sidecars.get([input.ownerId, input.articleId]));
+          if (existingSidecar && existingSidecar.bindingId !== input.bindingId) {
+            return blocked("workspace-binding-mismatch");
+          }
+          if (existingSidecar?.knownRevision && progressCausal().ordinal(existingSidecar.knownRevision) >
+              progressCausal().ordinal(input.remoteRevision)) {
+            return blocked("article-stale-remote-revision");
+          }
           const outbox = tx.objectStore(ARTICLE_OUTBOX_STORE);
           const mutations = await requestResult(
             outbox.index("byOwnerBinding").getAll([input.ownerId, input.bindingId])
@@ -2454,14 +2508,17 @@
               await requestResult(outbox.delete([input.ownerId, mutation.mutationId]));
             }
           }
-          await requestResult(tx.objectStore(ARTICLE_SIDECAR_STORE).put({
+          const nextSidecar = {
+            ...existingSidecar,
             ownerId: input.ownerId,
             bindingId: input.bindingId,
             articleId: input.articleId,
             knownRevision: input.remoteRevision,
             lastSyncedFingerprint: input.remoteFingerprint,
             lastSyncedLifecycle: remoteProjection.deletedAt === null ? "active" : "deleted"
-          }));
+          };
+          await requestResult(sidecars.put(mergeArticleServerReadingContext(
+            nextSidecar, input.serverReadingContext)));
           for (const issue of issues) await requestResult(control.delete(issue.key));
           const all = await requestResult(control.getAll());
           const remainingBootstrap = all.filter(item =>
@@ -2496,7 +2553,8 @@
     }
   }
 
-  async function setArticleSidecarLifecycle(ownerId, bindingId, articleId, revision, lifecycle) {
+  async function setArticleSidecarLifecycle(ownerId, bindingId, articleId, revision, lifecycle,
+    serverReadingContext = null) {
     try {
       if (!isOpaqueString(articleId) || !/^revision:[1-9][0-9]*$/.test(revision) ||
           !["active", "deleted"].includes(lifecycle)) {
@@ -2515,7 +2573,8 @@
           if (!sidecar || sidecar.bindingId !== bindingId || sidecar.knownRevision !== revision) {
             return blocked("article-sidecar-revision-mismatch");
           }
-          const next = { ...sidecar, lastSyncedLifecycle: lifecycle };
+          const next = mergeArticleServerReadingContext(
+            { ...sidecar, lastSyncedLifecycle: lifecycle }, serverReadingContext);
           await requestResult(store.put(next));
           return { status: "ready", sidecar: next };
         }
@@ -4271,6 +4330,154 @@
     }
   }
 
+  const progressCausal = () => window.LingoFlowProgressCausalState;
+  const progressScopeRange = (ownerId, bindingId) =>
+    IDBKeyRange.bound([ownerId, bindingId, ""], [ownerId, bindingId, "\uffff"]);
+
+  function progressObservationResult(record, ownerId, bindingId, articleId) {
+    const observation = progressCausal().observationFromRecord(record, ownerId, bindingId, articleId);
+    return observation ? { status: "ready", observation, diagnostic: record?.diagnostic || null }
+      : { status: "malformed-observation" };
+  }
+
+  async function getProgressRemoteObservation(ownerId, bindingId, articleId) {
+    return runTransaction([CONTROL_STORE, PROGRESS_OBSERVATIONS_STORE], "readonly", async tx => {
+      const binding = await requireBinding(tx.objectStore(CONTROL_STORE), ownerId, bindingId);
+      if (binding.status !== "ready") return binding;
+      const record = await requestResult(tx.objectStore(PROGRESS_OBSERVATIONS_STORE).get([ownerId, bindingId, articleId]));
+      return progressObservationResult(record, ownerId, bindingId, articleId);
+    });
+  }
+
+  async function listProgressRemoteObservations(ownerId, bindingId) {
+    return runTransaction([CONTROL_STORE, PROGRESS_OBSERVATIONS_STORE], "readonly", async tx => {
+      const binding = await requireBinding(tx.objectStore(CONTROL_STORE), ownerId, bindingId);
+      if (binding.status !== "ready") return binding;
+      const records = await requestResult(tx.objectStore(PROGRESS_OBSERVATIONS_STORE)
+        .getAll(progressScopeRange(ownerId, bindingId)));
+      if (records.some(record => !progressCausal().observationFromRecord(record, ownerId, bindingId, record.articleId))) {
+        return { status: "malformed-observation" };
+      }
+      return { status: "ready", records };
+    });
+  }
+
+  // No production caller supplies completion evidence in B3-2A. A missing row is UNKNOWN.
+  // This transaction cannot patch desired/pending: those stores are intentionally absent.
+  async function recordProgressRemoteObservation(ownerId, bindingId, articleId, value) {
+    const causal = progressCausal();
+    const next = causal.normalizeObservation(value);
+    if (!isOpaqueString(ownerId) || !isOpaqueString(bindingId) || !isOpaqueString(articleId) ||
+        !next || next.kind === "unknown") return { status: "invalid-observation" };
+    return runTransaction([CONTROL_STORE, PROGRESS_OBSERVATIONS_STORE], "readwrite", async tx => {
+      const binding = await requireBinding(tx.objectStore(CONTROL_STORE), ownerId, bindingId);
+      if (binding.status !== "ready") return binding;
+      const store = tx.objectStore(PROGRESS_OBSERVATIONS_STORE);
+      const record = await requestResult(store.get([ownerId, bindingId, articleId]));
+      const previous = causal.observationFromRecord(record, ownerId, bindingId, articleId);
+      if (!previous) return { status: "malformed-observation" };
+      const decision = causal.observationDecision(previous, next);
+      if (decision === "write") {
+        await requestResult(store.put({ ownerId, bindingId, articleId, ...next }));
+        return { status: "recorded", observation: next };
+      }
+      if (["inconsistent-observation", "absence-after-revision"].includes(decision)) {
+        await requestResult(store.put({ ...record, diagnostic: { reason: decision } }));
+      }
+      return { status: decision };
+    });
+  }
+
+  async function recordArticleServerReadingContext(ownerId, bindingId, articleId, value) {
+    const causal = progressCausal();
+    const next = causal.normalizeParent(value);
+    if (!next) return { status: "invalid-parent-context" };
+    return runTransaction([CONTROL_STORE, ARTICLE_SIDECAR_STORE], "readwrite", async tx => {
+      const binding = await requireBinding(tx.objectStore(CONTROL_STORE), ownerId, bindingId);
+      if (binding.status !== "ready") return binding;
+      const store = tx.objectStore(ARTICLE_SIDECAR_STORE);
+      const sidecar = await requestResult(store.get([ownerId, articleId]));
+      if (!sidecar || sidecar.bindingId !== bindingId || !causal.revision(sidecar.knownRevision)) {
+        return { status: "parent-cloud-identity-missing" };
+      }
+      const previous = causal.normalizeParent(sidecar.serverReadingContext);
+      if (sidecar.serverReadingContext != null && !previous) return { status: "malformed-parent-context" };
+      if (causal.ordinal(next.articleRevision) < causal.ordinal(sidecar.knownRevision) ||
+          (previous && causal.ordinal(next.articleRevision) < causal.ordinal(previous.articleRevision))) {
+        return { status: "stale-parent-context" };
+      }
+      const sameRevision = previous?.articleRevision === next.articleRevision;
+      const knownLifecycleMismatch = next.articleRevision === sidecar.knownRevision &&
+        sidecar.lastSyncedLifecycle && next.lifecycle !== sidecar.lastSyncedLifecycle;
+      if ((sameRevision && !causal.same(previous, next)) || knownLifecycleMismatch ||
+          (previous && previous.readingEpoch === next.readingEpoch &&
+           (previous.contentFingerprint !== next.contentFingerprint || previous.lifecycle !== next.lifecycle))) {
+        await requestResult(store.put({ ...sidecar,
+          serverReadingContextDiagnostic: { reason: "inconsistent-parent-context" } }));
+        return { status: "inconsistent-parent-context" };
+      }
+      if (sameRevision) return { status: "unchanged" };
+      // Observing context must not acknowledge Article WAL/projection settlement.
+      await requestResult(store.put({ ...sidecar, serverReadingContext: next, serverReadingContextDiagnostic: null }));
+      return { status: "recorded", context: next };
+    });
+  }
+
+  async function getArticleServerReadingContext(ownerId, bindingId, articleId) {
+    return runTransaction([CONTROL_STORE, ARTICLE_SIDECAR_STORE], "readonly", async tx => {
+      const binding = await requireBinding(tx.objectStore(CONTROL_STORE), ownerId, bindingId);
+      if (binding.status !== "ready") return binding;
+      const sidecar = await requestResult(tx.objectStore(ARTICLE_SIDECAR_STORE).get([ownerId, articleId]));
+      if (sidecar && sidecar.bindingId !== bindingId) return blocked("workspace-binding-mismatch");
+      return { status: "ready", context: progressCausal().trustedParent(sidecar),
+        diagnostic: sidecar?.serverReadingContextDiagnostic || null };
+    });
+  }
+
+  // A coherent SyncDB snapshot for the local evaluator, not a cross-DB send lease.
+  async function getProgressCausalSnapshot(ownerId, bindingId, articleId) {
+    return runTransaction([CONTROL_STORE, PROGRESS_DESIRED_STORE, PROGRESS_OBSERVATIONS_STORE,
+      ARTICLE_SIDECAR_STORE, ARTICLE_OUTBOX_STORE], "readonly", async tx => {
+      const control = tx.objectStore(CONTROL_STORE);
+      const binding = await requireBinding(control, ownerId, bindingId);
+      if (binding.status !== "ready") return binding;
+      const record = await requestResult(tx.objectStore(PROGRESS_DESIRED_STORE).get([ownerId, bindingId, articleId]));
+      if (record && !validProgressDesiredRecord(record, ownerId, bindingId, articleId)) return { status: "malformed-progress-record" };
+      const rawObservation = await requestResult(tx.objectStore(PROGRESS_OBSERVATIONS_STORE).get([ownerId, bindingId, articleId]));
+      const observed = progressObservationResult(rawObservation, ownerId, bindingId, articleId);
+      if (observed.status !== "ready") return observed;
+      const sidecar = await requestResult(tx.objectStore(ARTICLE_SIDECAR_STORE).get([ownerId, articleId]));
+      if (sidecar && sidecar.bindingId !== bindingId) return blocked("workspace-binding-mismatch");
+      const bootstrap = await requestResult(control.get(articleBootstrapStateKey(ownerId, bindingId)));
+      let bootstrapSafe = false;
+      try {
+        validateArticleBootstrapState(bootstrap);
+        bootstrapSafe = bootstrap.status === "complete" && bootstrap.phase === "complete" &&
+          bootstrap.ownerId === ownerId && bootstrap.bindingId === bindingId && isArticleCursor(bootstrap.finalCursor) &&
+          bootstrap.issueCount === 0 && bootstrap.pendingCursor === null && !bootstrap.pendingHasMore;
+      } catch { /* Missing/malformed bootstrap is never ready. */ }
+      const conflicts = await readArticleConflictEntries(control, ownerId, bindingId, articleId);
+      const mutations = await requestResult(tx.objectStore(ARTICLE_OUTBOX_STORE).index("byOwnerBinding")
+        .getAll(IDBKeyRange.only([ownerId, bindingId])));
+      const controls = await requestResult(control.getAll());
+      const parentApplyPending = controls.some(item => item.ownerId === ownerId && item.bindingId === bindingId &&
+        item.articleId === articleId && ["article-runtime-pending-change", "article-bootstrap-pending-change"].includes(item.kind));
+      return { status: "ready", record: compatibleProgressRecord(record), sidecar,
+        observation: observed.observation, observationDiagnostic: observed.diagnostic,
+        bootstrapSafe, hasConflict: conflicts.length > 0,
+        hasMutation: parentApplyPending || mutations.some(item => item.articleId === articleId) };
+    });
+  }
+
+  function compatibleProgressRecord(record) {
+    if (!record) return null;
+    const next = { ...record };
+    for (const field of ["pending", "confirmed"]) {
+      if (record[field]) next[field] = { ...record[field], causalBase: progressCausal().normalizeBase(record[field].causalBase) };
+    }
+    return next;
+  }
+
   // Progress is an owner-scoped latest-intent register, not an Article mutation lane.
   // The sequence is allocated in this transaction, so tabs share one ordering source.
   function validProgressDesiredRecord(record, ownerId, bindingId, articleId = null) {
@@ -4290,6 +4497,8 @@
     if (confirmed !== null && confirmed !== undefined &&
         (!normalize?.(confirmed.checkpoint) || !confirmed.fence?.lifecycleToken ||
          !confirmed.fence.action?.actionId)) return false;
+    if ((pending && !progressCausal().normalizeBase(pending.causalBase)) ||
+        (confirmed && !progressCausal().normalizeBase(confirmed.causalBase))) return false;
     return true;
   }
 
@@ -4303,7 +4512,8 @@
         !scope?.scopeToken || !articleFence?.lifecycleToken ||
         !Number.isInteger(articleFence.resumeRevision) ||
         (beforeResume !== null && !before)) throw new Error("Progress movement 无效。");
-    return runTransaction([CONTROL_STORE, PROGRESS_DESIRED_STORE], "readwrite", async tx => {
+    return runTransaction([CONTROL_STORE, PROGRESS_DESIRED_STORE, PROGRESS_OBSERVATIONS_STORE,
+      ARTICLE_SIDECAR_STORE], "readwrite", async tx => {
       const binding = await requireBinding(tx.objectStore(CONTROL_STORE), ownerId, bindingId);
       if (binding.status !== "ready") return binding;
       const store = tx.objectStore(PROGRESS_DESIRED_STORE);
@@ -4312,16 +4522,22 @@
       if (previous && !validProgressDesiredRecord(previous, ownerId, bindingId, articleId)) {
         return { status: "malformed-progress-record" };
       }
+      const rawObservation = await requestResult(tx.objectStore(PROGRESS_OBSERVATIONS_STORE).get(key));
+      const observed = progressObservationResult(rawObservation, ownerId, bindingId, articleId);
+      const sidecar = await requestResult(tx.objectStore(ARTICLE_SIDECAR_STORE).get([ownerId, articleId]));
+      const causalBase = progressCausal().captureBase(
+        observed.status === "ready" && !observed.diagnostic ? observed.observation : null,
+        sidecar?.bindingId === bindingId ? sidecar : null);
       const localSeq = (previous?.localSeq || 0) + 1;
       const pending = {
         actionId: window.crypto.randomUUID(), localSeq, articleId, ownerId, bindingId,
         target: checkpoint, beforeResume: before,
         contentFingerprint: checkpoint.contentFingerprint,
-        scope, articleFence
+        scope, articleFence, causalBase
       };
       const record = {
         ownerId, bindingId, articleId, localSeq,
-        confirmed: previous?.confirmed || null,
+        confirmed: compatibleProgressRecord(previous)?.confirmed || null,
         pending,
         quarantined: previous?.quarantined || null
       };
@@ -4339,7 +4555,7 @@
       if (record && !validProgressDesiredRecord(record, ownerId, bindingId, articleId)) {
         return { status: "malformed-progress-record" };
       }
-      return { status: "ready", record: record || null };
+      return { status: "ready", record: compatibleProgressRecord(record) };
     });
   }
 
@@ -4350,7 +4566,7 @@
       const range = IDBKeyRange.bound([ownerId, bindingId, ""], [ownerId, bindingId, "\uffff"]);
       const records = await requestResult(tx.objectStore(PROGRESS_DESIRED_STORE).getAll(range));
       return { status: "ready", records: records.filter(record =>
-        validProgressDesiredRecord(record, ownerId, bindingId)),
+        validProgressDesiredRecord(record, ownerId, bindingId)).map(compatibleProgressRecord),
       malformedCount: records.filter(record =>
         !validProgressDesiredRecord(record, ownerId, bindingId)).length };
     });
@@ -4375,7 +4591,8 @@
             articleFence.action?.localSeq !== record.pending.localSeq) {
           return { status: "unverified-fence" };
         }
-        record.confirmed = { checkpoint: record.pending.target, fence: articleFence };
+        record.confirmed = { checkpoint: record.pending.target, fence: articleFence,
+          causalBase: progressCausal().normalizeBase(record.pending.causalBase) };
       }
       else record.quarantined = { pending: record.pending, reason: String(reason || "unsafe-replay") };
       record.pending = null;
@@ -4388,6 +4605,12 @@
     DB_NAME,
     DB_VERSION,
     openDatabase,
+    getProgressRemoteObservation,
+    listProgressRemoteObservations,
+    recordProgressRemoteObservation,
+    getArticleServerReadingContext,
+    recordArticleServerReadingContext,
+    getProgressCausalSnapshot,
     prepareProgressMovement,
     getProgressDesired,
     listProgressDesired,

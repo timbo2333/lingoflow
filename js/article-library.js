@@ -550,10 +550,10 @@
 
   // The workspace scope and Article lifecycle live in LibraryDB, so a stale tab
   // cannot validate an old movement against a new owner's identical Article.
-  async function getProgressContext(articleId, owner = null) {
+  async function getProgressContext(articleId, owner = null, { initialize = true } = {}) {
     const db = await openDatabase();
     return new Promise((resolve, reject) => {
-      const tx = db.transaction([ARTICLE_STORE, PROGRESS_FENCE_STORE, PROGRESS_CONTROL_STORE], "readwrite");
+      const tx = db.transaction([ARTICLE_STORE, PROGRESS_FENCE_STORE, PROGRESS_CONTROL_STORE], initialize ? "readwrite" : "readonly");
       const articles = tx.objectStore(ARTICLE_STORE);
       const fences = tx.objectStore(PROGRESS_FENCE_STORE);
       const controls = tx.objectStore(PROGRESS_CONTROL_STORE);
@@ -568,6 +568,7 @@
           }
           let scope = controlRequest.result || null;
           if (owner && !scope) {
+            if (!initialize) { result = { status: "scope-missing" }; return; }
             scope = { key: "workspace", ownerId: owner.ownerId, bindingId: owner.bindingId,
               scopeToken: newFenceToken() };
             controls.put(scope);
@@ -582,6 +583,7 @@
             if (!article) { result = { status: "missing" }; return; }
             const fenceRequest = fences.get(articleId);
             fenceRequest.onsuccess = () => {
+              if (!fenceRequest.result && !initialize) { result = { status: "fence-missing" }; return; }
               const fence = fenceRequest.result || initialProgressFence(articleId);
               if (!fenceRequest.result) fences.put(fence);
               result = { status: "ready", article, fence, scope };

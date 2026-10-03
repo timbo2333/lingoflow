@@ -1663,8 +1663,8 @@ test("真实 v2 fixture 升级 v5 保留 binding/sidecar/attempted/successor/pus
       issues: await state.listIssues({ ownerId: owner.ownerId, bindingId: owner.bindingId })
     };
   }, OWNER);
-  expect(upgraded.version).toBe(5);
-  expect(upgraded.stores).toEqual(["articleOutbox", "articleSidecars", "control", "entitySidecars", "inbox", "outbox", "progressDesired", "syncIssues"]);
+  expect(upgraded.version).toBe(6);
+  expect(upgraded.stores).toEqual(["articleOutbox", "articleSidecars", "control", "entitySidecars", "inbox", "outbox", "progressDesired", "progressRemoteObservations", "syncIssues"]);
   expect(upgraded.binding.binding).toMatchObject(OWNER);
   expect(upgraded.sidecar.sidecar).toEqual(fixture.sidecar);
   expect(upgraded.outbox.items).toEqual([fixture.head, fixture.successor]);

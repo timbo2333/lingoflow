@@ -86,6 +86,13 @@
       const snapshot = await cloud.snapshot(current.owner, issue.articleId);
       if (!contextCurrent(current)) return { status: "discarded" };
       if (snapshot.status === "unavailable") return snapshot;
+      if (snapshot.status === "found" && snapshot.serverReadingContext) {
+        const observed = await state.recordArticleServerReadingContext(
+          current.owner.ownerId, current.owner.bindingId, issue.articleId,
+          snapshot.serverReadingContext);
+        if (!contextCurrent(current)) return { status: "discarded" };
+        if (observed.status === "blocked" || observed.status === "failed") return observed;
+      }
       const nextRevision = snapshot.status === "found" ? snapshot.revision : null;
       if (nextRevision === issue.remoteRevision) {
         return { status: "current", snapshot };
@@ -214,7 +221,8 @@
         articleId,
         remoteProjection,
         remoteRevision: checked.snapshot.revision,
-        remoteFingerprint: await deps().engine.fingerprint(remoteProjection)
+        remoteFingerprint: await deps().engine.fingerprint(remoteProjection),
+        serverReadingContext: checked.snapshot.serverReadingContext || null
       });
       if (!contextCurrent(current)) return { status: "discarded" };
       emit();

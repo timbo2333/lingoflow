@@ -289,7 +289,8 @@
         active.owner.bindingId,
         promotion.articleId,
         snapshot.revision,
-        snapshot.lifecycle
+        snapshot.lifecycle,
+        snapshot.serverReadingContext || null
       );
       return written.status === "ready"
         ? await active.state.promoteNextArticleDesired(
@@ -300,6 +301,12 @@
     }
 
     async function capturePushIssue(active, mutation, result) {
+      if (result.remoteServerReadingContext) {
+        const observed = await active.state.recordArticleServerReadingContext(
+          active.owner.ownerId, active.owner.bindingId, mutation.articleId,
+          result.remoteServerReadingContext);
+        if (observed.status === "blocked" || observed.status === "failed") return observed;
+      }
       if (mutation.resolutionKind === "keep-local" &&
           typeof active.state.refreshArticleConflictIssue === "function") {
         return await active.state.refreshArticleConflictIssue({
@@ -490,7 +497,8 @@
           change.articleId,
           change.revision,
           remoteFingerprint,
-          change.projection.deletedAt === null ? "active" : "deleted"
+          change.projection.deletedAt === null ? "active" : "deleted",
+          change.serverReadingContext || null
         );
         if (bound.status !== "bound") {
           const captured = await capturePullIssue(

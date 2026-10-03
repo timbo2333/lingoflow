@@ -70,7 +70,8 @@
         remoteValue.articleId,
         remoteValue.revision,
         await fingerprint(remoteValue.projection),
-        remoteValue.projection.deletedAt === null ? "active" : "deleted"
+        remoteValue.projection.deletedAt === null ? "active" : "deleted",
+        remoteValue.serverReadingContext || null
       );
       if (result.status === "blocked" &&
           result.reason === "article-stale-remote-revision") {

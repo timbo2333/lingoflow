@@ -237,6 +237,37 @@
     return { status: "ready", checkpoint };
   }
 
+  // Read-only advisory evaluation. No cross-DB atomic send authority is implied;
+  // a future transport must revalidate when it durably prepares a cloud attempt.
+  async function evaluateCloudCandidate(ownerId, bindingId, articleId) {
+    const owner = { ownerId, bindingId };
+    const capturedGeneration = generation;
+    const no = reason => ({ status: "not-ready", reason });
+    if (!await stillCurrent(owner, capturedGeneration)) return no("scope-mismatch");
+    const context = await library.getProgressContext(articleId, owner, { initialize: false });
+    if (context.status !== "ready") return no(context.status);
+    const snapshot = await state.getProgressCausalSnapshot(ownerId, bindingId, articleId);
+    if (snapshot.status !== "ready") return no(snapshot.reason || snapshot.status);
+    const localFingerprint = await resume.fingerprintContent(context.article.content);
+    const verified = await library.getProgressContext(articleId, owner, { initialize: false });
+    const finalSnapshot = await state.getProgressCausalSnapshot(ownerId, bindingId, articleId);
+    if (!await stillCurrent(owner, capturedGeneration)) return no("scope-mismatch");
+    if (verified.status !== "ready") return no(verified.status);
+    if (!same(context, verified) || !same(snapshot, finalSnapshot)) return no("state-changed");
+    const confirmed = snapshot.record?.confirmed;
+    return window.LingoFlowProgressCausalState.evaluate({ ...snapshot,
+      scopeValid: context.scope?.ownerId === ownerId && context.scope?.bindingId === bindingId,
+      transitionInactive: true,
+      fenceValid: Boolean(confirmed && same(confirmed.fence, context.fence) &&
+        same(observedResume(context).normalized, confirmed.checkpoint) &&
+        context.fence.action?.ownerId === ownerId && context.fence.action?.bindingId === bindingId &&
+        context.fence.action?.scopeToken === context.scope?.scopeToken),
+      articleActive: !context.article.deletedAt,
+      cloudEligible: window.LingoFlowArticleSyncSize.validateArticleCloudSyncSize(context.article).status === "valid",
+      localFingerprint
+    });
+  }
+
   async function reconcileInternal() {
     const capturedGeneration = generation;
     const owner = await currentOwner();
@@ -266,7 +297,7 @@
   }
 
   window.LingoFlowProgressLocalDesired = Object.freeze({
-    writeRealMovement, reconcile, evaluateConfirmed, prepareAccountSwitch
+    writeRealMovement, reconcile, evaluateConfirmed, evaluateCloudCandidate, prepareAccountSwitch
   });
   const scheduleReconcile = () => {
     void reconcile().catch(error => console.warn("Progress local recovery deferred:", error));

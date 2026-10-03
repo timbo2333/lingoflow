@@ -59,6 +59,17 @@
     };
   }
 
+  // Only a complete, server-returned fact may become Progress parent authority.
+  // Older Article RPC responses may omit these additive fields.
+  function serverReadingContext(raw, revision, lifecycle) {
+    return window.LingoFlowProgressCausalState?.normalizeParent({
+      articleRevision: revision,
+      readingEpoch: raw.readingEpoch,
+      contentFingerprint: raw.contentFingerprint,
+      lifecycle
+    }) || null;
+  }
+
   function validatePushResult(raw, mutation) {
     if (!raw || typeof raw !== "object" || Array.isArray(raw) ||
         !["applied", "unchanged", "conflict", "rejected"].includes(raw.status)) return null;
@@ -69,7 +80,10 @@
     } else if (!opaque(raw.reason)) return null;
     if (raw.status === "conflict" &&
         (raw.currentRevision !== null && revisionNumber(raw.currentRevision) === null)) return null;
-    return raw;
+    const context = ["applied", "unchanged"].includes(raw.status)
+      ? serverReadingContext(raw, raw.revision,
+        raw.operation === "delete" ? "deleted" : "active") : null;
+    return context ? { ...raw, serverReadingContext: context } : raw;
   }
 
   function validatePullResult(raw, afterCursor, requestedLimit) {
@@ -101,7 +115,10 @@
       }
       if (projection.id !== change.articleId ||
           (change.operation === "delete") !== (projection.deletedAt !== null)) return null;
-      changes.push({ ...change, projection });
+      const context = serverReadingContext(change, change.revision,
+        projection.deletedAt === null ? "active" : "deleted");
+      changes.push({ ...change, projection,
+        ...(context ? { serverReadingContext: context } : {}) });
       previous = cursor;
     }
     if (cursorNumber(raw.nextCursor) !== previous ||
@@ -121,7 +138,9 @@
         .sanitizeArticleSyncProjection(raw.projection);
       if (projection.id !== articleId ||
           (raw.lifecycle === "deleted") !== (projection.deletedAt !== null)) return null;
-      return { ...raw, projection };
+      const context = serverReadingContext(raw, raw.revision, raw.lifecycle);
+      return { ...raw, projection,
+        ...(context ? { serverReadingContext: context } : {}) };
     } catch {
       return null;
     }
