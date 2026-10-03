@@ -58,14 +58,774 @@ test.beforeEach(async ({ page }) => {
       resume.createCheckpoint({ progress, paragraphIndex }, fp);
     const movement = progress => flow.writeRealMovement(article.id, target(progress));
     const prepare = () => flow.prepareCloudAttempt(...args);
+    const success = (attempt, status = "applied", revision = "revision:11",
+      cursor = "cursor:11") => ({
+      status, mutationId: attempt.cloudMutationId, articleId: attempt.articleId,
+      revision, cursor, progress: attempt.request.progress,
+      paragraphIndex: attempt.request.paragraphIndex,
+      parentReadingEpoch: attempt.request.parentReadingEpoch,
+      contentFingerprint: attempt.request.contentFingerprint,
+      serverUpdatedAt: "2026-10-03T00:00:00+00:00"
+    });
     window.h = { repo, lib, flow, resume, binding, article, fp, epoch, epoch2,
-      args, raw, setup, target, movement, prepare,
+      args, raw, setup, target, movement, prepare, success,
       setAuthOwner: value => { authOwner = value; } };
   });
 });
 
 test.afterEach(async ({ page }) => {
-  expect(page.__progressRequests, "B3-3B-1 must make zero Progress requests").toEqual([]);
+  expect(page.__progressRequests, "B3-3B-2A must make zero Progress requests").toEqual([]);
+});
+
+test("strict Progress parser accepts complete success and rejects unknown shapes", async ({ page }) => {
+  const parsed = await page.evaluate(() => {
+    const parser = window.LingoFlowProgressCloudResult;
+    const request = { mutationId: "m", articleId: "a", expectedState: "revision",
+      parentReadingEpoch: "11111111-2222-4333-8444-555555555555",
+      contentFingerprint: `sha256:${"a".repeat(64)}`, progress: 0.3, paragraphIndex: 3 };
+    const success = { status: "applied", mutationId: "m", articleId: "a",
+      revision: "revision:11", cursor: "cursor:11", progress: 0.3,
+      paragraphIndex: 3, parentReadingEpoch: request.parentReadingEpoch,
+      contentFingerprint: request.contentFingerprint,
+      serverUpdatedAt: "2026-10-03T00:00:00+00:00" };
+    return {
+      applied: parser.parse(success, request).status,
+      unchanged: parser.parse({ ...success, status: "unchanged",
+        revision: "revision:10", cursor: "cursor:10" }, request).status,
+      missing: parser.parse({ ...success, cursor: undefined }, request).status,
+      overflowingRevision: parser.parse({ ...success,
+        revision: "revision:9223372036854775808" }, request).status,
+      overflowingCursor: parser.parse({ ...success,
+        cursor: "cursor:9223372036854775808" }, request).status,
+      wrongId: parser.parse({ ...success, mutationId: "other" }, request),
+      unknownStatus: parser.parse({ ...success, status: "synced" }, request).status,
+      unknownReason: parser.parse({ status: "rejected", reason: "future-reason" }, request).status,
+      conflict: parser.parse({ status: "conflict", reason: "revision-mismatch",
+        mutationId: "m", articleId: "a", currentRevision: "revision:12",
+        currentCursor: "cursor:14" }, request)
+    };
+  });
+  expect(parsed.applied).toBe("success");
+  expect(parsed.unchanged).toBe("success");
+  expect(parsed.missing).toBe("unparseable");
+  expect(parsed.overflowingRevision).toBe("unparseable");
+  expect(parsed.overflowingCursor).toBe("unparseable");
+  expect(parsed.wrongId).toEqual({ status: "attention", reason: "success-identity-mismatch" });
+  expect(parsed.unknownStatus).toBe("unparseable");
+  expect(parsed.unknownReason).toBe("unparseable");
+  expect(parsed.conflict).toEqual({ status: "terminal", reason: "revision-mismatch",
+    currentRevisionHint: "revision:12", currentCursorHint: "cursor:14" });
+});
+
+test("applied settlement advances observation and consumes only exact desired shell", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    await h.setup(); await h.movement(0.3);
+    const attempt = (await h.prepare()).attempt;
+    await h.flow.reserveCloudAttemptForDispatch(...h.args, attempt.attemptId);
+    const guard = await h.flow.captureCloudResponseContext(...h.args.slice(0, 2));
+    const settled = await h.flow.settleCloudResult(guard, h.article.id,
+      attempt.attemptId, h.success(attempt));
+    const after = await h.repo.getProgressDesired(...h.args);
+    const observation = await h.repo.getProgressRemoteObservation(...h.args);
+    const stored = await h.repo.getProgressCloudAttempt(...h.args, attempt.attemptId);
+    const coverage = await h.flow.evaluateLatestLocalCloudCoverage(...h.args);
+    return { settled, after, observation, stored, coverage };
+  });
+  expect(result.settled).toMatchObject({ status: "succeeded", resultStatus: "applied",
+    localCoverageAtSettlement: "covered" });
+  expect(result.after.record.localSeq).toBe(1);
+  expect(result.after.record.confirmed).toBeNull();
+  expect(result.observation.observation).toMatchObject({ revision: "revision:11",
+    cursor: "cursor:11", checkpoint: { progress: 0.3, paragraphIndex: 3 } });
+  expect(result.stored.attempt.status).toBe("succeeded");
+  expect(result.coverage.status).toBe("covered");
+});
+
+test("unchanged and receipt replay use canonical revision without increment", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    await h.setup();
+    await h.raw("progressRemoteObservations", tx => tx.objectStore("progressRemoteObservations")
+      .put({ ownerId: h.binding.ownerId, bindingId: h.binding.bindingId,
+        articleId: h.article.id, kind: "revision", revision: "revision:10", cursor: "cursor:10",
+        parentReadingEpoch: h.epoch, contentFingerprint: h.fp,
+        checkpoint: { progress: 0.3, paragraphIndex: 3 } }));
+    await h.movement(0.3);
+    const attempt = (await h.prepare()).attempt;
+    await h.flow.reserveCloudAttemptForDispatch(...h.args, attempt.attemptId);
+    const guard = await h.flow.captureCloudResponseContext(...h.args.slice(0, 2));
+    const response = h.success(attempt, "unchanged", "revision:10", "cursor:10");
+    const first = await h.flow.settleCloudResult(guard, h.article.id, attempt.attemptId, response);
+    const replay = await h.flow.settleCloudResult(guard, h.article.id, attempt.attemptId, response);
+    return { first, replay, stored: await h.repo.getProgressCloudAttempt(...h.args,
+      attempt.attemptId), observation: await h.repo.getProgressRemoteObservation(...h.args) };
+  });
+  expect(result.first).toMatchObject({ status: "succeeded", resultStatus: "unchanged" });
+  expect(result.replay).toMatchObject({ status: "succeeded", idempotent: true });
+  expect(result.stored.attempt.settlement.result.revision).toBe("revision:10");
+  expect(result.observation.observation.cursor).toBe("cursor:10");
+});
+
+test("conflicting duplicate canonical success enters durable attention", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    await h.setup(); await h.movement(0.3);
+    const attempt = (await h.prepare()).attempt;
+    await h.flow.reserveCloudAttemptForDispatch(...h.args, attempt.attemptId);
+    const guard = await h.flow.captureCloudResponseContext(...h.args.slice(0, 2));
+    await h.flow.settleCloudResult(guard, h.article.id, attempt.attemptId, h.success(attempt));
+    const duplicate = await h.flow.settleCloudResult(guard, h.article.id, attempt.attemptId,
+      h.success(attempt, "applied", "revision:12", "cursor:12"));
+    return { duplicate, stored: await h.repo.getProgressCloudAttempt(...h.args,
+      attempt.attemptId), observation: await h.repo.getProgressRemoteObservation(...h.args) };
+  });
+  expect(result.duplicate.status).toBe("settlement_attention");
+  expect(result.stored.attempt.status).toBe("settlement_attention");
+  expect(result.observation.observation.revision).toBe("revision:11");
+});
+
+test("identical canonical success with different JSON field order remains idempotent", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    await h.setup(); await h.movement(0.3);
+    const attempt = (await h.prepare()).attempt;
+    await h.flow.reserveCloudAttemptForDispatch(...h.args, attempt.attemptId);
+    const guard = await h.flow.captureCloudResponseContext(...h.args.slice(0, 2));
+    const firstResponse = h.success(attempt);
+    const secondResponse = Object.fromEntries(Object.entries(firstResponse).reverse());
+    const first = await h.flow.settleCloudResult(guard, h.article.id,
+      attempt.attemptId, firstResponse);
+    const second = await h.flow.settleCloudResult(guard, h.article.id,
+      attempt.attemptId, secondResponse);
+    return { first, second, stored: await h.repo.getProgressCloudAttempt(...h.args,
+      attempt.attemptId) };
+  });
+  expect(result.first.status).toBe("succeeded");
+  expect(result.second).toMatchObject({ status: "succeeded", idempotent: true });
+  expect(result.stored.attempt.status).toBe("succeeded");
+});
+
+test("newer observation is not downgraded by older server success", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    await h.setup(); await h.movement(0.3);
+    const attempt = (await h.prepare()).attempt;
+    await h.flow.reserveCloudAttemptForDispatch(...h.args, attempt.attemptId);
+    await h.repo.recordProgressRemoteObservation(...h.args, { kind: "revision",
+      revision: "revision:12", cursor: "cursor:12", parentReadingEpoch: h.epoch,
+      contentFingerprint: h.fp, checkpoint: { progress: 0.7, paragraphIndex: 7 } });
+    const guard = await h.flow.captureCloudResponseContext(...h.args.slice(0, 2));
+    const settled = await h.flow.settleCloudResult(guard, h.article.id,
+      attempt.attemptId, h.success(attempt));
+    return { settled, desired: await h.repo.getProgressDesired(...h.args),
+      observation: await h.repo.getProgressRemoteObservation(...h.args) };
+  });
+  expect(result.settled).toMatchObject({ status: "succeeded", observationStatus: "stale-observation",
+    localCoverageAtSettlement: "unknown" });
+  expect(result.observation.observation.revision).toBe("revision:12");
+  expect(result.desired.record.confirmed.checkpoint.progress).toBe(0.3);
+});
+
+test("equal-revision canonical contradiction fails closed without clearing desired", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    await h.setup(); await h.movement(0.3);
+    const attempt = (await h.prepare()).attempt;
+    await h.flow.reserveCloudAttemptForDispatch(...h.args, attempt.attemptId);
+    await h.repo.recordProgressRemoteObservation(...h.args, { kind: "revision",
+      revision: "revision:11", cursor: "cursor:11", parentReadingEpoch: h.epoch,
+      contentFingerprint: h.fp, checkpoint: { progress: 0.8, paragraphIndex: 8 } });
+    const guard = await h.flow.captureCloudResponseContext(...h.args.slice(0, 2));
+    const settled = await h.flow.settleCloudResult(guard, h.article.id,
+      attempt.attemptId, h.success(attempt));
+    return { settled, desired: await h.repo.getProgressDesired(...h.args),
+      observation: await h.repo.getProgressRemoteObservation(...h.args) };
+  });
+  expect(result.settled.status).toBe("settlement_attention");
+  expect(result.observation.observation.checkpoint.progress).toBe(0.8);
+  expect(result.observation.diagnostic.reason).toBe("inconsistent-observation");
+  expect(result.desired.record.confirmed.checkpoint.progress).toBe(0.3);
+});
+
+test("pre-existing observation contradiction cannot consume desired or claim latest covered", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    await h.setup();
+    await h.raw("progressRemoteObservations", tx => tx.objectStore("progressRemoteObservations")
+      .put({ ownerId: h.binding.ownerId, bindingId: h.binding.bindingId,
+        articleId: h.article.id, kind: "revision", revision: "revision:10", cursor: "cursor:10",
+        parentReadingEpoch: h.epoch, contentFingerprint: h.fp,
+        checkpoint: { progress: 0.3, paragraphIndex: 3 } }));
+    await h.movement(0.3);
+    const attempt = (await h.prepare()).attempt;
+    await h.flow.reserveCloudAttemptForDispatch(...h.args, attempt.attemptId);
+    const contradiction = await h.repo.recordProgressRemoteObservation(...h.args, {
+      kind: "revision", revision: "revision:10", cursor: "cursor:10",
+      parentReadingEpoch: h.epoch, contentFingerprint: h.fp,
+      checkpoint: { progress: 0.8, paragraphIndex: 8 }
+    });
+    const guard = await h.flow.captureCloudResponseContext(...h.args.slice(0, 2));
+    const settled = await h.flow.settleCloudResult(guard, h.article.id, attempt.attemptId,
+      h.success(attempt, "unchanged", "revision:10", "cursor:10"));
+    return { contradiction, settled, desired: await h.repo.getProgressDesired(...h.args),
+      coverage: await h.flow.evaluateLatestLocalCloudCoverage(...h.args),
+      observation: await h.repo.getProgressRemoteObservation(...h.args) };
+  });
+  expect(result.contradiction.status).toBe("inconsistent-observation");
+  expect(result.observation.diagnostic.reason).toBe("inconsistent-observation");
+  expect(result.desired.record.confirmed.checkpoint.progress).toBe(0.3);
+  expect(result.settled.localCoverageAtSettlement).toBe("unknown");
+  expect(result.coverage.status).not.toBe("covered");
+});
+
+test("newer confirmed and pending both survive an older success", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    await h.setup(); await h.movement(0.3);
+    const first = (await h.prepare()).attempt;
+    await h.flow.reserveCloudAttemptForDispatch(...h.args, first.attemptId);
+    await h.movement(0.4);
+    const newer = await h.repo.getProgressDesired(...h.args);
+    const context = await h.lib.getProgressContext(h.article.id, h.binding);
+    const pending = await h.repo.prepareProgressMovement({ ...h.binding, articleId: h.article.id,
+      target: h.target(0.5), beforeResume: context.article.reading.resume,
+      articleFence: context.fence, scope: context.scope });
+    const guard = await h.flow.captureCloudResponseContext(...h.args.slice(0, 2));
+    const settled = await h.flow.settleCloudResult(guard, h.article.id,
+      first.attemptId, h.success(first));
+    return { newer, pending, settled, after: await h.repo.getProgressDesired(...h.args) };
+  });
+  expect(result.settled).toMatchObject({ status: "succeeded",
+    localCoverageAtSettlement: "advanced" });
+  expect(result.after.record.localSeq).toBe(3);
+  expect(result.after.record.confirmed).toEqual(result.newer.record.confirmed);
+  expect(result.after.record.pending.actionId).toBe(result.pending.pending.actionId);
+  expect(result.after.record.confirmed.causalBase.revision).toBe("revision:10");
+});
+
+test("local-only narrow-window advancement leaves server success but not latest coverage", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    await h.setup(); await h.movement(0.3);
+    const attempt = (await h.prepare()).attempt;
+    await h.flow.reserveCloudAttemptForDispatch(...h.args, attempt.attemptId);
+    const context = await h.lib.getProgressContext(h.article.id, h.binding);
+    const advanced = await h.lib.commitReadingResumeIfCurrent({
+      articleId: h.article.id, expectedContent: context.article.content,
+      contentFingerprint: h.fp, beforeResume: context.article.reading.resume,
+      target: h.target(0.4), furthest: null, scope: context.scope,
+      expectedFence: context.fence
+    });
+    const guard = await h.flow.captureCloudResponseContext(...h.args.slice(0, 2));
+    const settled = await h.flow.settleCloudResult(guard, h.article.id,
+      attempt.attemptId, h.success(attempt));
+    return { advanced, settled, desired: await h.repo.getProgressDesired(...h.args),
+      coverage: await h.flow.evaluateLatestLocalCloudCoverage(...h.args),
+      context: await h.lib.getProgressContext(h.article.id, h.binding) };
+  });
+  expect(result.advanced.status).toBe("committed");
+  expect(result.settled).toMatchObject({ status: "succeeded",
+    localCoverageAtSettlement: "advanced" });
+  expect(result.desired.record.confirmed.checkpoint.progress).toBe(0.3);
+  expect(result.context.article.reading.resume.progress).toBe(0.4);
+  expect(result.coverage.status).toBe("local-advanced");
+});
+
+test("dynamic coverage stops being covered after a later local-only Reader movement", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    await h.setup(); await h.movement(0.3);
+    const attempt = (await h.prepare()).attempt;
+    await h.flow.reserveCloudAttemptForDispatch(...h.args, attempt.attemptId);
+    const guard = await h.flow.captureCloudResponseContext(...h.args.slice(0, 2));
+    await h.flow.settleCloudResult(guard, h.article.id, attempt.attemptId, h.success(attempt));
+    const before = await h.flow.evaluateLatestLocalCloudCoverage(...h.args);
+    const context = await h.lib.getProgressContext(h.article.id, h.binding);
+    await h.lib.commitReadingResumeIfCurrent({ articleId: h.article.id,
+      expectedContent: context.article.content, contentFingerprint: h.fp,
+      beforeResume: context.article.reading.resume, target: h.target(0.4),
+      furthest: null, scope: context.scope, expectedFence: context.fence });
+    return { before, after: await h.flow.evaluateLatestLocalCloudCoverage(...h.args) };
+  });
+  expect(result.before.status).toBe("covered");
+  expect(result.after.status).toBe("local-advanced");
+});
+
+test("dynamic coverage reports unknown when LibraryDB cannot be read", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    await h.setup(); await h.movement(0.3);
+    const attempt = (await h.prepare()).attempt;
+    await h.flow.reserveCloudAttemptForDispatch(...h.args, attempt.attemptId);
+    const guard = await h.flow.captureCloudResponseContext(...h.args.slice(0, 2));
+    await h.flow.settleCloudResult(guard, h.article.id, attempt.attemptId, h.success(attempt));
+    const original = IDBDatabase.prototype.transaction;
+    IDBDatabase.prototype.transaction = function(...args) {
+      if (this.name === "LingoFlowLibraryDB") throw new Error("fixture-library-unavailable");
+      return original.apply(this, args);
+    };
+    try { return await h.flow.evaluateLatestLocalCloudCoverage(...h.args); }
+    finally { IDBDatabase.prototype.transaction = original; }
+  });
+  expect(result.status).toBe("unknown");
+});
+
+test("LibraryDB coverage outage does not erase a valid server success", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    await h.setup(); await h.movement(0.3);
+    const attempt = (await h.prepare()).attempt;
+    await h.flow.reserveCloudAttemptForDispatch(...h.args, attempt.attemptId);
+    const original = window.LingoFlowArticleLibrary;
+    window.LingoFlowArticleLibrary = { ...original,
+      getProgressContext: async () => { throw new Error("fixture-library-unavailable"); } };
+    let settled;
+    try { settled = await h.repo.settleProgressCloudResult(...h.args, attempt.attemptId,
+      h.success(attempt)); }
+    finally { window.LingoFlowArticleLibrary = original; }
+    return { settled, desired: await h.repo.getProgressDesired(...h.args),
+      stored: await h.repo.getProgressCloudAttempt(...h.args, attempt.attemptId) };
+  });
+  expect(result.settled).toMatchObject({ status: "succeeded",
+    localCoverageAtSettlement: "unknown" });
+  expect(result.desired.record.confirmed).toBeTruthy();
+  expect(result.stored.attempt.status).toBe("succeeded");
+});
+
+test("settlement transaction rollback keeps attempt, observation and desired retryable", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    await h.setup(); await h.movement(0.3);
+    const attempt = (await h.prepare()).attempt;
+    await h.flow.reserveCloudAttemptForDispatch(...h.args, attempt.attemptId);
+    const response = h.success(attempt);
+    const originalPut = IDBObjectStore.prototype.put;
+    IDBObjectStore.prototype.put = function(...args) {
+      if (this.name === "progressCloudAttempts" && args[0]?.status === "succeeded") {
+        throw new DOMException("injected settlement abort", "QuotaExceededError");
+      }
+      return originalPut.apply(this, args);
+    };
+    let failed = false;
+    try { await h.repo.settleProgressCloudResult(...h.args, attempt.attemptId, response); }
+    catch { failed = true; }
+    finally { IDBObjectStore.prototype.put = originalPut; }
+    const before = {
+      attempt: await h.repo.getProgressCloudAttempt(...h.args, attempt.attemptId),
+      observation: await h.repo.getProgressRemoteObservation(...h.args),
+      desired: await h.repo.getProgressDesired(...h.args)
+    };
+    const retry = await h.repo.settleProgressCloudResult(...h.args, attempt.attemptId, response);
+    return { failed, before, retry };
+  });
+  expect(result.failed).toBe(true);
+  expect(result.before.attempt.attempt.status).toBe("may_have_sent");
+  expect(result.before.observation.observation.revision).toBe("revision:10");
+  expect(result.before.desired.record.confirmed.checkpoint.progress).toBe(0.3);
+  expect(result.retry.status).toBe("succeeded");
+});
+
+test("latest-local coverage reports pending movement after an older success", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    await h.setup(); await h.movement(0.3);
+    const attempt = (await h.prepare()).attempt;
+    await h.flow.reserveCloudAttemptForDispatch(...h.args, attempt.attemptId);
+    const guard = await h.flow.captureCloudResponseContext(...h.args.slice(0, 2));
+    await h.flow.settleCloudResult(guard, h.article.id, attempt.attemptId, h.success(attempt));
+    const context = await h.lib.getProgressContext(h.article.id, h.binding);
+    await h.repo.prepareProgressMovement({ ...h.binding, articleId: h.article.id,
+      target: h.target(0.4), beforeResume: context.article.reading.resume,
+      articleFence: context.fence, scope: context.scope });
+    return h.flow.evaluateLatestLocalCloudCoverage(...h.args);
+  });
+  expect(result.status).toBe("pending-local");
+});
+
+test("older success never rebases a newer confirmed desired", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    await h.setup(); await h.movement(0.3);
+    const attempt = (await h.prepare()).attempt;
+    await h.flow.reserveCloudAttemptForDispatch(...h.args, attempt.attemptId);
+    await h.movement(0.4);
+    const guard = await h.flow.captureCloudResponseContext(...h.args.slice(0, 2));
+    const settled = await h.flow.settleCloudResult(guard, h.article.id,
+      attempt.attemptId, h.success(attempt));
+    return { settled, candidate: await h.flow.evaluateCloudCandidate(...h.args),
+      coverage: await h.flow.evaluateLatestLocalCloudCoverage(...h.args),
+      desired: await h.repo.getProgressDesired(...h.args) };
+  });
+  expect(result.settled.localCoverageAtSettlement).toBe("advanced");
+  expect(result.candidate.reason).toBe("stale-base");
+  expect(result.coverage.status).toBe("local-advanced");
+  expect(result.desired.record.confirmed.causalBase.revision).toBe("revision:10");
+});
+
+test("CAS conflict retains desired and partial hints without fabricating observation", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    await h.setup(); await h.movement(0.3);
+    const attempt = (await h.prepare()).attempt;
+    await h.flow.reserveCloudAttemptForDispatch(...h.args, attempt.attemptId);
+    const guard = await h.flow.captureCloudResponseContext(...h.args.slice(0, 2));
+    const terminal = await h.flow.settleCloudResult(guard, h.article.id, attempt.attemptId,
+      { status: "conflict", reason: "revision-mismatch", mutationId: attempt.cloudMutationId,
+        articleId: attempt.articleId, currentRevision: "revision:11", currentCursor: "cursor:11" });
+    const repeat = await h.prepare();
+    return { terminal, repeat, stored: await h.repo.getProgressCloudAttempt(...h.args,
+      attempt.attemptId), observation: await h.repo.getProgressRemoteObservation(...h.args),
+      desired: await h.repo.getProgressDesired(...h.args) };
+  });
+  expect(result.terminal).toMatchObject({ status: "terminal", reason: "revision-mismatch" });
+  expect(result.stored.attempt.settlement.currentRevisionHint).toBe("revision:11");
+  expect(result.observation.observation.revision).toBe("revision:10");
+  expect(result.desired.record.confirmed.checkpoint.progress).toBe(0.3);
+  expect(result.repeat.reason).toBe("progress-refresh-required");
+});
+
+test("trusted Progress refresh releases conflict gate but does not rebase old desired", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    await h.setup(); await h.movement(0.3);
+    const attempt = (await h.prepare()).attempt;
+    await h.flow.reserveCloudAttemptForDispatch(...h.args, attempt.attemptId);
+    const guard = await h.flow.captureCloudResponseContext(...h.args.slice(0, 2));
+    await h.flow.settleCloudResult(guard, h.article.id, attempt.attemptId,
+      { status: "conflict", reason: "revision-mismatch", mutationId: attempt.cloudMutationId,
+        articleId: attempt.articleId, currentRevision: "revision:11", currentCursor: "cursor:11" });
+    await h.repo.recordProgressRemoteObservation(...h.args, { kind: "revision",
+      revision: "revision:11", cursor: "cursor:11", parentReadingEpoch: h.epoch,
+      contentFingerprint: h.fp, checkpoint: { progress: 0.2, paragraphIndex: 2 } });
+    const old = await h.prepare();
+    await h.movement(0.4);
+    const fresh = await h.prepare();
+    return { old, fresh, desired: await h.repo.getProgressDesired(...h.args) };
+  });
+  expect(result.old.reason).toBe("stale-base");
+  expect(result.fresh.status).toBe("prepared");
+  expect(result.desired.record.confirmed.causalBase.revision).toBe("revision:11");
+});
+
+for (const reason of ["parent-not-ready", "article-deleted", "parent-epoch-mismatch",
+  "fingerprint-mismatch"]) {
+  test(`${reason} is terminal and needs trusted Article context refresh`, async ({ page }) => {
+    const result = await page.evaluate(async reason => {
+      await h.setup(); await h.movement(0.3);
+      const attempt = (await h.prepare()).attempt;
+      await h.flow.reserveCloudAttemptForDispatch(...h.args, attempt.attemptId);
+      const guard = await h.flow.captureCloudResponseContext(...h.args.slice(0, 2));
+      const terminal = await h.flow.settleCloudResult(guard, h.article.id, attempt.attemptId,
+        { status: "rejected", reason, mutationId: attempt.cloudMutationId,
+          articleId: attempt.articleId });
+      const blocked = await h.prepare();
+      const article = await h.lib.getArticle(h.article.id);
+      return { terminal, blocked, article, desired: await h.repo.getProgressDesired(...h.args) };
+    }, reason);
+    expect(result.terminal).toMatchObject({ status: "terminal", reason });
+    expect(result.blocked.reason).toBe("parent-refresh-required");
+    expect(result.article.deletedAt).toBeNull();
+    expect(result.desired.record.confirmed.checkpoint.progress).toBe(0.3);
+  });
+}
+
+test("title-only Article revision does not release a parent refresh gate", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    await h.setup(); await h.movement(0.3);
+    const attempt = (await h.prepare()).attempt;
+    await h.flow.reserveCloudAttemptForDispatch(...h.args, attempt.attemptId);
+    const guard = await h.flow.captureCloudResponseContext(...h.args.slice(0, 2));
+    await h.flow.settleCloudResult(guard, h.article.id, attempt.attemptId,
+      { status: "rejected", reason: "parent-epoch-mismatch",
+        mutationId: attempt.cloudMutationId, articleId: attempt.articleId });
+    await h.raw("articleSidecars", tx => {
+      const store = tx.objectStore("articleSidecars");
+      const request = store.get([h.binding.ownerId, h.article.id]);
+      request.onsuccess = () => store.put({ ...request.result, knownRevision: "revision:2",
+        serverReadingContext: { articleRevision: "revision:2", readingEpoch: h.epoch,
+          contentFingerprint: h.fp, lifecycle: "active" } });
+    });
+    return h.prepare();
+  });
+  expect(result.reason).toBe("parent-refresh-required");
+});
+
+test("new Article epoch releases parent gate without rewriting old desired", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    await h.setup(); await h.movement(0.3);
+    const attempt = (await h.prepare()).attempt;
+    await h.flow.reserveCloudAttemptForDispatch(...h.args, attempt.attemptId);
+    const guard = await h.flow.captureCloudResponseContext(...h.args.slice(0, 2));
+    await h.flow.settleCloudResult(guard, h.article.id, attempt.attemptId,
+      { status: "rejected", reason: "parent-epoch-mismatch",
+        mutationId: attempt.cloudMutationId, articleId: attempt.articleId });
+    await h.raw("articleSidecars", tx => {
+      const store = tx.objectStore("articleSidecars");
+      const request = store.get([h.binding.ownerId, h.article.id]);
+      request.onsuccess = () => store.put({ ...request.result, knownRevision: "revision:2",
+        serverReadingContext: { articleRevision: "revision:2", readingEpoch: h.epoch2,
+          contentFingerprint: h.fp, lifecycle: "active" } });
+    });
+    const old = await h.prepare();
+    await h.movement(0.4);
+    const fresh = await h.prepare();
+    return { old, fresh, desired: await h.repo.getProgressDesired(...h.args) };
+  });
+  expect(result.old.reason).toBe("parent-epoch-mismatch");
+  expect(result.fresh.status).toBe("prepared");
+  expect(result.fresh.attempt.request.parentReadingEpoch).toBe("22222222-2222-4333-8444-555555555555");
+});
+
+for (const reason of ["invalid-mutation", "invalid-checkpoint"]) {
+  test(`${reason} becomes terminal without reconstructing request`, async ({ page }) => {
+    const result = await page.evaluate(async reason => {
+      await h.setup(); await h.movement(0.3);
+      const attempt = (await h.prepare()).attempt;
+      await h.flow.reserveCloudAttemptForDispatch(...h.args, attempt.attemptId);
+      const guard = await h.flow.captureCloudResponseContext(...h.args.slice(0, 2));
+      const settled = await h.flow.settleCloudResult(guard, h.article.id, attempt.attemptId,
+        { status: "rejected", reason });
+      return { settled, stored: await h.repo.getProgressCloudAttempt(...h.args,
+        attempt.attemptId), repeat: await h.prepare() };
+    }, reason);
+    expect(result.settled).toMatchObject({ status: "terminal", reason });
+    expect(result.stored.attempt.request.expectedState).toBe("revision");
+    expect(result.repeat.reason).toBe("progress-protocol-invariant");
+  });
+}
+
+test("mutation-id-reuse is high-severity attention and blocks a replacement", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    await h.setup(); await h.movement(0.3);
+    const attempt = (await h.prepare()).attempt;
+    await h.flow.reserveCloudAttemptForDispatch(...h.args, attempt.attemptId);
+    const guard = await h.flow.captureCloudResponseContext(...h.args.slice(0, 2));
+    const attention = await h.flow.settleCloudResult(guard, h.article.id, attempt.attemptId,
+      { status: "rejected", reason: "mutation-id-reuse",
+        mutationId: attempt.cloudMutationId, articleId: attempt.articleId });
+    return { attention, next: await h.prepare(), stored: await h.repo.getProgressCloudAttempt(
+      ...h.args, attempt.attemptId) };
+  });
+  expect(result.attention.status).toBe("settlement_attention");
+  expect(result.next.status).toBe("existing-attempt");
+  expect(result.stored.attempt.status).toBe("settlement_attention");
+});
+
+for (const response of [null, { status: "unknown" }, { status: "rejected", reason: "authentication-required" }]) {
+  test(`unknown/auth response ${JSON.stringify(response)} preserves may_have_sent`, async ({ page }) => {
+    const result = await page.evaluate(async response => {
+      await h.setup(); await h.movement(0.3);
+      const attempt = (await h.prepare()).attempt;
+      await h.flow.reserveCloudAttemptForDispatch(...h.args, attempt.attemptId);
+      const guard = await h.flow.captureCloudResponseContext(...h.args.slice(0, 2));
+      return { settled: await h.flow.settleCloudResult(guard, h.article.id,
+        attempt.attemptId, response), stored: await h.repo.getProgressCloudAttempt(
+          ...h.args, attempt.attemptId) };
+    }, response);
+    expect(["unparseable", "auth-paused"]).toContain(result.settled.status);
+    expect(result.stored.attempt.status).toBe("may_have_sent");
+  });
+}
+
+test("consuming a source keeps localSeq authority for the next real movement", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    await h.setup(); await h.movement(0.3);
+    const attempt = (await h.prepare()).attempt;
+    await h.flow.reserveCloudAttemptForDispatch(...h.args, attempt.attemptId);
+    const guard = await h.flow.captureCloudResponseContext(...h.args.slice(0, 2));
+    await h.flow.settleCloudResult(guard, h.article.id, attempt.attemptId, h.success(attempt));
+    const movement = await h.movement(0.4);
+    const desired = await h.repo.getProgressDesired(...h.args);
+    const candidate = await h.flow.evaluateCloudCandidate(...h.args);
+    return { movement, desired, candidate };
+  });
+  expect(result.movement.status).toBe("confirmed");
+  expect(result.desired.record.localSeq).toBe(2);
+  expect(result.desired.record.confirmed.causalBase.revision).toBe("revision:11");
+  expect(result.candidate).toEqual({ status: "ready", mode: "update" });
+});
+
+test("a mock transport timeout and malformed body keep the same durable request", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    await h.setup(); await h.movement(0.3);
+    const attempt = (await h.prepare()).attempt;
+    await h.flow.reserveCloudAttemptForDispatch(...h.args, attempt.attemptId);
+    const guard = await h.flow.captureCloudResponseContext(...h.args.slice(0, 2));
+    const timeout = { status: "unavailable", reason: "timeout" };
+    const serverError = { status: "unavailable", reason: "server-error" };
+    const a = await h.flow.settleCloudResult(guard, h.article.id, attempt.attemptId, timeout);
+    const b = await h.flow.settleCloudResult(guard, h.article.id, attempt.attemptId, serverError);
+    const c = await h.flow.settleCloudResult(guard, h.article.id, attempt.attemptId,
+      { status: "applied", mutationId: attempt.cloudMutationId });
+    return { a, b, c, stored: await h.repo.getProgressCloudAttempt(...h.args,
+      attempt.attemptId), request: attempt.request };
+  });
+  for (const key of ["a", "b", "c"]) expect(result[key].status).toBe("unparseable");
+  expect(result.stored.attempt.status).toBe("may_have_sent");
+  expect(result.stored.attempt.request).toEqual(result.request);
+});
+
+test("response identity mismatch is attention and cannot consume local desired", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    await h.setup(); await h.movement(0.3);
+    const attempt = (await h.prepare()).attempt;
+    await h.flow.reserveCloudAttemptForDispatch(...h.args, attempt.attemptId);
+    const guard = await h.flow.captureCloudResponseContext(...h.args.slice(0, 2));
+    const settled = await h.flow.settleCloudResult(guard, h.article.id, attempt.attemptId,
+      { ...h.success(attempt), mutationId: "another-mutation" });
+    return { settled, stored: await h.repo.getProgressCloudAttempt(...h.args,
+      attempt.attemptId), desired: await h.repo.getProgressDesired(...h.args) };
+  });
+  expect(result.settled.status).toBe("settlement_attention");
+  expect(result.stored.attempt.status).toBe("settlement_attention");
+  expect(result.desired.record.confirmed.checkpoint.progress).toBe(0.3);
+});
+
+test("tampered may-have-sent source target cannot settle a plausible success", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    await h.setup(); await h.movement(0.3);
+    const attempt = (await h.prepare()).attempt;
+    await h.flow.reserveCloudAttemptForDispatch(...h.args, attempt.attemptId);
+    await h.raw("progressCloudAttempts", tx => {
+      const store = tx.objectStore("progressCloudAttempts");
+      const request = store.get([...h.args, attempt.attemptId]);
+      request.onsuccess = () => store.put({ ...request.result,
+        sourceFence: { ...request.result.sourceFence,
+          action: { ...request.result.sourceFence.action,
+            target: { ...request.result.sourceFence.action.target, progress: 0.9 } } } });
+    });
+    const result = await h.repo.settleProgressCloudResult(...h.args, attempt.attemptId,
+      h.success(attempt));
+    return { result, desired: await h.repo.getProgressDesired(...h.args),
+      observation: await h.repo.getProgressRemoteObservation(...h.args) };
+  });
+  expect(result.result.status).toBe("malformed-attempt");
+  expect(result.desired.record.confirmed.checkpoint.progress).toBe(0.3);
+  expect(result.observation.observation.revision).toBe("revision:10");
+});
+
+test("two tabs settle one canonical response idempotently", async ({ page }) => {
+  const attempt = await page.evaluate(async () => {
+    await h.setup(); await h.movement(0.3);
+    const attempt = (await h.prepare()).attempt;
+    await h.flow.reserveCloudAttemptForDispatch(...h.args, attempt.attemptId);
+    return attempt;
+  });
+  const second = await page.context().newPage();
+  try {
+    await second.goto("/");
+    await second.evaluate(ownerId => {
+      window.LingoFlowSupabaseAuth = { getState: () => ({ status: "authenticated",
+        user: { id: ownerId } }) };
+    }, attempt.ownerId);
+    const raw = await page.evaluate(attempt => h.success(attempt), attempt);
+    const args = [attempt.ownerId, attempt.bindingId, attempt.articleId, attempt.attemptId];
+    const [a, b] = await Promise.all([
+      page.evaluate(async ({ args, raw }) => {
+        const guard = await h.flow.captureCloudResponseContext(...args.slice(0, 2));
+        return h.flow.settleCloudResult(guard, args[2], args[3], raw);
+      }, { args, raw }),
+      second.evaluate(async ({ args, raw }) => {
+        const flow = window.LingoFlowProgressLocalDesired;
+        const guard = await flow.captureCloudResponseContext(...args.slice(0, 2));
+        return flow.settleCloudResult(guard, args[2], args[3], raw);
+      }, { args, raw })
+    ]);
+    expect([a.status, b.status]).toEqual(["succeeded", "succeeded"]);
+    expect([a.idempotent, b.idempotent].filter(Boolean)).toHaveLength(1);
+    const stored = await page.evaluate(args => window.LingoFlowSyncStateRepository
+      .getProgressCloudAttempt(...args), args);
+    expect(stored.attempt.status).toBe("succeeded");
+  } finally { await second.close(); }
+});
+
+test("reload after may_have_sent permits same result settlement without a new attempt", async ({ page }) => {
+  const frozen = await page.evaluate(async () => {
+    await h.setup(); await h.movement(0.3);
+    const attempt = (await h.prepare()).attempt;
+    await h.flow.reserveCloudAttemptForDispatch(...h.args, attempt.attemptId);
+    return { attempt, response: h.success(attempt) };
+  });
+  await page.reload();
+  const result = await page.evaluate(async frozen => {
+    window.LingoFlowSupabaseAuth = { getState: () => ({ status: "authenticated",
+      user: { id: frozen.attempt.ownerId } }) };
+    const flow = window.LingoFlowProgressLocalDesired;
+    const a = frozen.attempt;
+    const guard = await flow.captureCloudResponseContext(a.ownerId, a.bindingId);
+    const settled = await flow.settleCloudResult(guard, a.articleId, a.attemptId, frozen.response);
+    return { settled, stored: await window.LingoFlowSyncStateRepository
+      .getProgressCloudAttempt(a.ownerId, a.bindingId, a.articleId, a.attemptId) };
+  }, frozen);
+  expect(result.settled.status).toBe("succeeded");
+  expect(result.stored.attempt.cloudMutationId).toBe(frozen.attempt.cloudMutationId);
+});
+
+test("Account Switch before response leaves old may_have_sent unconsumed", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    await h.setup(); await h.movement(0.3);
+    const attempt = (await h.prepare()).attempt;
+    await h.flow.reserveCloudAttemptForDispatch(...h.args, attempt.attemptId);
+    const guard = await h.flow.captureCloudResponseContext(...h.args.slice(0, 2));
+    await h.repo.replaceWorkspaceBinding({ from: h.binding,
+      to: { ownerId: "attempt-owner-b", bindingId: "attempt-binding-b" },
+      accountLabel: "b@example.test" });
+    h.setAuthOwner("attempt-owner-b");
+    const settled = await h.flow.settleCloudResult(guard, h.article.id,
+      attempt.attemptId, h.success(attempt));
+    const db = await h.repo.openDatabase();
+    const stored = await new Promise(resolve => {
+      const request = db.transaction("progressCloudAttempts").objectStore("progressCloudAttempts")
+        .get([...h.args, attempt.attemptId]);
+      request.onsuccess = () => resolve(request.result);
+    });
+    return { settled, stored };
+  });
+  expect(result.settled.status).toBe("not-ready");
+  expect(result.stored.status).toBe("may_have_sent");
+});
+
+test("Account Switch during settlement precheck cannot commit the old owner's success", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    await h.setup(); await h.movement(0.3);
+    const attempt = (await h.prepare()).attempt;
+    await h.flow.reserveCloudAttemptForDispatch(...h.args, attempt.attemptId);
+    const guard = await h.flow.captureCloudResponseContext(...h.args.slice(0, 2));
+    const original = window.LingoFlowArticleLibrary;
+    let replacement;
+    window.LingoFlowArticleLibrary = { ...original, getProgressContext: async (...args) => {
+      if (!replacement) {
+        replacement = await h.repo.replaceWorkspaceBinding({ from: h.binding,
+          to: { ownerId: "attempt-owner-b", bindingId: "attempt-binding-b" },
+          accountLabel: "b@example.test" });
+        h.setAuthOwner("attempt-owner-b");
+      }
+      return original.getProgressContext(...args);
+    } };
+    let settled;
+    try { settled = await h.flow.settleCloudResult(guard, h.article.id,
+      attempt.attemptId, h.success(attempt)); }
+    finally { window.LingoFlowArticleLibrary = original; }
+    const db = await h.repo.openDatabase();
+    const stored = await new Promise(resolve => {
+      const request = db.transaction("progressCloudAttempts").objectStore("progressCloudAttempts")
+        .get([...h.args, attempt.attemptId]);
+      request.onsuccess = () => resolve(request.result);
+    });
+    return { replacement, settled, stored,
+      binding: await h.repo.getWorkspaceBinding() };
+  });
+  expect(result.replacement.status).toBe("replaced");
+  expect(result.settled.status).toBe("not-ready");
+  expect(result.stored.status).toBe("may_have_sent");
+  expect(result.binding.binding.ownerId).toBe("attempt-owner-b");
+});
+
+test("same owner with a new binding cannot settle old binding response", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    await h.setup(); await h.movement(0.3);
+    const attempt = (await h.prepare()).attempt;
+    await h.flow.reserveCloudAttemptForDispatch(...h.args, attempt.attemptId);
+    const guard = await h.flow.captureCloudResponseContext(...h.args.slice(0, 2));
+    await h.raw("control", tx => tx.objectStore("control")
+      .put({ key: "workspace-binding", ownerId: h.binding.ownerId,
+        bindingId: "attempt-binding-a-new" }));
+    const settled = await h.flow.settleCloudResult(guard, h.article.id,
+      attempt.attemptId, h.success(attempt));
+    const db = await h.repo.openDatabase();
+    const stored = await new Promise(resolve => {
+      const request = db.transaction("progressCloudAttempts").objectStore("progressCloudAttempts")
+        .get([...h.args, attempt.attemptId]);
+      request.onsuccess = () => resolve(request.result);
+    });
+    return { settled, stored };
+  });
+  expect(result.settled.status).toBe("not-ready");
+  expect(result.stored.status).toBe("may_have_sent");
 });
 
 test("revision-ready freezes an independent immutable UPDATE attempt", async ({ page }) => {

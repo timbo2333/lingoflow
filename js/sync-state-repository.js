@@ -4393,20 +4393,27 @@
     return runTransaction([CONTROL_STORE, PROGRESS_OBSERVATIONS_STORE], "readwrite", async tx => {
       const binding = await requireBinding(tx.objectStore(CONTROL_STORE), ownerId, bindingId);
       if (binding.status !== "ready") return binding;
-      const store = tx.objectStore(PROGRESS_OBSERVATIONS_STORE);
-      const record = await requestResult(store.get([ownerId, bindingId, articleId]));
-      const previous = causal.observationFromRecord(record, ownerId, bindingId, articleId);
-      if (!previous) return { status: "malformed-observation" };
-      const decision = causal.observationDecision(previous, next);
-      if (decision === "write") {
-        await requestResult(store.put({ ownerId, bindingId, articleId, ...next }));
-        return { status: "recorded", observation: next };
-      }
-      if (["inconsistent-observation", "absence-after-revision"].includes(decision)) {
-        await requestResult(store.put({ ...record, diagnostic: { reason: decision } }));
-      }
-      return { status: decision };
+      return writeProgressObservation(tx, ownerId, bindingId, articleId, next);
     });
+  }
+
+  // Shared transaction-local monotonic writer. Settlement must never call the
+  // public observation API in a second transaction.
+  async function writeProgressObservation(tx, ownerId, bindingId, articleId, next) {
+    const causal = progressCausal();
+    const store = tx.objectStore(PROGRESS_OBSERVATIONS_STORE);
+    const record = await requestResult(store.get([ownerId, bindingId, articleId]));
+    const previous = causal.observationFromRecord(record, ownerId, bindingId, articleId);
+    if (!previous) return { status: "malformed-observation" };
+    const decision = causal.observationDecision(previous, next);
+    if (decision === "write") {
+      await requestResult(store.put({ ownerId, bindingId, articleId, ...next }));
+      return { status: "recorded", observation: next };
+    }
+    if (["inconsistent-observation", "absence-after-revision"].includes(decision)) {
+      await requestResult(store.put({ ...record, diagnostic: { reason: decision } }));
+    }
+    return { status: decision, observation: previous, diagnostic: record?.diagnostic || null };
   }
 
   async function recordArticleServerReadingContext(ownerId, bindingId, articleId, value) {
@@ -4628,7 +4635,8 @@
   }
 
   const PROGRESS_ATTEMPT_STATUSES = new Set([
-    "awaiting_postflight", "prepared", "may_have_sent", "blocked_before_dispatch", "superseded"
+    "awaiting_postflight", "prepared", "may_have_sent", "blocked_before_dispatch", "superseded",
+    "succeeded", "terminal", "settlement_attention"
   ]);
   const PROGRESS_REQUEST_FIELDS = new Set([
     "mutationId", "articleId", "expectedState", "expectedProgressRevision",
@@ -4638,6 +4646,17 @@
     "ownerId", "bindingId", "articleId", "attemptId", "cloudMutationId",
     "status", "reason", "sourceLocalSeq", "sourceActionId", "sourceCheckpoint",
     "sourceCausalBase", "sourceFence", "sourceScope", "request"
+  ]);
+  const PROGRESS_SETTLED_ATTEMPT_FIELDS = new Set([...PROGRESS_ATTEMPT_FIELDS, "settlement"]);
+  const PROGRESS_TERMINAL_REASONS = new Set([
+    "revision-mismatch", "parent-not-ready", "article-deleted", "parent-epoch-mismatch",
+    "fingerprint-mismatch", "invalid-mutation", "invalid-checkpoint"
+  ]);
+  const PROGRESS_SETTLEMENT_ATTENTION_REASONS = new Set([
+    "mutation-id-reuse", "owner-context-mismatch", "success-identity-mismatch",
+    "conflict-identity-mismatch", "rejection-identity-mismatch",
+    "conflicting-duplicate-result", "inconsistent-observation",
+    "absence-after-revision", "malformed-observation", "invalid-observation"
   ]);
   const PROGRESS_CHECKPOINT_FIELDS = new Set([
     "progress", "paragraphIndex", "contentFingerprint", "updatedAt"
@@ -4670,12 +4689,41 @@
   function validProgressCloudAttempt(value, ownerId, bindingId, articleId) {
     const normalize = window.LingoFlowReadingResume?.normalizeCheckpoint;
     const request = value?.request;
-    return isPlainObject(value) && hasExactFields(value, PROGRESS_ATTEMPT_FIELDS) &&
+    const final = ["succeeded", "terminal", "settlement_attention"].includes(value?.status);
+    const result = window.LingoFlowProgressCloudResult;
+    const settled = !final ? true : value.status === "succeeded"
+      ? isPlainObject(value.settlement) &&
+        hasExactFields(value.settlement, new Set(["result", "localCoverageAtSettlement"])) &&
+        ["covered", "advanced", "unknown"].includes(value.settlement.localCoverageAtSettlement) &&
+        result?.parse(value.settlement.result, request).status === "success"
+      : value.status === "terminal"
+        ? isPlainObject(value.settlement) &&
+          hasExactFields(value.settlement, new Set(["reason", "currentRevisionHint", "currentCursorHint"])) &&
+          PROGRESS_TERMINAL_REASONS.has(value.reason) &&
+          value.settlement.reason === value.reason &&
+          (value.settlement.currentRevisionHint === null ||
+            progressCausal().revision(value.settlement.currentRevisionHint)) &&
+          (value.settlement.currentCursorHint === null ||
+            /^cursor:[1-9][0-9]*$/.test(value.settlement.currentCursorHint)) &&
+          (value.reason === "revision-mismatch"
+            ? (value.settlement.currentRevisionHint === null) ===
+              (value.settlement.currentCursorHint === null)
+            : value.settlement.currentRevisionHint === null &&
+              value.settlement.currentCursorHint === null)
+        : isPlainObject(value.settlement) &&
+          hasExactFields(value.settlement, new Set(["reason", "priorResult"])) &&
+          PROGRESS_SETTLEMENT_ATTENTION_REASONS.has(value.reason) &&
+          value.settlement.reason === value.reason &&
+          (value.reason === "conflicting-duplicate-result"
+            ? result?.parse(value.settlement.priorResult, request).status === "success"
+            : value.settlement.priorResult === null);
+    return isPlainObject(value) && hasExactFields(value, final
+      ? PROGRESS_SETTLED_ATTEMPT_FIELDS : PROGRESS_ATTEMPT_FIELDS) && settled &&
       value.ownerId === ownerId && value.bindingId === bindingId && value.articleId === articleId &&
       uuid(value.attemptId) && uuid(value.cloudMutationId) &&
       value.attemptId !== value.cloudMutationId &&
       PROGRESS_ATTEMPT_STATUSES.has(value.status) &&
-      (["awaiting_postflight", "prepared", "may_have_sent"].includes(value.status)
+      (["awaiting_postflight", "prepared", "may_have_sent", "succeeded"].includes(value.status)
         ? value.reason === null : isOpaqueString(value.reason)) &&
       Number.isSafeInteger(value.sourceLocalSeq) && value.sourceLocalSeq > 0 &&
       isOpaqueString(value.sourceActionId) &&
@@ -4726,6 +4774,42 @@
       value.sourceCausalBase.parent?.contentFingerprint === request.contentFingerprint;
   }
 
+  function progressAttemptRefreshGate(attempts, observation, sidecar) {
+    const causal = progressCausal();
+    const parent = causal.trustedParent(sidecar);
+    for (const attempt of attempts) {
+      if (attempt.status === "settlement_attention") {
+        return { status: "not-ready", reason: "progress-settlement-attention" };
+      }
+      if (attempt.status !== "terminal") continue;
+      const reason = attempt.reason;
+      if (reason === "revision-mismatch") {
+        const hint = attempt.settlement.currentRevisionHint;
+        if (observation.kind !== "revision" ||
+            causal.ordinal(observation.revision) <= causal.ordinal(attempt.request.expectedProgressRevision) ||
+            (hint && causal.ordinal(observation.revision) < causal.ordinal(hint))) {
+          return { status: "not-ready", reason: "progress-refresh-required" };
+        }
+      }
+      if (["parent-not-ready", "article-deleted", "parent-epoch-mismatch",
+        "fingerprint-mismatch"].includes(reason)) {
+        const frozen = attempt.sourceCausalBase.parent;
+        // A title-only revision is not proof that the rejected parent context
+        // changed. The old request can never be patched into a new attempt.
+        const refreshed = parent && frozen && parent.lifecycle === "active" &&
+          causal.ordinal(parent.articleRevision) > causal.ordinal(frozen.articleRevision) &&
+          (parent.readingEpoch !== frozen.readingEpoch ||
+            parent.contentFingerprint !== frozen.contentFingerprint ||
+            frozen.lifecycle !== parent.lifecycle);
+        if (!refreshed) return { status: "not-ready", reason: "parent-refresh-required" };
+      }
+      if (reason === "invalid-mutation" || reason === "invalid-checkpoint") {
+        return { status: "not-ready", reason: "progress-protocol-invariant" };
+      }
+    }
+    return null;
+  }
+
   // The transaction first records a non-dispatchable proposal. A separate
   // postflight and confirmation must complete before it becomes prepared.
   // The LibraryDB facts were checked before this transaction and must be
@@ -4741,6 +4825,17 @@
       const snapshot = await readProgressCausalSnapshot(tx, ownerId, bindingId, articleId);
       if (snapshot.status !== "ready") return { status: "not-ready", reason: snapshot.reason || snapshot.status };
       const confirmed = snapshot.record?.confirmed;
+      const store = tx.objectStore(PROGRESS_ATTEMPTS_STORE);
+      const previous = await requestResult(store.index("byScope")
+        .getAll(progressAttemptScope(ownerId, bindingId, articleId)));
+      if (previous.some(item => !validProgressCloudAttempt(item, ownerId, bindingId, articleId))) {
+        return malformedProgressAttempt();
+      }
+      const unresolved = previous.find(item =>
+        ["awaiting_postflight", "prepared", "may_have_sent", "settlement_attention"].includes(item.status));
+      if (unresolved) return { status: "existing-attempt", attempt: unresolved };
+      const refresh = progressAttemptRefreshGate(previous, snapshot.observation, snapshot.sidecar);
+      if (refresh) return refresh;
       const fenceValid = Boolean(confirmed &&
         sameProgressFact(confirmed.fence, local.fence) &&
         sameProgressFact(confirmed.checkpoint, local.checkpoint) &&
@@ -4767,15 +4862,6 @@
           !Number.isFinite(checkpoint.progress) || checkpoint.progress < 0 || checkpoint.progress > 1) {
         return { status: "not-ready", reason: "invalid-checkpoint" };
       }
-      const store = tx.objectStore(PROGRESS_ATTEMPTS_STORE);
-      const previous = await requestResult(store.index("byScope")
-        .getAll(progressAttemptScope(ownerId, bindingId, articleId)));
-      if (previous.some(item => !validProgressCloudAttempt(item, ownerId, bindingId, articleId))) {
-        return malformedProgressAttempt();
-      }
-      const unresolved = previous.find(item =>
-        ["awaiting_postflight", "prepared", "may_have_sent"].includes(item.status));
-      if (unresolved) return { status: "existing-attempt", attempt: unresolved };
       if (!window.crypto?.randomUUID) return { status: "not-ready", reason: "random-id-unavailable" };
       const attemptId = window.crypto.randomUUID();
       const cloudMutationId = window.crypto.randomUUID();
@@ -4948,6 +5034,134 @@
     });
   }
 
+  async function readProgressLocalCoverage(ownerId, bindingId, articleId) {
+    try {
+      const library = window.LingoFlowArticleLibrary;
+      const resume = window.LingoFlowReadingResume;
+      const owner = { ownerId, bindingId };
+      const first = await library.getProgressContext(articleId, owner, { initialize: false });
+      if (first.status !== "ready") return { status: "unknown" };
+      const checkpoint = resume.normalizeCheckpoint(first.article.reading?.resume);
+      const fingerprint = await resume.fingerprintContent(first.article.content);
+      const second = await library.getProgressContext(articleId, owner, { initialize: false });
+      if (second.status !== "ready" || !sameProgressFact(first, second) || !checkpoint) {
+        return { status: "unknown" };
+      }
+      return { status: "ready", articleId, scope: first.scope, fence: first.fence,
+        checkpoint, fingerprint, active: !first.article.deletedAt };
+    } catch { return { status: "unknown" }; }
+  }
+
+  function exactProgressAttemptSource(record, attempt) {
+    const confirmed = record?.confirmed;
+    return Boolean(confirmed && record.localSeq === attempt.sourceLocalSeq &&
+      confirmed.fence?.action?.actionId === attempt.sourceActionId &&
+      sameProgressFact(confirmed.checkpoint, attempt.sourceCheckpoint) &&
+      sameProgressFact(confirmed.fence, attempt.sourceFence) &&
+      sameProgressFact(confirmed.causalBase, attempt.sourceCausalBase));
+  }
+
+  function canonicalProgressObservation(result) {
+    return { kind: "revision", revision: result.revision, cursor: result.cursor,
+      parentReadingEpoch: result.parentReadingEpoch,
+      contentFingerprint: result.contentFingerprint,
+      checkpoint: { progress: result.progress, paragraphIndex: result.paragraphIndex } };
+  }
+
+  // Explicit local settlement only: the caller supplies a received/mock value,
+  // never a request. No transport is created or invoked in this module.
+  async function settleProgressCloudResult(ownerId, bindingId, articleId, attemptId, rawResult) {
+    if (!authenticatedProgressOwner(ownerId)) return { status: "not-ready", reason: "scope-mismatch" };
+    const read = await getProgressCloudAttempt(ownerId, bindingId, articleId, attemptId);
+    if (read.status !== "ready") return read;
+    const parser = window.LingoFlowProgressCloudResult;
+    const parsed = parser.parse(rawResult, read.attempt.request);
+    if (parsed.status === "unparseable" || parsed.status === "auth-paused") {
+      return { status: parsed.status, attemptStatus: read.attempt.status };
+    }
+    const local = parsed.status === "success"
+      ? await readProgressLocalCoverage(ownerId, bindingId, articleId) : null;
+    return runTransaction([CONTROL_STORE, PROGRESS_ATTEMPTS_STORE, PROGRESS_DESIRED_STORE,
+      PROGRESS_OBSERVATIONS_STORE, ARTICLE_SIDECAR_STORE], "readwrite", async tx => {
+      const binding = await requireBinding(tx.objectStore(CONTROL_STORE), ownerId, bindingId);
+      if (binding.status !== "ready" || !authenticatedProgressOwner(ownerId)) {
+        return { status: "not-ready", reason: "scope-mismatch" };
+      }
+      const store = tx.objectStore(PROGRESS_ATTEMPTS_STORE);
+      const attempt = await requestResult(store.get([ownerId, bindingId, articleId, attemptId]));
+      if (!attempt) return { status: "missing" };
+      if (!validProgressCloudAttempt(attempt, ownerId, bindingId, articleId)) {
+        return malformedProgressAttempt();
+      }
+      const current = parser.parse(rawResult, attempt.request);
+      if (current.status !== parsed.status ||
+          !sameProgressFact(current.result || current, parsed.result || parsed)) {
+        return { status: "unparseable" };
+      }
+      if (attempt.status === "succeeded") {
+        if (parsed.status === "success" && sameProgressFact(attempt.settlement.result, parsed.result)) {
+          return { status: "succeeded", idempotent: true, attempt };
+        }
+        const attention = { ...attempt, status: "settlement_attention",
+          reason: "conflicting-duplicate-result", settlement: {
+            reason: "conflicting-duplicate-result", priorResult: attempt.settlement.result } };
+        await requestResult(store.put(attention));
+        return { status: "settlement_attention", reason: attention.reason };
+      }
+      if (attempt.status !== "may_have_sent") {
+        return { status: "not-settleable", attemptStatus: attempt.status };
+      }
+      if (parsed.status === "attention") {
+        const attention = { ...attempt, status: "settlement_attention", reason: parsed.reason,
+          settlement: { reason: parsed.reason, priorResult: null } };
+        await requestResult(store.put(attention));
+        return { status: "settlement_attention", reason: parsed.reason };
+      }
+      if (parsed.status === "terminal") {
+        const terminal = { ...attempt, status: "terminal", reason: parsed.reason,
+          settlement: { reason: parsed.reason,
+            currentRevisionHint: parsed.currentRevisionHint || null,
+            currentCursorHint: parsed.currentCursorHint || null } };
+        await requestResult(store.put(terminal));
+        return { status: "terminal", reason: parsed.reason };
+      }
+      const desiredStore = tx.objectStore(PROGRESS_DESIRED_STORE);
+      const desired = await requestResult(desiredStore.get([ownerId, bindingId, articleId]));
+      const validDesired = !desired || validProgressDesiredRecord(desired, ownerId, bindingId, articleId);
+      const observed = await writeProgressObservation(tx, ownerId, bindingId, articleId,
+        canonicalProgressObservation(parsed.result));
+      if (["inconsistent-observation", "absence-after-revision", "malformed-observation",
+        "invalid-observation"].includes(observed.status)) {
+        const attention = { ...attempt, status: "settlement_attention",
+          reason: observed.status, settlement: { reason: observed.status, priorResult: null } };
+        await requestResult(store.put(attention));
+        return { status: "settlement_attention", reason: observed.status };
+      }
+      const effectiveObservation = observed.status === "recorded"
+        ? canonicalProgressObservation(parsed.result) : observed.observation;
+      const sidecar = await requestResult(tx.objectStore(ARTICLE_SIDECAR_STORE)
+        .get([ownerId, articleId]));
+      const parent = sidecar?.bindingId === bindingId
+        ? progressCausal().trustedParent(sidecar) : null;
+      const sourceMatches = validDesired && exactProgressAttemptSource(desired, attempt);
+      const candidate = { ...attempt, status: "succeeded", result: parsed.result };
+      const evaluation = parser.evaluateCoverage({ attempt: candidate,
+        desired: validDesired ? desired : null, observation: effectiveObservation, parent, local });
+      const coverage = !validDesired || observed.diagnostic ||
+        !["recorded", "unchanged"].includes(observed.status)
+        ? "unknown" : ["local-advanced", "pending-local"].includes(evaluation)
+          ? "advanced" : sourceMatches && evaluation === "covered" ? "covered" : "unknown";
+      if (coverage === "covered" && !desired.pending && sourceMatches) {
+        await requestResult(desiredStore.put({ ...desired, confirmed: null }));
+      }
+      const succeeded = { ...attempt, status: "succeeded", reason: null,
+        settlement: { result: parsed.result, localCoverageAtSettlement: coverage } };
+      await requestResult(store.put(succeeded));
+      return { status: "succeeded", resultStatus: parsed.result.status,
+        localCoverageAtSettlement: coverage, observationStatus: observed.status };
+    });
+  }
+
   async function getProgressCloudAttempt(ownerId, bindingId, articleId, attemptId) {
     return runTransaction([CONTROL_STORE, PROGRESS_ATTEMPTS_STORE], "readonly", async tx => {
       const binding = await requireBinding(tx.objectStore(CONTROL_STORE), ownerId, bindingId);
@@ -5032,6 +5246,7 @@
     confirmProgressCloudAttempt,
     rejectAwaitingProgressCloudAttempt,
     reserveProgressCloudAttemptForDispatch,
+    settleProgressCloudResult,
     getProgressCloudAttempt,
     listProgressCloudAttempts,
     blockPreparedProgressCloudAttempt,

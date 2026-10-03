@@ -383,6 +383,82 @@
     return reserved;
   }
 
+  // Capture before a future network call. A late response must present this
+  // original runtime generation rather than acquiring a new one after a switch.
+  async function captureCloudResponseContext(ownerId, bindingId) {
+    const owner = { ownerId, bindingId };
+    const capturedGeneration = generation;
+    return await stillCurrent(owner, capturedGeneration)
+      ? Object.freeze({ ownerId, bindingId, generation: capturedGeneration }) : null;
+  }
+
+  async function settleCloudResult(responseContext, articleId, attemptId, rawResult) {
+    const owner = { ownerId: responseContext?.ownerId, bindingId: responseContext?.bindingId };
+    const capturedGeneration = responseContext?.generation;
+    if (!Number.isSafeInteger(capturedGeneration) ||
+        !await stillCurrent(owner, capturedGeneration)) {
+      return { status: "not-ready", reason: "scope-mismatch" };
+    }
+    const operation = state.settleProgressCloudResult(owner.ownerId, owner.bindingId,
+      articleId, attemptId, rawResult);
+    inFlight.add(operation);
+    try { return await operation; }
+    finally { inFlight.delete(operation); }
+  }
+
+  // A two-sided read is advisory only. Its answer must never be persisted as
+  // permanent sync authority or used as permission to send another request.
+  async function evaluateLatestLocalCloudCoverage(ownerId, bindingId, articleId) {
+    try {
+      const owner = { ownerId, bindingId };
+      const capturedGeneration = generation;
+      if (!await stillCurrent(owner, capturedGeneration)) return { status: "scope-mismatch" };
+      const readSync = async () => {
+        const [desired, observation, attempts] = await Promise.all([
+          state.getProgressDesired(ownerId, bindingId, articleId),
+          state.getProgressRemoteObservation(ownerId, bindingId, articleId),
+          state.listProgressCloudAttempts(ownerId, bindingId, articleId)
+        ]);
+        const parent = await state.getArticleServerReadingContext(ownerId, bindingId, articleId);
+        return { desired, observation, attempts, parent };
+      };
+      const first = await readSync();
+      if ([first.desired.status, first.observation.status, first.attempts.status, first.parent.status]
+        .some(status => status !== "ready")) return { status: "unknown" };
+      const context = await library.getProgressContext(articleId, owner, { initialize: false });
+      if (context.status !== "ready") return { status: "unknown" };
+      const local = { status: "ready", articleId, scope: context.scope, fence: context.fence,
+        checkpoint: resume.normalizeCheckpoint(context.article.reading?.resume),
+        fingerprint: await resume.fingerprintContent(context.article.content),
+        active: !context.article.deletedAt };
+      const verified = await library.getProgressContext(articleId, owner, { initialize: false });
+      const finalSync = await readSync();
+      if (!await stillCurrent(owner, capturedGeneration)) return { status: "scope-mismatch" };
+      if (verified.status !== "ready" || !same(context, verified) || !same(first, finalSync) ||
+          !local.checkpoint) return { status: "unknown" };
+      if (first.observation.diagnostic || first.parent.diagnostic) return { status: "unknown" };
+      if (first.desired.record?.pending) return { status: "pending-local" };
+      const causal = window.LingoFlowProgressCausalState;
+      const successes = first.attempts.attempts.filter(item => item.status === "succeeded")
+        .sort((a, b) => {
+          const order = causal.ordinal(b.settlement.result.revision) -
+            causal.ordinal(a.settlement.result.revision);
+          return order > 0n ? 1 : order < 0n ? -1 : b.sourceLocalSeq - a.sourceLocalSeq;
+        });
+      if (!successes.length) return { status: "unknown" };
+      const values = successes.map(attempt => window.LingoFlowProgressCloudResult.evaluateCoverage({
+        attempt: { ...attempt, result: attempt.settlement.result },
+        desired: first.desired.record, observation: first.observation.observation,
+        parent: first.parent.context, local
+      }));
+      return { status: values.includes("covered") ? "covered" : values[0] };
+    } catch {
+      // This is an advisory cross-DB snapshot; an unavailable read cannot
+      // establish that the latest local position is covered.
+      return { status: "unknown" };
+    }
+  }
+
   async function reconcileInternal() {
     const capturedGeneration = generation;
     const owner = await currentOwner();
@@ -414,7 +490,8 @@
   window.LingoFlowProgressLocalDesired = Object.freeze({
     writeRealMovement, reconcile, evaluateConfirmed, evaluateCloudCandidate,
     prepareCloudAttempt, resumeCloudAttemptPostflight,
-    reserveCloudAttemptForDispatch, prepareAccountSwitch
+    reserveCloudAttemptForDispatch, captureCloudResponseContext,
+    settleCloudResult, evaluateLatestLocalCloudCoverage, prepareAccountSwitch
   });
   const scheduleReconcile = () => {
     void reconcile().catch(error => console.warn("Progress local recovery deferred:", error));
