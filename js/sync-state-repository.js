@@ -2,7 +2,7 @@
   "use strict";
 
   const DB_NAME = "LingoFlowSyncDB";
-  const DB_VERSION = 6;
+  const DB_VERSION = 7;
   const CONTROL_STORE = "control";
   const SIDECAR_STORE = "entitySidecars";
   const OUTBOX_STORE = "outbox";
@@ -13,6 +13,7 @@
   const ARTICLE_SIDECAR_STORE = "articleSidecars";
   const PROGRESS_DESIRED_STORE = "progressDesired";
   const PROGRESS_OBSERVATIONS_STORE = "progressRemoteObservations";
+  const PROGRESS_ATTEMPTS_STORE = "progressCloudAttempts";
   const ARTICLE_BOOTSTRAP_STATE_PREFIX = "article-bootstrap-state:";
   const ARTICLE_BOOTSTRAP_INVENTORY_PREFIX = "article-bootstrap-inventory:";
   const ARTICLE_BOOTSTRAP_PENDING_PREFIX = "article-bootstrap-pending:";
@@ -850,6 +851,14 @@
           db.createObjectStore(PROGRESS_OBSERVATIONS_STORE, {
             keyPath: ["ownerId", "bindingId", "articleId"]
           });
+        }
+        if (!db.objectStoreNames.contains(PROGRESS_ATTEMPTS_STORE)) {
+          const attempts = db.createObjectStore(PROGRESS_ATTEMPTS_STORE, {
+            keyPath: ["ownerId", "bindingId", "articleId", "attemptId"]
+          });
+          attempts.createIndex("byScope", ["ownerId", "bindingId", "articleId"]);
+          attempts.createIndex("byOwnerBinding", ["ownerId", "bindingId"]);
+          attempts.createIndex("byMutation", ["ownerId", "cloudMutationId"], { unique: true });
         }
       };
 
@@ -2642,7 +2651,8 @@
         ISSUES_STORE,
         INBOX_STORE,
         ARTICLE_OUTBOX_STORE,
-        ARTICLE_SIDECAR_STORE
+        ARTICLE_SIDECAR_STORE,
+        PROGRESS_ATTEMPTS_STORE
       ];
       return await runTransaction(storeNames, "readwrite", async tx => {
         const control = tx.objectStore(CONTROL_STORE);
@@ -2652,7 +2662,18 @@
         const mismatch = getWorkspaceMismatch(current, from.ownerId, from.bindingId);
         if (mismatch) return mismatch;
 
-        await Promise.all(storeNames.map(name => (
+        // A's attempts remain durable, but a never-sent attempt cannot survive
+        // replacement as an ordinary prepared candidate.
+        const attempts = tx.objectStore(PROGRESS_ATTEMPTS_STORE);
+        const oldAttempts = await requestResult(attempts.index("byOwnerBinding")
+          .getAll(IDBKeyRange.only([from.ownerId, from.bindingId])));
+        for (const attempt of oldAttempts) {
+          if (["awaiting_postflight", "prepared"].includes(attempt.status)) {
+            await requestResult(attempts.put({ ...attempt,
+              status: "blocked_before_dispatch", reason: "workspace-replaced" }));
+          }
+        }
+        await Promise.all(storeNames.filter(name => name !== PROGRESS_ATTEMPTS_STORE).map(name => (
           requestResult(tx.objectStore(name).clear())
         )));
         const binding = { key: BINDING_KEY, ...to };
@@ -4434,10 +4455,9 @@
     });
   }
 
-  // A coherent SyncDB snapshot for the local evaluator, not a cross-DB send lease.
-  async function getProgressCausalSnapshot(ownerId, bindingId, articleId) {
-    return runTransaction([CONTROL_STORE, PROGRESS_DESIRED_STORE, PROGRESS_OBSERVATIONS_STORE,
-      ARTICLE_SIDECAR_STORE, ARTICLE_OUTBOX_STORE], "readonly", async tx => {
+  // Reused by advisory evaluation and atomic attempt preparation. This is a
+  // coherent SyncDB snapshot, never a cross-DB send lease.
+  async function readProgressCausalSnapshot(tx, ownerId, bindingId, articleId) {
       const control = tx.objectStore(CONTROL_STORE);
       const binding = await requireBinding(control, ownerId, bindingId);
       if (binding.status !== "ready") return binding;
@@ -4466,6 +4486,12 @@
         observation: observed.observation, observationDiagnostic: observed.diagnostic,
         bootstrapSafe, hasConflict: conflicts.length > 0,
         hasMutation: parentApplyPending || mutations.some(item => item.articleId === articleId) };
+  }
+
+  async function getProgressCausalSnapshot(ownerId, bindingId, articleId) {
+    return runTransaction([CONTROL_STORE, PROGRESS_DESIRED_STORE, PROGRESS_OBSERVATIONS_STORE,
+      ARTICLE_SIDECAR_STORE, ARTICLE_OUTBOX_STORE], "readonly", tx => {
+      return readProgressCausalSnapshot(tx, ownerId, bindingId, articleId);
     });
   }
 
@@ -4601,6 +4627,281 @@
     });
   }
 
+  const PROGRESS_ATTEMPT_STATUSES = new Set([
+    "awaiting_postflight", "prepared", "blocked_before_dispatch", "superseded"
+  ]);
+  const PROGRESS_REQUEST_FIELDS = new Set([
+    "mutationId", "articleId", "expectedState", "expectedProgressRevision",
+    "parentReadingEpoch", "contentFingerprint", "progress", "paragraphIndex"
+  ]);
+  const PROGRESS_ATTEMPT_FIELDS = new Set([
+    "ownerId", "bindingId", "articleId", "attemptId", "cloudMutationId",
+    "status", "reason", "sourceLocalSeq", "sourceActionId", "sourceCheckpoint",
+    "sourceCausalBase", "sourceFence", "sourceScope", "request"
+  ]);
+  const PROGRESS_CHECKPOINT_FIELDS = new Set([
+    "progress", "paragraphIndex", "contentFingerprint", "updatedAt"
+  ]);
+  const PROGRESS_FENCE_FIELDS = new Set([
+    "articleId", "lifecycleToken", "resumeRevision", "action"
+  ]);
+  const PROGRESS_FENCE_ACTION_FIELDS = new Set([
+    "actionId", "localSeq", "ownerId", "bindingId", "scopeToken",
+    "lifecycleToken", "contentFingerprint", "target"
+  ]);
+  const PROGRESS_SCOPE_FIELDS = new Set(["key", "ownerId", "bindingId", "scopeToken"]);
+  const progressAttemptScope = (ownerId, bindingId, articleId) =>
+    IDBKeyRange.only([ownerId, bindingId, articleId]);
+  const sameProgressFact = (left, right) => JSON.stringify(left) === JSON.stringify(right);
+  const uuid = value => typeof value === "string" &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(value);
+
+  function validProgressCloudAttempt(value, ownerId, bindingId, articleId) {
+    const normalize = window.LingoFlowReadingResume?.normalizeCheckpoint;
+    const request = value?.request;
+    return isPlainObject(value) && hasExactFields(value, PROGRESS_ATTEMPT_FIELDS) &&
+      value.ownerId === ownerId && value.bindingId === bindingId && value.articleId === articleId &&
+      uuid(value.attemptId) && uuid(value.cloudMutationId) &&
+      value.attemptId !== value.cloudMutationId &&
+      PROGRESS_ATTEMPT_STATUSES.has(value.status) &&
+      (["awaiting_postflight", "prepared"].includes(value.status)
+        ? value.reason === null : isOpaqueString(value.reason)) &&
+      Number.isSafeInteger(value.sourceLocalSeq) && value.sourceLocalSeq > 0 &&
+      isOpaqueString(value.sourceActionId) &&
+      value.sourceActionId !== value.cloudMutationId &&
+      isPlainObject(value.sourceCheckpoint) &&
+      hasExactFields(value.sourceCheckpoint, PROGRESS_CHECKPOINT_FIELDS) &&
+      Boolean(normalize?.(value.sourceCheckpoint)) &&
+      Boolean(progressCausal().normalizeBase(value.sourceCausalBase)) &&
+      isPlainObject(value.sourceFence) &&
+      hasExactFields(value.sourceFence, PROGRESS_FENCE_FIELDS) &&
+      value.sourceFence.articleId === articleId &&
+      isPlainObject(value.sourceFence.action) &&
+      hasExactFields(value.sourceFence.action, PROGRESS_FENCE_ACTION_FIELDS) &&
+      isPlainObject(value.sourceFence.action.target) &&
+      hasExactFields(value.sourceFence.action.target, PROGRESS_CHECKPOINT_FIELDS) &&
+      sameProgressFact(value.sourceFence.action.target, value.sourceCheckpoint) &&
+      value.sourceFence.action.actionId === value.sourceActionId &&
+      value.sourceFence.action?.localSeq === value.sourceLocalSeq &&
+      value.sourceFence.action?.ownerId === ownerId &&
+      value.sourceFence.action?.bindingId === bindingId &&
+      isOpaqueString(value.sourceFence.lifecycleToken) &&
+      value.sourceFence.action.lifecycleToken === value.sourceFence.lifecycleToken &&
+      value.sourceFence.action.contentFingerprint === value.sourceCheckpoint.contentFingerprint &&
+      Number.isSafeInteger(value.sourceFence.resumeRevision) &&
+      value.sourceFence.resumeRevision >= 0 &&
+      isPlainObject(value.sourceScope) &&
+      hasExactFields(value.sourceScope, PROGRESS_SCOPE_FIELDS) &&
+      value.sourceScope.key === "workspace" && value.sourceScope.ownerId === ownerId &&
+      value.sourceScope.bindingId === bindingId && isOpaqueString(value.sourceScope.scopeToken) &&
+      value.sourceFence.action?.scopeToken === value.sourceScope.scopeToken &&
+      isPlainObject(request) && hasExactFields(request, PROGRESS_REQUEST_FIELDS) &&
+      request.mutationId === value.cloudMutationId && request.articleId === articleId &&
+      request.expectedState === "revision" &&
+      progressCausal().revision(request.expectedProgressRevision) &&
+      uuid(request.parentReadingEpoch) &&
+      /^sha256:[a-f0-9]{64}$/.test(request.contentFingerprint) &&
+      typeof request.progress === "number" && Number.isFinite(request.progress) &&
+      request.progress >= 0 && request.progress <= 1 &&
+      Number.isInteger(request.paragraphIndex) && request.paragraphIndex >= 0 &&
+      request.paragraphIndex <= 2147483647 &&
+      request.progress === value.sourceCheckpoint.progress &&
+      request.paragraphIndex === value.sourceCheckpoint.paragraphIndex &&
+      request.contentFingerprint === value.sourceCheckpoint.contentFingerprint &&
+      value.sourceCausalBase.kind === "revision" &&
+      value.sourceCausalBase.revision === request.expectedProgressRevision &&
+      value.sourceCausalBase.parent?.lifecycle === "active" &&
+      value.sourceCausalBase.parent?.readingEpoch === request.parentReadingEpoch &&
+      value.sourceCausalBase.parent?.contentFingerprint === request.contentFingerprint;
+  }
+
+  // The transaction first records a non-dispatchable proposal. A separate
+  // postflight and confirmation must complete before it becomes prepared.
+  // The LibraryDB facts were checked before this transaction and must be
+  // checked again afterwards; a future dispatcher must revalidate once more.
+  async function prepareProgressCloudAttempt(ownerId, bindingId, articleId, local) {
+    if (![ownerId, bindingId, articleId].every(isOpaqueString) ||
+        !isPlainObject(local) || !isPlainObject(local.scope) || !isPlainObject(local.fence)) {
+      return { status: "not-ready", reason: "invalid-local-preflight" };
+    }
+    return runTransaction([CONTROL_STORE, PROGRESS_DESIRED_STORE, PROGRESS_OBSERVATIONS_STORE,
+      ARTICLE_SIDECAR_STORE, ARTICLE_OUTBOX_STORE, PROGRESS_ATTEMPTS_STORE], "readwrite", async tx => {
+      const snapshot = await readProgressCausalSnapshot(tx, ownerId, bindingId, articleId);
+      if (snapshot.status !== "ready") return { status: "not-ready", reason: snapshot.reason || snapshot.status };
+      const confirmed = snapshot.record?.confirmed;
+      const fenceValid = Boolean(confirmed &&
+        sameProgressFact(confirmed.fence, local.fence) &&
+        sameProgressFact(confirmed.checkpoint, local.checkpoint) &&
+        local.fence.action?.ownerId === ownerId &&
+        local.fence.action?.bindingId === bindingId &&
+        local.fence.action?.scopeToken === local.scope.scopeToken &&
+        local.fence.action?.localSeq === snapshot.record.localSeq);
+      const decision = progressCausal().evaluate({ ...snapshot,
+        scopeValid: local.scope.ownerId === ownerId && local.scope.bindingId === bindingId &&
+          isOpaqueString(local.scope.scopeToken),
+        transitionInactive: local.transitionInactive === true,
+        fenceValid,
+        articleActive: local.articleActive === true,
+        cloudEligible: local.cloudEligible === true,
+        localFingerprint: local.fingerprint
+      });
+      if (decision.status !== "ready") return decision;
+      // B3-3A has no production inventory/catch-up producer for trusted absent.
+      if (decision.mode !== "update" || snapshot.observation.kind !== "revision") {
+        return { status: "not-ready", reason: "create-path-disabled" };
+      }
+      const checkpoint = confirmed.checkpoint;
+      if (!Number.isInteger(checkpoint.paragraphIndex) || checkpoint.paragraphIndex > 2147483647 ||
+          !Number.isFinite(checkpoint.progress) || checkpoint.progress < 0 || checkpoint.progress > 1) {
+        return { status: "not-ready", reason: "invalid-checkpoint" };
+      }
+      const store = tx.objectStore(PROGRESS_ATTEMPTS_STORE);
+      const previous = await requestResult(store.index("byScope")
+        .getAll(progressAttemptScope(ownerId, bindingId, articleId)));
+      if (previous.some(item => !validProgressCloudAttempt(item, ownerId, bindingId, articleId))) {
+        return { status: "malformed-attempt" };
+      }
+      const unresolved = previous.find(item =>
+        ["awaiting_postflight", "prepared"].includes(item.status));
+      if (unresolved) return { status: "existing-attempt", attempt: unresolved };
+      if (!window.crypto?.randomUUID) return { status: "not-ready", reason: "random-id-unavailable" };
+      const attemptId = window.crypto.randomUUID();
+      const cloudMutationId = window.crypto.randomUUID();
+      const attempt = {
+        ownerId, bindingId, articleId, attemptId, cloudMutationId,
+        status: "awaiting_postflight", reason: null,
+        sourceLocalSeq: snapshot.record.localSeq,
+        sourceActionId: local.fence.action.actionId,
+        sourceCheckpoint: { ...checkpoint },
+        sourceCausalBase: confirmed.causalBase,
+        sourceFence: local.fence,
+        sourceScope: local.scope,
+        request: {
+          mutationId: cloudMutationId, articleId,
+          expectedState: "revision",
+          expectedProgressRevision: snapshot.observation.revision,
+          parentReadingEpoch: confirmed.causalBase.parent.readingEpoch,
+          contentFingerprint: checkpoint.contentFingerprint,
+          progress: checkpoint.progress === 0 ? 0 : checkpoint.progress,
+          paragraphIndex: checkpoint.paragraphIndex
+        }
+      };
+      if (!validProgressCloudAttempt(attempt, ownerId, bindingId, articleId)) {
+        return { status: "not-ready", reason: "invalid-attempt" };
+      }
+      await requestResult(store.add(attempt));
+      return { status: "awaiting-postflight", attempt };
+    });
+  }
+
+  async function confirmProgressCloudAttempt(ownerId, bindingId, articleId, attemptId, local) {
+    return runTransaction([CONTROL_STORE, PROGRESS_DESIRED_STORE, PROGRESS_OBSERVATIONS_STORE,
+      ARTICLE_SIDECAR_STORE, ARTICLE_OUTBOX_STORE, PROGRESS_ATTEMPTS_STORE], "readwrite", async tx => {
+      const snapshot = await readProgressCausalSnapshot(tx, ownerId, bindingId, articleId);
+      if (snapshot.status !== "ready") return { status: "not-ready", reason: snapshot.reason || snapshot.status };
+      const store = tx.objectStore(PROGRESS_ATTEMPTS_STORE);
+      const attempt = await requestResult(store.get([ownerId, bindingId, articleId, attemptId]));
+      if (!attempt) return { status: "missing" };
+      if (!validProgressCloudAttempt(attempt, ownerId, bindingId, articleId)) {
+        return { status: "malformed-attempt" };
+      }
+      if (attempt.status !== "awaiting_postflight") return { status: "not-awaiting-postflight" };
+      const confirmed = snapshot.record?.confirmed;
+      const unchanged = confirmed && !snapshot.record.pending &&
+        snapshot.record.localSeq === attempt.sourceLocalSeq &&
+        confirmed.fence?.action?.actionId === attempt.sourceActionId &&
+        sameProgressFact(confirmed.fence, attempt.sourceFence) &&
+        sameProgressFact(confirmed.checkpoint, attempt.sourceCheckpoint) &&
+        sameProgressFact(confirmed.causalBase, attempt.sourceCausalBase) &&
+        snapshot.observation.kind === "revision" &&
+        snapshot.observation.revision === attempt.request.expectedProgressRevision &&
+        sameProgressFact(local?.fence, attempt.sourceFence) &&
+        sameProgressFact(local?.scope, attempt.sourceScope) &&
+        sameProgressFact(local?.checkpoint, attempt.sourceCheckpoint);
+      const decision = unchanged ? progressCausal().evaluate({ ...snapshot,
+        scopeValid: local.scope?.ownerId === ownerId && local.scope?.bindingId === bindingId,
+        transitionInactive: local.transitionInactive === true,
+        fenceValid: true, articleActive: local.articleActive === true,
+        cloudEligible: local.cloudEligible === true, localFingerprint: local.fingerprint
+      }) : { status: "not-ready", reason: "local-or-causal-state-changed" };
+      if (decision.status !== "ready" || decision.mode !== "update") {
+        const blocked = { ...attempt, status: "blocked_before_dispatch",
+          reason: decision.reason || "create-path-disabled" };
+        await requestResult(store.put(blocked));
+        return { status: "not-ready", reason: blocked.reason, attempt: blocked };
+      }
+      const prepared = { ...attempt, status: "prepared" };
+      await requestResult(store.put(prepared));
+      return { status: "prepared", attempt: prepared };
+    });
+  }
+
+  async function getProgressCloudAttempt(ownerId, bindingId, articleId, attemptId) {
+    return runTransaction([CONTROL_STORE, PROGRESS_ATTEMPTS_STORE], "readonly", async tx => {
+      const binding = await requireBinding(tx.objectStore(CONTROL_STORE), ownerId, bindingId);
+      if (binding.status !== "ready") return binding;
+      const attempt = await requestResult(tx.objectStore(PROGRESS_ATTEMPTS_STORE)
+        .get([ownerId, bindingId, articleId, attemptId]));
+      if (!attempt) return { status: "missing" };
+      return validProgressCloudAttempt(attempt, ownerId, bindingId, articleId)
+        ? { status: "ready", attempt } : { status: "malformed-attempt" };
+    });
+  }
+
+  async function listProgressCloudAttempts(ownerId, bindingId, articleId) {
+    return runTransaction([CONTROL_STORE, PROGRESS_ATTEMPTS_STORE], "readonly", async tx => {
+      const binding = await requireBinding(tx.objectStore(CONTROL_STORE), ownerId, bindingId);
+      if (binding.status !== "ready") return binding;
+      const records = await requestResult(tx.objectStore(PROGRESS_ATTEMPTS_STORE).index("byScope")
+        .getAll(progressAttemptScope(ownerId, bindingId, articleId)));
+      if (records.some(item => !validProgressCloudAttempt(item, ownerId, bindingId, articleId))) {
+        return { status: "malformed-attempt" };
+      }
+      return { status: "ready", attempts: records };
+    });
+  }
+
+  async function blockPreparedProgressCloudAttempt(ownerId, bindingId, articleId, attemptId, reason) {
+    return transitionPreparedProgressAttempt(ownerId, bindingId, articleId, attemptId,
+      "blocked_before_dispatch", reason);
+  }
+
+  async function supersedePreparedProgressCloudAttempt(ownerId, bindingId, articleId, attemptId) {
+    return transitionPreparedProgressAttempt(ownerId, bindingId, articleId, attemptId,
+      "superseded", "newer-confirmed");
+  }
+
+  async function transitionPreparedProgressAttempt(ownerId, bindingId, articleId, attemptId, status, reason) {
+    if (!isOpaqueString(reason)) return { status: "invalid-reason" };
+    return runTransaction([CONTROL_STORE, PROGRESS_DESIRED_STORE, PROGRESS_ATTEMPTS_STORE],
+      "readwrite", async tx => {
+        const binding = await requireBinding(tx.objectStore(CONTROL_STORE), ownerId, bindingId);
+        if (binding.status !== "ready") return binding;
+        const store = tx.objectStore(PROGRESS_ATTEMPTS_STORE);
+        const attempt = await requestResult(store.get([ownerId, bindingId, articleId, attemptId]));
+        if (!attempt) return { status: "missing" };
+        if (!validProgressCloudAttempt(attempt, ownerId, bindingId, articleId)) {
+          return { status: "malformed-attempt" };
+        }
+        if (status === "superseded" ? attempt.status !== "prepared" :
+            !["awaiting_postflight", "prepared"].includes(attempt.status)) {
+          return { status: "not-prepared" };
+        }
+        if (status === "superseded") {
+          const desired = await requestResult(tx.objectStore(PROGRESS_DESIRED_STORE)
+            .get([ownerId, bindingId, articleId]));
+          if (!desired || !validProgressDesiredRecord(desired, ownerId, bindingId, articleId) ||
+              !desired.confirmed?.fence?.action ||
+              desired.confirmed.fence.action.localSeq <= attempt.sourceLocalSeq) {
+            return { status: "not-newer-confirmed" };
+          }
+        }
+        const next = { ...attempt, status, reason };
+        await requestResult(store.put(next));
+        return { status, attempt: next };
+      });
+  }
+
   window.LingoFlowSyncStateRepository = Object.freeze({
     DB_NAME,
     DB_VERSION,
@@ -4615,6 +4916,12 @@
     getProgressDesired,
     listProgressDesired,
     settleProgressMovement,
+    prepareProgressCloudAttempt,
+    confirmProgressCloudAttempt,
+    getProgressCloudAttempt,
+    listProgressCloudAttempts,
+    blockPreparedProgressCloudAttempt,
+    supersedePreparedProgressCloudAttempt,
     closeDatabase,
     bindWorkspace,
     getWorkspaceBinding,

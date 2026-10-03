@@ -142,8 +142,8 @@ test("LingoFlowSyncDB v5 保留 Favorite / Article stores 并隔离 Progress sto
 
   expect(schema).toEqual({
     name: "LingoFlowSyncDB",
-    version: 5,
-    stores: ["articleOutbox", "articleSidecars", "control", "entitySidecars", "inbox", "outbox", "progressDesired", "syncIssues"],
+    version: 7,
+    stores: ["articleOutbox", "articleSidecars", "control", "entitySidecars", "inbox", "outbox", "progressCloudAttempts", "progressDesired", "progressRemoteObservations", "syncIssues"],
     sidecarKeyPath: ["ownerId", "entityType", "entityId", "scope"],
     sidecarIndexes: [{
       name: "byOwnerEntityType",

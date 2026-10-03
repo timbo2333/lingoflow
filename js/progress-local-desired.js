@@ -268,6 +268,54 @@
     });
   }
 
+  // A local snapshot for freezing an attempt, not authorization to dispatch it.
+  async function cloudAttemptPreflight(owner, articleId) {
+    const context = await library.getProgressContext(articleId, owner, { initialize: false });
+    if (context.status !== "ready") return { status: "not-ready", reason: context.status };
+    const checkpoint = resume.normalizeCheckpoint(context.article.reading?.resume);
+    if (!checkpoint) return { status: "not-ready", reason: "resume-missing" };
+    const fingerprint = await resume.fingerprintContent(context.article.content);
+    const verified = await library.getProgressContext(articleId, owner, { initialize: false });
+    if (verified.status !== "ready" || !same(context, verified)) {
+      return { status: "not-ready", reason: "local-preflight-changed" };
+    }
+    return { status: "ready", local: {
+      scope: context.scope, fence: context.fence, checkpoint, fingerprint,
+      articleActive: !context.article.deletedAt,
+      cloudEligible: window.LingoFlowArticleSyncSize.validateArticleCloudSyncSize(context.article).status === "valid",
+      transitionInactive: true
+    } };
+  }
+
+  async function prepareCloudAttempt(ownerId, bindingId, articleId) {
+    const owner = { ownerId, bindingId };
+    const capturedGeneration = generation;
+    const no = reason => ({ status: "not-ready", reason });
+    if (!await stillCurrent(owner, capturedGeneration)) return no("scope-mismatch");
+    const before = await cloudAttemptPreflight(owner, articleId);
+    if (before.status !== "ready") return before;
+    if (!await stillCurrent(owner, capturedGeneration)) return no("scope-mismatch");
+    const result = await state.prepareProgressCloudAttempt(ownerId, bindingId, articleId, before.local);
+    if (result.status !== "awaiting-postflight") return result;
+
+    let after = null;
+    let current = false;
+    try {
+      after = await cloudAttemptPreflight(owner, articleId);
+      current = await stillCurrent(owner, capturedGeneration);
+    } catch { /* A failed postflight must not leave an ordinary prepared attempt. */ }
+    if (!current || after?.status !== "ready" || !same(before.local, after.local)) {
+      const blocked = await state.blockPreparedProgressCloudAttempt(ownerId, bindingId,
+        articleId, result.attempt.attemptId, "local-postflight-changed");
+      // Binding replacement transaction also blocks the old scope's prepared
+      // attempts. Never return an attempt as prepared after failed postflight.
+      return { status: "not-ready", reason: "local-postflight-changed",
+        attemptStatus: blocked.status };
+    }
+    return state.confirmProgressCloudAttempt(ownerId, bindingId, articleId,
+      result.attempt.attemptId, after.local);
+  }
+
   async function reconcileInternal() {
     const capturedGeneration = generation;
     const owner = await currentOwner();
@@ -297,7 +345,8 @@
   }
 
   window.LingoFlowProgressLocalDesired = Object.freeze({
-    writeRealMovement, reconcile, evaluateConfirmed, evaluateCloudCandidate, prepareAccountSwitch
+    writeRealMovement, reconcile, evaluateConfirmed, evaluateCloudCandidate,
+    prepareCloudAttempt, prepareAccountSwitch
   });
   const scheduleReconcile = () => {
     void reconcile().catch(error => console.warn("Progress local recovery deferred:", error));

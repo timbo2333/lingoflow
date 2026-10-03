@@ -1,6 +1,6 @@
 const { test, expect } = require("@playwright/test");
 
-for (const oldVersion of [4, 5]) test(`SyncDB v${oldVersion} to v6 preserves populated stores`, async ({ browser }) => {
+for (const oldVersion of [4, 5, 6]) test(`SyncDB v${oldVersion} to v7 preserves populated stores`, async ({ browser }) => {
   const context = await browser.newContext({ baseURL: "http://127.0.0.1:4173" });
   const page = await context.newPage();
   try {
@@ -20,7 +20,7 @@ for (const oldVersion of [4, 5]) test(`SyncDB v${oldVersion} to v6 preserves pop
           db.createObjectStore("articleSidecars", { keyPath: ["ownerId", "articleId"] });
           const articleOutbox = db.createObjectStore("articleOutbox", { keyPath: ["ownerId", "mutationId"] });
           articleOutbox.createIndex("byOwnerBinding", ["ownerId", "bindingId"]);
-          if (oldVersion === 5) {
+          if (oldVersion >= 5) {
             const issues = db.createObjectStore("syncIssues", { keyPath: ["ownerId", "mutationId"] });
             issues.createIndex("byOwnerRecord", ["ownerId", "entityType", "entityId", "scope"]);
             issues.createIndex("byOwnerKindCreatedAt", ["ownerId", "kind", "createdAt"]);
@@ -28,6 +28,8 @@ for (const oldVersion of [4, 5]) test(`SyncDB v${oldVersion} to v6 preserves pop
             inbox.createIndex("byOwnerBindingCursor", ["ownerId", "bindingId", "cursor"], { unique: true });
             inbox.createIndex("byOwnerRecordSequence", ["ownerId", "bindingId", "entityType", "entityId", "scope", "inboxSeq"]);
             db.createObjectStore("progressDesired", { keyPath: ["ownerId", "bindingId", "articleId"] });
+            if (oldVersion === 6) db.createObjectStore("progressRemoteObservations", {
+              keyPath: ["ownerId", "bindingId", "articleId"] });
           }
         };
         request.onsuccess = () => resolve(request.result);
@@ -37,9 +39,10 @@ for (const oldVersion of [4, 5]) test(`SyncDB v${oldVersion} to v6 preserves pop
         const stores = [
           "control", "entitySidecars", "outbox", "articleSidecars", "articleOutbox"
         ];
-        if (oldVersion === 5) stores.push("progressDesired", "syncIssues", "inbox");
+        if (oldVersion >= 5) stores.push("progressDesired", "syncIssues", "inbox");
+        if (oldVersion === 6) stores.push("progressRemoteObservations");
         const tx = db.transaction(stores, "readwrite");
-        if (oldVersion === 5) {
+        if (oldVersion >= 5) {
           const desired = tx.objectStore("progressDesired");
           desired.put({
             ownerId: "migrated-owner", bindingId: "migrated-binding", articleId: "article-1", localSeq: 42,
@@ -75,12 +78,19 @@ for (const oldVersion of [4, 5]) test(`SyncDB v${oldVersion} to v6 preserves pop
           articleId: "article-1", revision: 4 });
         tx.objectStore("articleOutbox").put({ ownerId: "migrated-owner",
           bindingId: "migrated-binding", mutationId: "article-mutation-1", status: "ready" });
-        if (oldVersion === 5) {
+        if (oldVersion >= 5) {
           tx.objectStore("syncIssues").put({ ownerId: "migrated-owner",
             mutationId: "favorite-issue-1", bindingId: "migrated-binding", kind: "conflict" });
           tx.objectStore("inbox").put({ ownerId: "migrated-owner", bindingId: "migrated-binding",
             inboxSeq: 1, cursor: "cursor:1", entityType: "favorites", entityId: "favorite-1", scope: "record" });
         }
+        if (oldVersion === 6) tx.objectStore("progressRemoteObservations").put({
+          ownerId: "migrated-owner", bindingId: "migrated-binding", articleId: "article-1",
+          kind: "revision", revision: "revision:10", cursor: "cursor:10",
+          parentReadingEpoch: "11111111-2222-4333-8444-555555555555",
+          contentFingerprint: "sha256:" + "a".repeat(64),
+          checkpoint: { progress: 0.3, paragraphIndex: 3 }
+        });
         tx.oncomplete = resolve;
         tx.onerror = () => reject(tx.error);
       });
@@ -90,7 +100,7 @@ for (const oldVersion of [4, 5]) test(`SyncDB v${oldVersion} to v6 preserves pop
     const result = await page.evaluate(async () => {
       const repo = window.LingoFlowSyncStateRepository;
       const db = await repo.openDatabase();
-      const stores = ["control", "entitySidecars", "outbox", "articleSidecars", "articleOutbox", "progressDesired", "progressRemoteObservations", "syncIssues", "inbox"];
+      const stores = ["control", "entitySidecars", "outbox", "articleSidecars", "articleOutbox", "progressDesired", "progressRemoteObservations", "progressCloudAttempts", "syncIssues", "inbox"];
       const raw = await Promise.all(stores.map(name => new Promise((resolve, reject) => {
         const request = db.transaction(name, "readonly").objectStore(name).getAll();
         request.onsuccess = () => resolve([name, request.result]);
@@ -100,16 +110,50 @@ for (const oldVersion of [4, 5]) test(`SyncDB v${oldVersion} to v6 preserves pop
         raw: Object.fromEntries(raw),
         indexes: {
           articleOutbox: [...db.transaction("articleOutbox").objectStore("articleOutbox").indexNames],
-          inbox: [...db.transaction("inbox").objectStore("inbox").indexNames]
+          inbox: [...db.transaction("inbox").objectStore("inbox").indexNames],
+          progressCloudAttempts: (() => {
+            const store = db.transaction("progressCloudAttempts").objectStore("progressCloudAttempts");
+            return { keyPath: store.keyPath, indexes: [...store.indexNames].map(name => {
+              const index = store.index(name);
+              return { name, keyPath: index.keyPath, unique: index.unique };
+            }) };
+          })()
         },
         binding: await repo.getWorkspaceBinding(),
         progress: await repo.listProgressDesired("migrated-owner", "migrated-binding") };
     });
-    expect(result.version).toBe(6);
+    expect(result.version).toBe(7);
     expect(result.stores).toContain("progressRemoteObservations");
     expect(result.stores).toContain("progressDesired");
+    expect(result.stores).toContain("progressCloudAttempts");
     expect(result.indexes.articleOutbox).toContain("byOwnerBinding");
     expect(result.indexes.inbox).toEqual(expect.arrayContaining(["byOwnerBindingCursor", "byOwnerRecordSequence"]));
+    expect(result.indexes.progressCloudAttempts).toEqual({
+      keyPath: ["ownerId", "bindingId", "articleId", "attemptId"],
+      indexes: [
+        { name: "byMutation", keyPath: ["ownerId", "cloudMutationId"], unique: true },
+        { name: "byOwnerBinding", keyPath: ["ownerId", "bindingId"], unique: false },
+        { name: "byScope", keyPath: ["ownerId", "bindingId", "articleId"], unique: false }
+      ]
+    });
+    if (oldVersion === 6) {
+      const fresh = await browser.newContext({ baseURL: "http://127.0.0.1:4173" });
+      try {
+        const freshPage = await fresh.newPage();
+        await freshPage.goto("/");
+        const freshSchema = await freshPage.evaluate(async () => {
+          const db = await window.LingoFlowSyncStateRepository.openDatabase();
+          const store = db.transaction("progressCloudAttempts").objectStore("progressCloudAttempts");
+          return { keyPath: store.keyPath, indexes: [...store.indexNames].map(name => {
+            const index = store.index(name);
+            return { name, keyPath: index.keyPath, unique: index.unique };
+          }) };
+        });
+        expect(freshSchema).toEqual(result.indexes.progressCloudAttempts);
+      } finally {
+        await fresh.close();
+      }
+    }
     expect(result.binding).toMatchObject({ status: "ready",
       binding: { ownerId: "migrated-owner", bindingId: "migrated-binding" } });
     if (oldVersion === 4) expect(result.progress).toEqual({ status: "ready", records: [], malformedCount: 0 });
@@ -128,7 +172,8 @@ for (const oldVersion of [4, 5]) test(`SyncDB v${oldVersion} to v6 preserves pop
       expect(result.raw.syncIssues).toHaveLength(1);
       expect(result.raw.inbox).toHaveLength(1);
     }
-    expect(result.raw.progressRemoteObservations).toEqual([]);
+    expect(result.raw.progressRemoteObservations).toHaveLength(oldVersion === 6 ? 1 : 0);
+    expect(result.raw.progressCloudAttempts).toEqual([]);
     expect(result.raw.control).toHaveLength(3);
     expect(result.raw.control.map(item => item.key)).toEqual(expect.arrayContaining([
       "workspace-binding", "article-bootstrap-state:migrated-owner:migrated-binding",

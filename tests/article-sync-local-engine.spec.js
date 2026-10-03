@@ -94,7 +94,7 @@ test("真实 v1 → v3 upgrade 保留 ID、正文、reading、soft-delete", asyn
   }
 });
 
-test("Sync DB v3 → v6 upgrade 保留原 binding 并增 Article / Progress stores", async ({ browser }) => {
+test("Sync DB v3 → v7 upgrade 保留原 binding 并增 Article / Progress stores", async ({ browser }) => {
   const context = await browser.newContext({ baseURL: "http://127.0.0.1:4173" });
   const fresh = await context.newPage();
   try {
@@ -124,9 +124,9 @@ test("Sync DB v3 → v6 upgrade 保留原 binding 并增 Article / Progress stor
       return { version: db.version, stores: Array.from(db.objectStoreNames).sort(),
         binding: await state.getWorkspaceBinding() };
     });
-    expect(result.version).toBe(6);
+    expect(result.version).toBe(7);
     expect(result.stores).toEqual([
-      "articleOutbox", "articleSidecars", "control", "entitySidecars", "inbox", "outbox", "progressDesired", "progressRemoteObservations", "syncIssues"
+      "articleOutbox", "articleSidecars", "control", "entitySidecars", "inbox", "outbox", "progressCloudAttempts", "progressDesired", "progressRemoteObservations", "syncIssues"
     ]);
     expect(result.binding.binding).toMatchObject(OWNER);
   } finally {

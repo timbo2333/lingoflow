@@ -73,10 +73,10 @@ test.afterEach(async ({ page }) => {
   expect(page.__causalRequests, "local causal operations must not call Article/Progress RPC").toEqual([]);
 });
 
-test("fresh v6: missing observation is explicit unknown, Library remains v3", async ({ page }) => {
+test("fresh v7: missing observation is explicit unknown, Library remains v3", async ({ page }) => {
   const r = await page.evaluate(async () => ({ observation: await h.repo.getProgressRemoteObservation(...h.args),
     sync: (await h.repo.openDatabase()).version, library: (await h.lib.openDatabase()).version }));
-  expect(r).toEqual({ observation: { status: "ready", observation: { kind: "unknown" }, diagnostic: null }, sync: 6, library: 3 });
+  expect(r).toEqual({ observation: { status: "ready", observation: { kind: "unknown" }, diagnostic: null }, sync: 7, library: 3 });
 });
 
 for (const kind of ["revision", "absent", "unknown"]) test(`real movement captures ${kind} without fabricating context`, async ({ page }) => {
