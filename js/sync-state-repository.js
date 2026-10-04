@@ -4601,17 +4601,38 @@
   }
 
   // No production caller supplies completion evidence in B3-2A. A missing row is UNKNOWN.
-  // This transaction cannot patch desired/pending: those stores are intentionally absent.
-  async function recordProgressRemoteObservation(ownerId, bindingId, articleId, value) {
+  // This writer never patches desired/pending; guarded mode only reads them.
+  async function recordProgressRemoteObservation(ownerId, bindingId, articleId, value, scopeGuard = null, expectedParent = null) {
     const causal = progressCausal();
     const next = causal.normalizeObservation(value);
     if (!isOpaqueString(ownerId) || !isOpaqueString(bindingId) || !isOpaqueString(articleId) ||
         !next || next.kind === "unknown") return { status: "invalid-observation" };
-    return runTransaction([CONTROL_STORE, PROGRESS_OBSERVATIONS_STORE], "readwrite", async tx => {
+    if (scopeGuard !== null && typeof scopeGuard !== "function") return { status: "invalid-scope-guard" };
+    const parent = expectedParent === null ? null : causal.normalizeParent(expectedParent);
+    if (expectedParent !== null && (!parent || parent.lifecycle !== "active" || next.kind !== "revision" ||
+        parent.readingEpoch !== next.parentReadingEpoch || parent.contentFingerprint !== next.contentFingerprint)) {
+      return { status: "invalid-parent-context" };
+    }
+    // Explicit guarded callers lock and re-read parent authority in THIS write
+    // transaction. Default callers retain their original two-store semantics.
+    const stores = parent ? [CONTROL_STORE, PROGRESS_OBSERVATIONS_STORE, ARTICLE_SIDECAR_STORE,
+      ARTICLE_OUTBOX_STORE, PROGRESS_DESIRED_STORE, PROGRESS_ATTEMPTS_STORE] : [CONTROL_STORE, PROGRESS_OBSERVATIONS_STORE];
+    return runTransaction(stores, "readwrite", async tx => {
       const binding = await requireBinding(tx.objectStore(CONTROL_STORE), ownerId, bindingId);
       if (binding.status !== "ready") return binding;
+      if (parent) {
+        const snapshot = await readProgressCausalSnapshot(tx, ownerId, bindingId, articleId);
+        if (snapshot.status !== "ready" || !causal.same(causal.trustedParent(snapshot.sidecar), parent) ||
+            !snapshot.bootstrapSafe || snapshot.hasConflict || snapshot.hasMutation || snapshot.observationDiagnostic ||
+            snapshot.record?.pending || snapshot.record?.quarantined) return blocked("observation-parent-not-safe");
+        const attempts = await requestResult(tx.objectStore(PROGRESS_ATTEMPTS_STORE).index("byScope")
+          .getAll(IDBKeyRange.only([ownerId, bindingId, articleId])));
+        if (attempts.some(attempt => !["succeeded", "terminal", "superseded", "blocked_before_dispatch"].includes(attempt.status))) {
+          return blocked("observation-parent-not-safe");
+        }
+      }
       return writeProgressObservation(tx, ownerId, bindingId, articleId, next);
-    });
+    }, scopeGuard);
   }
 
   // Shared transaction-local monotonic writer. Settlement must never call the

@@ -1,4 +1,4 @@
-const { test, expect } = require("@playwright/test");
+const { test, expect } = require("./progress-strict-test");
 const { installHarness, trapProgressNetwork } = require("./progress-transport-helpers");
 
 test.beforeEach(async ({ page }) => {

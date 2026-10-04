@@ -390,11 +390,26 @@
 
   // Capture before a future network call. A late response must present this
   // original runtime generation rather than acquiring a new one after a switch.
-  async function captureCloudResponseContext(ownerId, bindingId) {
+  async function captureCloudResponseContext(ownerId, bindingId, callGuard = null) {
     const owner = { ownerId, bindingId };
     const capturedGeneration = generation;
-    return await stillCurrent(owner, capturedGeneration)
-      ? Object.freeze({ ownerId, bindingId, generation: capturedGeneration }) : null;
+    if (!await stillCurrent(owner, capturedGeneration)) return null;
+    const context = { ownerId, bindingId, generation: capturedGeneration };
+    // Optional cancellation capability for an explicit caller, not a send
+    // lease or seed API. Default callers retain the exact previous shape.
+    if (callGuard !== null) {
+      if (typeof callGuard !== "function") return null;
+      const guard = () => generation === capturedGeneration && callGuard() === true &&
+        window.LingoFlowSupabaseAuth?.getState()?.status === "authenticated" &&
+        window.LingoFlowSupabaseAuth.getState().user?.id === ownerId;
+      guard.subscribe = invalidate => {
+        scopeInvalidators.add(invalidate);
+        const unsubscribe = callGuard.subscribe?.(invalidate);
+        return () => { scopeInvalidators.delete(invalidate); unsubscribe?.(); };
+      };
+      context.guard = guard;
+    }
+    return Object.freeze(context);
   }
 
   async function settleCloudResult(responseContext, articleId, attemptId, rawResult, callGuard = () => true) {

@@ -2,7 +2,7 @@
 
 // Deterministic only: sentinel strings are NOT credentials; every external
 // request is mocked/trapped. Fixture setup below is explicitly test-local.
-const { test, expect, chromium } = require("@playwright/test");
+const { test, expect, chromium } = require("./progress-strict-test");
 const { readFileSync } = require("node:fs");
 const path = require("node:path");
 const helper = require("./progress-live-preflight-helpers");

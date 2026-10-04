@@ -95,6 +95,7 @@ async function installHarness(page, fixture = null) {
 }
 
 async function trapProgressNetwork(page) {
+  await require("./progress-forbidden-network").installForbiddenNetwork(page);
   page.__realProgress = [];
   page.on("request", request => {
     if (/\/rpc\/.*progress|\/rest\/v1\/progress/i.test(request.url())) page.__realProgress.push(request.url());

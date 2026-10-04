@@ -1,4 +1,4 @@
-const { test, expect } = require("@playwright/test");
+const { test, expect } = require("./progress-strict-test");
 
 const PROJECT_URL = "https://product-auth.test.supabase.co";
 const OWNER_A = "11111111-1111-4111-8111-111111111111";

@@ -1,4 +1,4 @@
-const { test, expect } = require("@playwright/test");
+const { test, expect } = require("./progress-strict-test");
 
 const owner = { ownerId: "progress-owner", bindingId: "progress-binding" };
 

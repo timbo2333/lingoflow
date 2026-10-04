@@ -1,4 +1,4 @@
-const { test, expect } = require("@playwright/test");
+const { test, expect } = require("./progress-strict-test");
 
 const ownerA = { ownerId: "transition-owner-a", bindingId: "transition-binding-a" };
 const ownerB = { ownerId: "transition-owner-b", bindingId: "transition-binding-b" };

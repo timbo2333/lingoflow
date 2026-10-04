@@ -1,4 +1,4 @@
-const { test, expect } = require("@playwright/test");
+const { test, expect } = require("./progress-strict-test");
 
 for (const oldVersion of [4, 5, 6]) test(`SyncDB v${oldVersion} to v7 preserves populated stores`, async ({ browser }) => {
   const context = await browser.newContext({ baseURL: "http://127.0.0.1:4173" });
