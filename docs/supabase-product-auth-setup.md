@@ -67,7 +67,10 @@ development entry point must be allowed here.
 
 - Supabase project URL
 - Supabase publishable key
-- public SDK URL
+
+The browser SDK is pinned privately by the Auth loader; it is not configurable
+through this public project configuration. See
+[the exact-build and storage contract](supabase-browser-sdk-contract.md).
 
 It must never contain an access token, refresh token, password, secret key,
 service-role key, database password, or admin credential. The ignored

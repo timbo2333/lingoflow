@@ -1,16 +1,17 @@
 const { test, expect } = require("./progress-strict-test");
+const { installPinnedSdkMock } = require("./pinned-supabase-sdk-mock");
 
 const PROJECT_URL = "https://product-auth.test.supabase.co";
 const OWNER_A = "11111111-1111-4111-8111-111111111111";
 const OWNER_B = "22222222-2222-4222-8222-222222222222";
 
 async function installProductAuthHarness(page) {
+  await installPinnedSdkMock(page);
   await page.route("**/js/supabase-config.js", route => route.fulfill({
     contentType: "application/javascript",
     body: `window.LingoFlowSupabaseConfig = Object.freeze({
       projectUrl: ${JSON.stringify(PROJECT_URL)},
-      publishableKey: "sb_publishable_product_auth_test",
-      sdkUrl: "https://sdk.product-auth.test/supabase.js"
+      publishableKey: "sb_publishable_product_auth_test"
     });`
   }));
   await page.addInitScript(({ projectUrl, ownerA, ownerB }) => {
@@ -209,7 +210,7 @@ async function installProductAuthHarness(page) {
         return { error: null };
       }
     };
-    window.supabase = {
+    window.__pinnedSdkMockFactory = () => ({
       createClient(url, key, options) {
         window.__productAuthClientOptions = {
           url,
@@ -218,7 +219,7 @@ async function installProductAuthHarness(page) {
         };
         return { auth };
       }
-    };
+    });
 
     const nativeFetch = window.fetch.bind(window);
     window.fetch = async (url, options = {}) => {

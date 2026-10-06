@@ -3,6 +3,16 @@
 
   const AUTH_REQUESTED_KEY = "lingoflowSupabaseAuthRequested";
   const SDK_TIMEOUT_MS = 15000;
+  // Audited immutable browser artifact, including auth-js at the same version.
+  // Keep this trust anchor independent of mutable page/client configuration.
+  const SUPABASE_BROWSER_SDK = Object.freeze({
+    version: "2.117.2",
+    src: "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.2/dist/umd/supabase.js",
+    integrity: "sha256-WdOUh8NYmEO0EDItij1WLOAiq6HlzLFomO8/sqDaLs0="
+  });
+  let trustedSdkLoadPromise = null;
+  let trustedSupabaseSdk = null;
+  let trustedCreateClient = null;
   const MIN_PASSWORD_LENGTH = 6;
   let client = null;
   let clientPromise = null;
@@ -37,8 +47,7 @@
     const config = window.LingoFlowSupabaseConfig;
     if (!config || !isOpaqueString(config.projectUrl) ||
         !isOpaqueString(config.publishableKey) ||
-        !config.publishableKey.startsWith("sb_publishable_") ||
-        !isOpaqueString(config.sdkUrl)) {
+        !config.publishableKey.startsWith("sb_publishable_")) {
       return null;
     }
     return config;
@@ -66,33 +75,130 @@
     localStorage.setItem(AUTH_REQUESTED_KEY, "1");
   }
 
-  function loadSdk(config) {
-    if (window.supabase && typeof window.supabase.createClient === "function") {
-      return Promise.resolve(window.supabase);
+  function loadSdk() {
+    if (trustedSupabaseSdk) return Promise.resolve(trustedSupabaseSdk);
+    if (trustedSdkLoadPromise) return trustedSdkLoadPromise;
+    // Do not read a possibly accessor-backed, unverified global.
+    if ("supabase" in window) {
+      return Promise.reject(new Error("unexpected-preexisting-supabase-sdk"));
     }
-    return new Promise((resolve, reject) => {
+    trustedSdkLoadPromise = new Promise((resolve, reject) => {
       const script = document.createElement("script");
-      const timer = setTimeout(() => {
-        script.remove();
-        reject(new Error("Supabase Auth SDK 加载超时。"));
-      }, SDK_TIMEOUT_MS);
-      script.src = config.sdkUrl;
+      let loadState = "pending";
+      let assigned = false;
+      let sdkValue;
+      let factory = null;
+      let timer;
+      const ownedAttributes = () => script.src === SUPABASE_BROWSER_SDK.src &&
+        script.integrity === SUPABASE_BROWSER_SDK.integrity &&
+        script.crossOrigin === "anonymous";
+      const readSdk = () => sdkValue;
+      const ownsGlobal = () => {
+        const descriptor = Object.getOwnPropertyDescriptor(window, "supabase");
+        return descriptor?.get === readSdk && descriptor?.set === acceptSdk;
+      };
+      const releaseGlobal = () => {
+        if (!ownsGlobal()) return; // Never overwrite another script's replacement.
+        if (assigned) {
+          Object.defineProperty(window, "supabase", {
+            value: sdkValue, writable: true, enumerable: true, configurable: true
+          });
+        } else {
+          delete window.supabase; // Only our unassigned, temporary accessor.
+        }
+      };
+      const attemptCleanup = action => {
+        try { action(); return true; } catch { return false; }
+      };
+      const cleanup = removeScript => {
+        let complete = true;
+        const actions = [
+          () => clearTimeout(timer),
+          () => { script.onload = null; },
+          () => { script.onerror = null; },
+          ...(removeScript ? [() => script.remove()] : []),
+          releaseGlobal
+        ];
+        // Every cleanup is attempted independently. None may prevent the
+        // shared Promise from settling, even when a global is non-configurable.
+        for (const action of actions) {
+          if (!attemptCleanup(action)) complete = false;
+        }
+        return complete;
+      };
+      const settle = (success, message) => {
+        if (loadState !== "pending") return;
+        loadState = "settling"; // Lock out reentrant and late continuations.
+        const cleaned = cleanup(!success);
+        if (!success || !cleaned) {
+          if (success) attemptCleanup(() => script.remove());
+          loadState = "rejected";
+          reject(new Error(cleaned ? message : "supabase-sdk-cleanup-failed"));
+          return;
+        }
+        // Success requires provenance checks AND completed finalization.
+        // No fallible cleanup remains after this private reference commit.
+        trustedSupabaseSdk = sdkValue;
+        trustedCreateClient = factory;
+        loadState = "resolved";
+        resolve(trustedSupabaseSdk);
+      };
+      const fail = message => settle(false, message);
+      function acceptSdk(value) {
+        if (loadState !== "pending") return;
+        // The audited UMD's `var supabase = ...` assignment occurs while its
+        // exact script is currentScript. A competing assignment is not a load.
+        const duplicate = assigned;
+        assigned = true;
+        sdkValue = value;
+        if (duplicate || document.currentScript !== script || !ownedAttributes()) {
+          fail("unexpected-supabase-sdk-assignment");
+          return;
+        }
+        let descriptor;
+        try {
+          descriptor = value && Object.getOwnPropertyDescriptor(value, "createClient");
+        } catch {
+          fail("Supabase Auth SDK 不可用。");
+          return;
+        }
+        if (!descriptor || typeof descriptor.value !== "function") {
+          fail("Supabase Auth SDK 不可用。");
+          return;
+        }
+        factory = descriptor.value;
+      }
+      script.src = SUPABASE_BROWSER_SDK.src;
+      script.integrity = SUPABASE_BROWSER_SDK.integrity;
       script.async = true;
       script.crossOrigin = "anonymous";
       script.onload = () => {
-        clearTimeout(timer);
-        if (window.supabase && typeof window.supabase.createClient === "function") {
-          resolve(window.supabase);
-        } else {
-          reject(new Error("Supabase Auth SDK 不可用。"));
+        if (loadState !== "pending") return;
+        try {
+          const descriptor = sdkValue && Object.getOwnPropertyDescriptor(sdkValue, "createClient");
+          if (!assigned || !factory || descriptor?.value !== factory ||
+              !ownsGlobal() || !ownedAttributes()) {
+            fail("Supabase Auth SDK 不可用。");
+            return;
+          }
+        } catch {
+          fail("Supabase Auth SDK 不可用。");
+          return;
         }
+        settle(true);
       };
-      script.onerror = () => {
-        clearTimeout(timer);
-        reject(new Error("Supabase Auth SDK 加载失败。"));
-      };
-      document.head.appendChild(script);
+      script.onerror = () => fail("Supabase Auth SDK 加载失败。");
+      timer = setTimeout(() => fail("Supabase Auth SDK 加载超时。"), SDK_TIMEOUT_MS);
+      try {
+        Object.defineProperty(window, "supabase", {
+          configurable: true, enumerable: true, get: readSdk, set: acceptSdk
+        });
+        document.head.appendChild(script);
+      } catch {
+        fail("Supabase Auth SDK 加载失败。");
+      }
     });
+    return trustedSdkLoadPromise;
   }
 
   async function ensureClient(options = {}) {
@@ -103,8 +209,8 @@
     if (clientPromise) return await clientPromise;
 
     clientPromise = (async () => {
-      const sdk = await loadSdk(config);
-      const created = sdk.createClient(config.projectUrl, config.publishableKey, {
+      const sdk = await loadSdk();
+      const created = trustedCreateClient.call(sdk, config.projectUrl, config.publishableKey, {
         auth: {
           persistSession: true,
           autoRefreshToken: true,

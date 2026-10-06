@@ -1,4 +1,5 @@
-const { test, expect } = require("@playwright/test");
+const { test, expect } = require("./progress-strict-test");
+const { installPinnedSdkMock } = require("./pinned-supabase-sdk-mock");
 
 const PROJECT_URL = "https://first-device-sync.test.supabase.co";
 const OWNER_ID = "11111111-1111-4111-8111-111111111111";
@@ -30,12 +31,12 @@ function change(cursor, revision, payload, operation = "put") {
 }
 
 async function installHarness(page, initialChanges = []) {
+  await installPinnedSdkMock(page);
   await page.route("**/js/supabase-config.js", route => route.fulfill({
     contentType: "application/javascript",
     body: `window.LingoFlowSupabaseConfig = Object.freeze({
       projectUrl: ${JSON.stringify(PROJECT_URL)},
-      publishableKey: "sb_publishable_first_device_test",
-      sdkUrl: "https://sdk.first-device-sync.test/supabase.js"
+      publishableKey: "sb_publishable_first_device_test"
     });`
   }));
   await page.addInitScript(({ projectUrl, ownerId, changes }) => {
@@ -63,7 +64,7 @@ async function installHarness(page, initialChanges = []) {
         return { error: null };
       }
     };
-    window.supabase = { createClient: () => ({ auth }) };
+    window.__pinnedSdkMockFactory = () => ({ createClient: () => ({ auth }) });
 
     const cursorNumber = value => Number(String(value).slice("cursor:".length));
     const revisionNumber = value => Number(String(value).slice("revision:".length));
