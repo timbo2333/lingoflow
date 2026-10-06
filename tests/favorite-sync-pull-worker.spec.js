@@ -637,37 +637,161 @@ test("Scenario E：own echo 优先于 local dirty，保留本地 successor 与 s
   expect(result.progress.progress.appliedCursor).toBe(result.remote.cursor);
 });
 
-test("own echo 优先于 physical local missing，并安全消费已确认 remote fact", async ({ page }) => {
+test("own echo 优先于 physical local missing，并安全消费已确认 remote fact", async ({ page }, testInfo) => {
   const baseline = makeFavorite("favorite:own-echo-missing-local", { meaning: "A" });
-  const result = await page.evaluate(async ({ owner, baseline }) => {
-    const state = window.LingoFlowSyncStateRepository;
-    const favorites = window.LingoFlowFavoriteRepository;
-    await state.bindWorkspace(owner);
-    await window.__putSidecar(owner, baseline, "revision:echo-missing-local");
-    const change = window.__makeChange(baseline, {
-      cursor: "cursor:echo-missing-local",
-      revision: "revision:echo-missing-local"
-    });
-    const worker = window.LingoFlowSyncFavoritePullWorker.create({
-      pull: () => ({ status: "ready", changes: [change], nextCursor: change.cursor })
-    });
-    await worker.receiveOnce(owner);
-    const applied = await worker.applyNext(owner);
-    return {
-      applied,
-      current: favorites.getById(baseline.id, { includeDeleted: true }),
-      sidecar: await state.getSidecar(owner.ownerId, baseline.id),
-      inbox: await state.listInbox(owner),
-      progress: await state.getPullProgress(owner)
-    };
-  }, { owner: OWNER, baseline });
+  try {
+    const result = await test.step("own echo: await committed receive/apply and durable facts", () => page.evaluate(async ({ owner, baseline }) => {
+      const state = window.LingoFlowSyncStateRepository;
+      const favorites = window.LingoFlowFavoriteRepository;
+      // Synchronous markers at the TEST's existing boundaries only. No repo
+      // decoration, Promise reactions, exposed-function IPC or extra awaits.
+      const diagnostics = window.__ownEchoDiagnostics = { stage: "before bindWorkspace", callbackCount: 0, settled: false };
+      await state.bindWorkspace(owner);
+      diagnostics.stage = "before putSidecar";
+      await window.__putSidecar(owner, baseline, "revision:echo-missing-local");
+      const change = window.__makeChange(baseline, {
+        cursor: "cursor:echo-missing-local",
+        revision: "revision:echo-missing-local"
+      });
+      const worker = window.LingoFlowSyncFavoritePullWorker.create({
+        syncStateRepository: state,
+        pull: () => {
+          diagnostics.callbackCount++;
+          return { status: "ready", changes: [change], nextCursor: change.cursor };
+        }
+      });
+      diagnostics.stage = "before receiveOnce";
+      await worker.receiveOnce(owner);
+      diagnostics.stage = "before applyNext";
+      const applied = await worker.applyNext(owner);
+      diagnostics.stage = "after applyNext";
+      diagnostics.settled = true;
+      diagnostics.status = applied.status;
+      return {
+        applied,
+        current: favorites.getById(baseline.id, { includeDeleted: true }),
+        sidecar: await state.getSidecar(owner.ownerId, baseline.id),
+        inbox: await state.listInbox(owner),
+        progress: await state.getPullProgress(owner),
+        writer: await state.getFavoriteWriterLease()
+      };
+    }, { owner: OWNER, baseline }));
 
-  expect(result.applied).toMatchObject({ status: "unchanged", reason: "own-echo" });
-  expect(result.current).toBeNull();
-  expect(result.sidecar.sidecar.lastSyncedSnapshot).toEqual(baseline);
-  expect(result.inbox.items).toEqual([]);
-  expect(result.progress.progress.appliedCursor).toBe("cursor:echo-missing-local");
+    expect(result.applied).toMatchObject({ status: "unchanged", reason: "own-echo" });
+    expect(result.current).toBeNull();
+    expect(result.sidecar.sidecar.lastSyncedSnapshot).toEqual(baseline);
+    expect(result.inbox.items).toEqual([]);
+    expect(result.progress.progress.appliedCursor).toBe("cursor:echo-missing-local");
+    expect(result.writer.status).toBe("missing");
+  } finally {
+    // Postmortem read only AFTER the original test path has completed/failed.
+    // If the page is already gone, preserve the original failure, not a second
+    // diagnostic exception. Never catch/retry the worker or its timeout.
+    const diagnostics = await page.evaluate(() => window.__ownEchoDiagnostics || { stage: "not-started" })
+      .catch(() => ({ stage: "diagnostic-unavailable" }));
+    await testInfo.attach("own-echo-structural-stages", {
+      body: JSON.stringify(diagnostics), contentType: "application/json"
+    });
+  }
 });
+
+test("[closure diagnostic] original own echo preserves HEAD Promise and microtask path", async () => {
+  const vm = require("node:vm");
+  const fs = require("node:fs");
+  const head = require("node:child_process").execFileSync("git", ["show", "HEAD:tests/favorite-sync-pull-worker.spec.js"], {
+    cwd: require("node:path").resolve(__dirname, ".."), encoding: "utf8" });
+  function callback(text) {
+    const ownEcho = text.indexOf('test("own echo 优先于 physical local missing');
+    const start = text.indexOf("async ({ owner, baseline }) => {", ownEcho);
+    const end = text.indexOf("}, { owner: OWNER, baseline })", start);
+    if (ownEcho < 0 || start < 0 || end < 0) throw new Error("original own-echo callback missing");
+    return text.slice(start, end + 1);
+  }
+  async function probe(source) {
+    const events = [];
+    const realm = vm.createContext({});
+    const RealmPromise = vm.runInContext("Promise", realm);
+    // Use the callback's own Promise realm: cross-realm await assimilation
+    // would itself insert a microtask and invalidate the HEAD comparison.
+    const ready = value => Object.freeze(RealmPromise.resolve(value));
+    const bound = ready({ status: "bound" }), sidecar = ready({ status: "ready", sidecar: {} });
+    const inbox = ready({ status: "ready", items: [] }), progress = ready({ status: "ready", progress: {} });
+    const state = Object.freeze({ bindWorkspace: () => bound, getSidecar: () => sidecar,
+      listInbox: () => inbox, getPullProgress: () => progress, getFavoriteWriterLease: () => ready({ status: "missing" }) });
+    const received = ready({ status: "received" }), applied = ready({ status: "unchanged" });
+    let receivedRepository;
+    const window = { LingoFlowSyncStateRepository: state,
+      LingoFlowFavoriteRepository: { getById: () => null }, __ownEchoStage: () => {},
+      __putSidecar: () => { events.push("worker-continuation"); return sidecar; },
+      __makeChange: () => ({}), LingoFlowSyncFavoritePullWorker: { create(options) {
+        receivedRepository = options.syncStateRepository || state;
+        return { receiveOnce: () => received, applyNext: () => applied };
+      } } };
+    // Execute the actual original-case callback, not a reimplementation of it.
+    realm.window = window;
+    const run = vm.runInContext(`(${callback(source)})`, realm);
+    const completion = run({ owner: OWNER, baseline: {} });
+    queueMicrotask(() => events.push("competing-microtask"));
+    await completion;
+    return { events, originalRepository: receivedRepository === state,
+      originalMethods: receivedRepository.bindWorkspace === state.bindWorkspace &&
+        receivedRepository.getSidecar === state.getSidecar };
+  }
+  const baseline = await probe(head);
+  const current = await probe(fs.readFileSync(__filename, "utf8"));
+  expect(baseline.events).toEqual(["worker-continuation", "competing-microtask"]);
+  expect(current.events).toEqual(baseline.events);
+  expect(current.originalRepository).toBe(true);
+  expect(current.originalMethods).toBe(true);
+});
+
+for (const hold of ["before commit", "after commit"]) {
+  // Deliberate deterministic delay injection, NOT passive diagnostics of the
+  // original case and NOT proof that all real-world timing is race-free.
+  test(`[closure diagnostic] own echo semantic promise waits ${hold} without timer assumptions`, async ({ page }) => {
+    const baseline = makeFavorite("favorite:own-echo-controlled");
+    const result = await page.evaluate(async ({ owner, baseline, hold }) => {
+      const state = window.LingoFlowSyncStateRepository;
+      await state.bindWorkspace(owner);
+      await window.__putSidecar(owner, baseline, "revision:controlled");
+      const change = window.__makeChange(baseline, { revision: "revision:controlled", cursor: "cursor:controlled" });
+      let release, entered, settled = false, callbacks = 0;
+      const barrier = new Promise(resolve => { release = resolve; });
+      const started = new Promise(resolve => { entered = resolve; });
+      const worker = window.LingoFlowSyncFavoritePullWorker.create({
+        pull: () => { callbacks++; return { status: "ready", changes: [change], nextCursor: change.cursor }; },
+        syncStateRepository: { ...state, settleInboxNoop: async args => {
+          if (hold === "before commit") { entered(); await barrier; }
+          const result = await state.settleInboxNoop(args);
+          if (hold === "after commit") { entered(); await barrier; }
+          return result;
+        } }
+      });
+      const received = await worker.receiveOnce(owner);
+      const completion = worker.applyNext(owner).then(value => { settled = true; return value; });
+      await started; // Explicit semantic hook, no sleep/poll/microtask ordering guess.
+      const held = { settled, inboxLength: (await state.listInbox(owner)).items.length,
+        cursor: (await state.getPullProgress(owner)).progress.appliedCursor };
+      release();
+      const applied = await completion;
+      return { received: received.status, callbacks, held, applied,
+        inbox: await state.listInbox(owner), progress: await state.getPullProgress(owner),
+        current: window.LingoFlowFavoriteRepository.getById(baseline.id, { includeDeleted: true }),
+        sidecar: await state.getSidecar(owner.ownerId, baseline.id),
+        writer: await state.getFavoriteWriterLease() };
+    }, { owner: OWNER, baseline, hold });
+    expect(result.received).toBe("received");
+    expect(result.callbacks).toBe(1);
+    expect(result.held).toEqual({ settled: false, inboxLength: hold === "before commit" ? 1 : 0,
+      cursor: hold === "before commit" ? null : "cursor:controlled" });
+    expect(result.applied).toMatchObject({ status: "unchanged", reason: "own-echo" });
+    expect(result.inbox.items).toEqual([]);
+    expect(result.progress.progress.appliedCursor).toBe("cursor:controlled");
+    expect(result.current).toBeNull();
+    expect(result.sidecar.sidecar.lastSyncedSnapshot).toEqual(baseline);
+    expect(result.writer.status).toBe("missing");
+  });
+}
 
 test("same revision different payload 转为 durable pull issue，不覆盖本地/sidecar", async ({ page }) => {
   const baseline = makeFavorite("favorite:same-revision", { meaning: "A" });

@@ -7,7 +7,7 @@ async function inspectExistingRuntime(scope) {
   const unavailable = reason => ({ status: "unavailable", ...(reason ? { reason } : {}) });
   async function openExisting(name, version, stores) {
     const known = (await indexedDB.databases()).find(db => db.name === name);
-    if (known?.version !== version) throw new Error("local-databases-missing-or-version-mismatch");
+    if (known?.version !== version) return null; // Known absence, not a read failure.
     const db = await new Promise((resolve, reject) => {
       const req = indexedDB.open(name); // No version, no schema migration.
       req.onupgradeneeded = () => { req.transaction.abort(); };
@@ -41,7 +41,9 @@ async function inspectExistingRuntime(scope) {
     // the production readonly APIs into creating a fresh database.
     const sync = await openExisting("LingoFlowSyncDB", 7, ["control", "progressDesired",
       "progressRemoteObservations", "progressCloudAttempts", "articleSidecars", "articleOutbox"]);
+    if (!sync) return unavailable("local-databases-missing-or-version-mismatch");
     const library = await openExisting("LingoFlowLibraryDB", 3, ["articles", "progressFences", "progressControl"]);
+    if (!library) return unavailable("local-databases-missing-or-version-mismatch");
     const binding = await read(sync, "control", "workspace-binding");
     if (!binding) return unavailable("local-binding-unresolved");
     if (binding.ownerId !== scope.ownerId || auth.getState()?.status !== "authenticated" ||
@@ -124,11 +126,99 @@ async function inspectExistingRuntime(scope) {
       // A fresh first UPDATE must not compete with an existing uncertain call.
       unsettledAttempts: before.attempts.some(attempt => !["succeeded", "terminal", "superseded", "blocked_before_dispatch"].includes(attempt.status)),
       observation, observationDiagnostic: Boolean(before.sync.observationDiagnostic), reader };
-  } catch (error) {
-    return unavailable(error?.message === "local-databases-missing-or-version-mismatch"
-      ? "local-databases-missing-or-version-mismatch" : undefined);
+  } finally { for (const db of handles) db.close(); }
+}
+
+// Shape only, never a readiness/send authority. False flags, unknown/absent
+// observations and nullable parent/reader remain valid facts for the existing
+// upper gate to reject. Error messages contain schema names, never data values.
+function validateRuntimeInspectionResult(value, scopeOnly) {
+  const invalid = field => { throw new Error(`invalid runtime inspection result: ${field}`); };
+  const object = item => item !== null && typeof item === "object" && !Array.isArray(item);
+  const text = item => typeof item === "string" && item.length > 0;
+  const bool = item => typeof item === "boolean";
+  const integer = item => Number.isSafeInteger(item) && item >= 0;
+  const fingerprint = item => typeof item === "string" && /^sha256:[a-f0-9]{64}$/.test(item);
+  const revision = item => typeof item === "string" && /^revision:[1-9][0-9]*$/.test(item);
+  const cursor = item => typeof item === "string" && /^cursor:(0|[1-9][0-9]*)$/.test(item);
+  const epoch = item => typeof item === "string" && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(item);
+  function field(record, key, predicate, label = key) {
+    if (!object(record)) invalid(label);
+    const descriptor = Object.getOwnPropertyDescriptor(record, key);
+    if (!descriptor || !Object.hasOwn(descriptor, "value") || !predicate(descriptor.value)) invalid(label);
+    return descriptor.value;
   }
-  finally { for (const db of handles) db.close(); }
+  function shape(record, keys, label) {
+    if (!object(record) || Object.keys(record).some(key => !keys.includes(key))) invalid(label);
+  }
+  function checkpoint(record, label) {
+    shape(record, ["progress", "paragraphIndex"], label);
+    field(record, "progress", item => Number.isFinite(item) && item >= 0 && item <= 1, `${label}.progress`);
+    field(record, "paragraphIndex", integer, `${label}.paragraphIndex`);
+  }
+  const status = field(value, "status", item => ["ready", "unavailable"].includes(item));
+  if (status === "unavailable") {
+    shape(value, ["status", "reason"], "result fields");
+    if (Object.hasOwn(value, "reason")) field(value, "reason", text);
+    return;
+  }
+  const scopeFields = ["status", "ownerId", "bindingId", "generation", "scopeToken", "stable", "transitionInactive"];
+  const flags = ["scopeValid", "fencePresent", "articleActive", "bootstrapSafe", "hasConflict", "hasMutation",
+    "pendingMovement", "quarantinedMovement", "unsettledAttempts", "observationDiagnostic"];
+  shape(value, scopeOnly ? scopeFields : [...scopeFields, ...flags, "articleId", "contentFingerprint",
+    "contentBytes", "parent", "observation", "reader"], "result fields");
+  for (const key of ["ownerId", "bindingId", "scopeToken"]) field(value, key, text);
+  field(value, "generation", integer);
+  for (const key of ["stable", "transitionInactive"]) field(value, key, bool);
+  if (scopeOnly) return;
+  for (const key of flags) field(value, key, bool);
+  field(value, "articleId", text);
+  field(value, "contentFingerprint", fingerprint);
+  field(value, "contentBytes", integer);
+  const parent = field(value, "parent", item => item === null || object(item));
+  if (parent !== null) {
+    shape(parent, ["articleRevision", "readingEpoch", "contentFingerprint", "lifecycle"], "parent fields");
+    field(parent, "articleRevision", revision, "parent.articleRevision");
+    field(parent, "readingEpoch", epoch, "parent.readingEpoch");
+    field(parent, "contentFingerprint", fingerprint, "parent.contentFingerprint");
+    field(parent, "lifecycle", item => ["active", "deleted"].includes(item), "parent.lifecycle");
+  }
+  const observation = field(value, "observation", item => item === null || object(item));
+  if (observation !== null) {
+    const kind = field(observation, "kind", item => ["unknown", "absent", "revision"].includes(item), "observation.kind");
+    shape(observation, kind === "unknown" ? ["kind"] : kind === "absent" ? ["kind", "evidence"] :
+      ["kind", "revision", "cursor", "parentReadingEpoch", "contentFingerprint", "checkpoint"], "observation fields");
+    if (kind === "revision") {
+      field(observation, "revision", revision, "observation.revision");
+      field(observation, "cursor", cursor, "observation.cursor");
+      field(observation, "parentReadingEpoch", epoch, "observation.parentReadingEpoch");
+      field(observation, "contentFingerprint", fingerprint, "observation.contentFingerprint");
+      checkpoint(field(observation, "checkpoint", object), "observation.checkpoint");
+    } else if (kind === "absent") {
+      const evidence = field(observation, "evidence", object);
+      shape(evidence, ["kind", "highWaterCursor", "throughCursor"], "observation.evidence fields");
+      field(evidence, "kind", item => item === "completed-inventory-catchup", "observation.evidence.kind");
+      for (const key of ["highWaterCursor", "throughCursor"]) field(evidence, key, cursor, `observation.evidence.${key}`);
+    }
+  }
+  const reader = field(value, "reader", item => item === null || object(item));
+  if (reader !== null) {
+    shape(reader, ["articleId", "baselineArticleId", "baselineFingerprint", "baseline", "pendingSave",
+      "startY", "scrollRange", "anchorOffset", "currentScrollY", "maxScrollY", "paragraphs"], "reader fields");
+    for (const key of ["articleId", "baselineArticleId"]) field(reader, key, text, `reader.${key}`);
+    field(reader, "baselineFingerprint", fingerprint, "reader.baselineFingerprint");
+    field(reader, "pendingSave", bool, "reader.pendingSave");
+    checkpoint(field(reader, "baseline", object), "reader.baseline");
+    for (const key of ["startY", "scrollRange", "anchorOffset", "currentScrollY", "maxScrollY"]) {
+      field(reader, key, Number.isFinite, `reader.${key}`);
+    }
+    const paragraphs = field(reader, "paragraphs", item => Array.isArray(item) && item.length <= 4096, "reader.paragraphs");
+    for (const paragraph of paragraphs) {
+      shape(paragraph, ["index", "top"], "reader.paragraph fields");
+      field(paragraph, "index", integer, "reader.paragraph.index");
+      field(paragraph, "top", Number.isFinite, "reader.paragraph.top");
+    }
+  }
 }
 
 function loopbackURL(value, runtime = false) {
@@ -167,7 +257,19 @@ async function openRuntimeSession(scope, { cdpURL, runtimeURL }) {
       try {
         const result = await Promise.race([page.evaluate(inspectExistingRuntime, { ...scope, scopeOnly }),
           new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("read-only-runtime-timeout")), 30000); })]);
-        return identityChanged ? { status: "unavailable" } : { ...result, runtimeIdentity };
+        if (identityChanged) return { status: "unavailable" };
+        validateRuntimeInspectionResult(result, scopeOnly);
+        return { ...result, runtimeIdentity };
+      } catch (error) {
+        // Observed Playwright/Chromium evaluate errors when another CDP
+        // connection navigates/closes before this connection gets its event.
+        // Exact messages only: page JS/IDB/serialization errors still throw.
+        if (error?.name !== "Error" || ![
+          "page.evaluate: Execution context was destroyed, most likely because of a navigation.",
+          "page.evaluate: Target page, context or browser has been closed"
+        ].includes(error.message)) throw error;
+        invalidate(); // Permanent: do not retry/rebind even at the same URL.
+        return { status: "unavailable", reason: "runtime-document-unavailable" };
       } finally { clearTimeout(timer); }
     };
     return { captureScope: () => evaluate(true), inspectRuntime: () => evaluate(false),
