@@ -3,6 +3,7 @@
 const { execFile } = require("node:child_process");
 const { promisify } = require("node:util");
 const { randomUUID, createHash } = require("node:crypto");
+const { articlePushArgs, progressPushArgs } = require("./progress-fixture-wire");
 
 const execFileAsync = promisify(execFile);
 const TEST_PREFIX = "b3-contract-";
@@ -72,10 +73,8 @@ async function rpc(who, name, args) {
 
 function articlePush(who, articleId, operation, value, baseRevision = null,
     key = mutationId()) {
-  return rpc(who, RPC.articlePush, {
-    p_expected_owner_id: who.owner,
-    p_mutation: { mutationId: key, articleId, operation, baseRevision, projection: value }
-  });
+  return rpc(who, RPC.articlePush,
+    articlePushArgs(who.owner, articleId, operation, value, baseRevision, key));
 }
 
 function articleSnapshot(who, articleId) {
@@ -85,18 +84,8 @@ function articleSnapshot(who, articleId) {
 }
 
 function progressPush(who, articleId, value, key = mutationId(), expectedOwner = who.owner) {
-  return rpc(who, RPC.progressPush, {
-    p_expected_owner_id: expectedOwner,
-    p_mutation: {
-      mutationId: key, articleId,
-      expectedState: value.expectedState,
-      expectedProgressRevision: value.expectedProgressRevision,
-      parentReadingEpoch: value.parentReadingEpoch,
-      contentFingerprint: value.contentFingerprint,
-      progress: value.progress,
-      paragraphIndex: value.paragraphIndex
-    }
-  });
+  return rpc(who, RPC.progressPush,
+    progressPushArgs(expectedOwner, articleId, value, key));
 }
 
 function progressPull(who, afterCursor = "cursor:0", limit = 10) {

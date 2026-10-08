@@ -270,7 +270,7 @@ test("private generation microtask AFTER put success aborts before commit", asyn
 });
 for (const action of ["push-same-url", "replace", "history-back", "reload", "close", "crash", "target-replacement"]) {
   test(`actual runtime ${action} after put has no durable observation`, async ({ page, context }) => {
-    const input = await setup(page); let inspectedPage = page, session, queued = false;
+    const input = await setup(page); let inspectedPage = page, session, queued = false, reloadCompletion;
     try {
       if (action === "history-back") await page.evaluate(() => history.pushState({}, "", "/?history-prior=1"));
       session = await runtime.openFixtureRuntimeSession({ ownerId: fixture.OWNER, articleId: def.articleId },
@@ -278,7 +278,7 @@ for (const action of ["push-same-url", "replace", "history-back", "reload", "clo
       input.baseline = await session.captureScope(); input.runtimeIdentity = input.baseline.runtimeIdentity;
       await page.exposeFunction("fixtureDestroy", async () => {
         queued = true;
-        if (action === "reload") await page.reload();
+        if (action === "reload") { reloadCompletion = page.reload(); await reloadCompletion; }
         if (action === "close" || action === "target-replacement") await page.close({ runBeforeUnload: true });
         if (action === "crash") {
           const cdp = await context.newCDPSession(page);
@@ -309,6 +309,9 @@ for (const action of ["push-same-url", "replace", "history-back", "reload", "clo
       expect((await seedFromMockVerification(page, input, session)).status).toBe("blocked");
       if (["reload", "close", "crash", "target-replacement"].includes(action)) expect(queued).toBe(true);
       else expect(await page.evaluate(() => window.fixturePutQueued)).toBe(true);
+      // Seed cancellation may settle before the replacement Document loads.
+      // Read the durable state only after the test-triggered reload completes.
+      if (action === "reload") await reloadCompletion;
       if (action !== "reload" && ["close", "crash", "target-replacement"].includes(action)) {
         inspectedPage = await context.newPage(); await trapProgressNetwork(inspectedPage); await inspectedPage.goto("/");
       }
